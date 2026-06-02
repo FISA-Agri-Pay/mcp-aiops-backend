@@ -18,6 +18,8 @@ Copy-Item .env.example .env
 docker compose up -d postgres
 ```
 
+기본 로컬 포트는 기존 KongKongFarm PostgreSQL과 충돌하지 않도록 `55432`를 사용합니다.
+
 내부 DB schema SQL은 아래 위치에 둡니다.
 
 ```text
