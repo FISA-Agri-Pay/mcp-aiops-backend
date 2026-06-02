@@ -17,7 +17,7 @@ class Settings(BaseSettings):
     app_timezone: str = Field(default="Asia/Seoul", alias="APP_TIMEZONE")
 
     database_url: str = Field(
-        default="postgresql+psycopg://aiops:aiops@localhost:55432/aiops",
+        default="postgresql+psycopg://kkpp:kkpp@localhost:5432/kkpp",
         alias="DATABASE_URL",
     )
 

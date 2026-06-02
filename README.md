@@ -12,13 +12,19 @@ Copy-Item .env.example .env
 
 실제 secret, 운영 URL, 내부 schema SQL은 Git에 올리지 않습니다.
 
-### 2. PostgreSQL 실행
+### 2. PostgreSQL 확인
 
 ```powershell
-docker compose up -d postgres
+docker ps --filter name=kkpp-postgres
 ```
 
-기본 로컬 포트는 기존 KongKongFarm PostgreSQL과 충돌하지 않도록 `55432`를 사용합니다.
+이 프로젝트는 별도 PostgreSQL을 띄우지 않고 기존 KongKongFarm PostgreSQL을 사용합니다.
+
+기본 로컬 연결 정보:
+
+```text
+DATABASE_URL=postgresql+psycopg://kkpp:kkpp@localhost:5432/kkpp
+```
 
 내부 DB schema SQL은 아래 위치에 둡니다.
 
@@ -27,6 +33,7 @@ infra/docker/postgres/init/001_init_schema.sql
 ```
 
 이 SQL은 내부 공유용이므로 `.gitignore`에 의해 제외됩니다.
+실제 적용은 기존 KongKongFarm DB에 `ai` schema를 추가하는 방식으로 진행합니다.
 
 ### 3. API 실행
 
