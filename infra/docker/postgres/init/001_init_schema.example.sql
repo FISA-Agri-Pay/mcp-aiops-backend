@@ -1,0 +1,2 @@
+-- Public-safe placeholder only.
+-- Place the internal 001_init_schema.sql in this directory for local DB initialization.

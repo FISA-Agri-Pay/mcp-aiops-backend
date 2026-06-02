@@ -1,0 +1,32 @@
+[project]
+name = "mcp-aiops-backend"
+version = "0.1.0"
+description = "MCP-based agricultural BNPL AIOps backend"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "fastapi>=0.115.0,<1.0.0",
+    "pydantic-settings>=2.4.0,<3.0.0",
+    "psycopg[binary]>=3.2.0,<4.0.0",
+    "sqlalchemy>=2.0.0,<3.0.0",
+    "uvicorn[standard]>=0.30.0,<1.0.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "httpx2>=2.0.0,<3.0.0",
+    "pytest>=8.3.0,<9.0.0",
+    "ruff>=0.6.0,<1.0.0",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
