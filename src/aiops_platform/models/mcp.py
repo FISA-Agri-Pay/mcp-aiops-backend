@@ -4,7 +4,16 @@ from datetime import datetime
 from enum import StrEnum
 from uuid import UUID
 
-from sqlalchemy import BigInteger, DateTime, ForeignKey, String, Text, UniqueConstraint, text
+from sqlalchemy import (
+    BigInteger,
+    CheckConstraint,
+    DateTime,
+    ForeignKey,
+    String,
+    Text,
+    UniqueConstraint,
+    text,
+)
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.dialects.postgresql import UUID as PostgreSQLUUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
@@ -47,9 +56,17 @@ class McpToolCallStatus(StrEnum):
     APPROVAL_REQUIRED = "APPROVAL_REQUIRED"
 
 
+def _check_in(column_name: str, enum_type: type[StrEnum], constraint_name: str) -> CheckConstraint:
+    values = ", ".join(f"'{member.value}'" for member in enum_type)
+    return CheckConstraint(f"{column_name} IN ({values})", name=constraint_name)
+
+
 class McpServer(Base):
     __tablename__ = "mcp_servers"
-    __table_args__ = {"schema": "ai"}
+    __table_args__ = (
+        _check_in("server_status", McpServerStatus, "ck_ai_mcp_servers_server_status"),
+        {"schema": "ai"},
+    )
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
     public_id: Mapped[UUID] = mapped_column(
@@ -86,6 +103,8 @@ class McpTool(Base):
     __tablename__ = "mcp_tools"
     __table_args__ = (
         UniqueConstraint("mcp_server_public_id", "tool_name"),
+        _check_in("tool_permission", McpToolPermission, "ck_ai_mcp_tools_tool_permission"),
+        _check_in("tool_status", McpToolStatus, "ck_ai_mcp_tools_tool_status"),
         {"schema": "ai"},
     )
 
@@ -132,7 +151,20 @@ class McpTool(Base):
 
 class McpToolCall(Base):
     __tablename__ = "mcp_tool_calls"
-    __table_args__ = {"schema": "ai"}
+    __table_args__ = (
+        _check_in(
+            "tool_permission",
+            McpToolPermission,
+            "ck_ai_mcp_tool_calls_tool_permission",
+        ),
+        _check_in(
+            "confirmation_policy",
+            McpConfirmationPolicy,
+            "ck_ai_mcp_tool_calls_confirmation_policy",
+        ),
+        _check_in("call_status", McpToolCallStatus, "ck_ai_mcp_tool_calls_call_status"),
+        {"schema": "ai"},
+    )
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
     public_id: Mapped[UUID] = mapped_column(
@@ -176,4 +208,3 @@ class McpToolCall(Base):
         nullable=False,
         server_default=text("CURRENT_TIMESTAMP"),
     )
-
