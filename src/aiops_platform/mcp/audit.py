@@ -74,7 +74,7 @@ class McpToolAuditService:
             tool_name=context.tool_name,
             tool_permission=permission,
             confirmation_policy=McpConfirmationPolicy(policy.confirmation_policy),
-            request_payload=context.request_payload,
+            request_payload=context.request_payload if context.allow_store_unmasked else None,
             masked_request_payload=mask_payload(context.request_payload),
             masked_response_payload=mask_payload(normalized_response_payload),
             call_status=call_status,

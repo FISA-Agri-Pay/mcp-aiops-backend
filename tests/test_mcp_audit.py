@@ -43,6 +43,7 @@ def test_audit_service_masks_payloads_and_uses_policy() -> None:
 
     assert record.mcp_server_public_id == repository.server_public_id
     assert record.mcp_tool_public_id == repository.tool_public_id
+    assert record.request_payload is None
     assert record.confirmation_policy == McpConfirmationPolicy.NONE
     assert record.masked_request_payload == {
         "query": "up",
@@ -53,6 +54,27 @@ def test_audit_service_masks_payloads_and_uses_policy() -> None:
         "access_token": "***MASKED***",
     }
     assert repository.created_record == record
+
+
+def test_audit_service_stores_raw_request_payload_only_when_enabled() -> None:
+    repository = FakeAuditRepository()
+    service = McpToolAuditService(repository)
+
+    record = service.record_tool_call(
+        context=McpToolExecutionContext(
+            server_name="infraops-mcp",
+            tool_name="query_prometheus",
+            request_payload={"query": "up"},
+            allow_store_unmasked=True,
+        ),
+        permission=McpToolPermission.READ,
+        response_payload={"status": "ok"},
+        call_status=McpToolCallStatus.SUCCESS,
+        latency_ms=3,
+    )
+
+    assert record.request_payload == {"query": "up"}
+    assert record.masked_request_payload == {"query": "up"}
 
 
 def test_audit_service_normalizes_list_response_payloads() -> None:

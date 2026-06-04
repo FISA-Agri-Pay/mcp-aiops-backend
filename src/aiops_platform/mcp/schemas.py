@@ -100,6 +100,7 @@ class McpToolExecutionContext(BaseModel):
     server_name: str = Field(min_length=1, max_length=100)
     tool_name: str = Field(min_length=1, max_length=120)
     request_payload: dict = Field(default_factory=dict)
+    allow_store_unmasked: bool = False
     job_run_public_id: UUID | None = None
     llm_run_public_id: UUID | None = None
     session_public_id: UUID | None = None
@@ -123,4 +124,3 @@ class McpToolAuditCreate(BaseModel):
     llm_run_public_id: UUID | None = None
     session_public_id: UUID | None = None
     user_public_id: UUID | None = None
-
