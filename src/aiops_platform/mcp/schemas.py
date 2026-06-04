@@ -1,4 +1,5 @@
 from enum import StrEnum
+from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -36,6 +37,13 @@ class McpToolCallStatus(StrEnum):
     TIMEOUT = "TIMEOUT"
     BLOCKED = "BLOCKED"
     APPROVAL_REQUIRED = "APPROVAL_REQUIRED"
+
+
+class McpExecutionPolicy(StrEnum):
+    ALLOWED = "allowed"
+    BLOCKED_UNTIL_CONFIRMED = "blocked_until_confirmed"
+    BLOCKED_UNTIL_APPROVED = "blocked_until_approved"
+    BLOCKED = "blocked"
 
 
 class McpToolMetadata(BaseModel):
@@ -77,4 +85,42 @@ class McpToolCallMetadata(BaseModel):
     call_status: McpToolCallStatus
     latency_ms: int | None = Field(default=None, ge=0)
     last_error: str | None = None
+
+
+class McpToolPolicy(BaseModel):
+    model_config = ConfigDict(use_enum_values=True)
+
+    tool_permission: McpToolPermission
+    confirmation_policy: McpConfirmationPolicy
+    execution_policy: McpExecutionPolicy
+    call_status: McpToolCallStatus
+
+
+class McpToolExecutionContext(BaseModel):
+    server_name: str = Field(min_length=1, max_length=100)
+    tool_name: str = Field(min_length=1, max_length=120)
+    request_payload: dict = Field(default_factory=dict)
+    job_run_public_id: UUID | None = None
+    llm_run_public_id: UUID | None = None
+    session_public_id: UUID | None = None
+    user_public_id: UUID | None = None
+
+
+class McpToolAuditCreate(BaseModel):
+    mcp_server_public_id: UUID
+    mcp_tool_public_id: UUID
+    tool_name: str = Field(min_length=1, max_length=120)
+    tool_permission: McpToolPermission
+    confirmation_policy: McpConfirmationPolicy
+    request_payload: dict | None = None
+    masked_request_payload: dict | None = None
+    response_ref: str | None = None
+    masked_response_payload: dict | None = None
+    call_status: McpToolCallStatus
+    latency_ms: int | None = Field(default=None, ge=0)
+    last_error: str | None = None
+    job_run_public_id: UUID | None = None
+    llm_run_public_id: UUID | None = None
+    session_public_id: UUID | None = None
+    user_public_id: UUID | None = None
 
