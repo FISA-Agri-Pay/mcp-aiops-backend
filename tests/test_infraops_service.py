@@ -132,6 +132,20 @@ def test_kafka_admin_client_calls_consumer_lag_api() -> None:
     assert http_client.calls[0]["params"] == {"topic": "orders"}
 
 
+def test_kafka_admin_client_encodes_consumer_group_path_segment() -> None:
+    http_client = FakeHttpClient({"total_lag": 3})
+    client = KafkaAdminClient(
+        "http://kafka-admin:8080",
+        http_client=http_client,
+    )
+
+    client.consumer_lag("team/a")
+
+    assert http_client.calls[0]["url"] == (
+        "http://kafka-admin:8080/kafka/consumer-groups/team%2Fa/lag"
+    )
+
+
 def test_batch_client_calls_run_status_api() -> None:
     http_client = FakeHttpClient({"runs": []})
     client = BatchClient(
@@ -177,6 +191,20 @@ def test_elasticsearch_client_calls_search_api() -> None:
     assert http_client.calls[0]["json_body"] == {"query": {"match_all": {}}}
 
 
+def test_elasticsearch_client_encodes_index_pattern_path_segment() -> None:
+    http_client = FakeHttpClient({"hits": {"hits": []}})
+    client = ElasticsearchClient(
+        "http://elasticsearch:9200",
+        http_client=http_client,
+    )
+
+    client.search("logs api,*", {"query": {"match_all": {}}})
+
+    assert http_client.calls[0]["url"] == (
+        "http://elasticsearch:9200/logs%20api,*/_search"
+    )
+
+
 def test_kibana_client_calls_saved_objects_find_api() -> None:
     http_client = FakeHttpClient({"saved_objects": []})
     client = KibanaClient(
@@ -211,6 +239,11 @@ def test_infraops_service_validates_comma_separated_index_patterns() -> None:
 
     with pytest.raises(InfraOpsValidationError):
         validate_index_pattern("logs-*, private-*", allowlist=("logs-*", "filebeat-*"))
+
+
+def test_infraops_service_rejects_index_pattern_path_separators() -> None:
+    with pytest.raises(InfraOpsValidationError):
+        validate_index_pattern("logs-*/private", allowlist=("logs-*", "filebeat-*"))
 
 
 def test_infraops_service_rejects_non_allowlisted_namespace() -> None:

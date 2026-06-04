@@ -5,7 +5,7 @@ import json
 from collections.abc import Mapping
 from typing import Any
 from urllib.error import HTTPError, URLError
-from urllib.parse import urlencode, urljoin, urlparse
+from urllib.parse import quote, urlencode, urljoin, urlparse
 from urllib.request import Request, urlopen
 
 
@@ -219,8 +219,9 @@ class KafkaAdminClient:
         params = {}
         if topic is not None:
             params["topic"] = topic
+        encoded_consumer_group = quote(consumer_group, safe="")
         return self._http_client.get_json(
-            urljoin(self._base_url, f"kafka/consumer-groups/{consumer_group}/lag"),
+            urljoin(self._base_url, f"kafka/consumer-groups/{encoded_consumer_group}/lag"),
             params=params,
             timeout=self._timeout_seconds,
         )
@@ -272,8 +273,9 @@ class ElasticsearchClient:
         )
 
     def index_health(self, index_pattern: str) -> list[dict[str, Any]]:
+        encoded_index_pattern = quote(index_pattern, safe="*,")
         return self._http_client.get_json(
-            urljoin(self._base_url, f"_cat/indices/{index_pattern}"),
+            urljoin(self._base_url, f"_cat/indices/{encoded_index_pattern}"),
             params={
                 "format": "json",
                 "h": "index,health,status,docs.count,store.size",
@@ -283,8 +285,9 @@ class ElasticsearchClient:
         )
 
     def search(self, index_pattern: str, query: Mapping[str, Any]) -> dict[str, Any]:
+        encoded_index_pattern = quote(index_pattern, safe="*,")
         return self._http_client.post_json(
-            urljoin(self._base_url, f"{index_pattern}/_search"),
+            urljoin(self._base_url, f"{encoded_index_pattern}/_search"),
             json_body=query,
             headers=self._headers,
             timeout=self._timeout_seconds,

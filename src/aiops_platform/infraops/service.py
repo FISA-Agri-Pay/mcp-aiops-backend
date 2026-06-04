@@ -64,7 +64,8 @@ class InfraOpsService:
         self._elasticsearch_index_allowlist = elasticsearch_index_allowlist
 
     @classmethod
-    def from_settings(cls, app_settings: Settings = settings) -> InfraOpsService:
+    def from_settings(cls, app_settings: Settings | None = None) -> InfraOpsService:
+        app_settings = app_settings or settings
         return cls(
             prometheus_client=PrometheusClient(
                 app_settings.prometheus_base_url,
@@ -295,6 +296,10 @@ def validate_index_pattern(index_pattern: str, *, allowlist: tuple[str, ...]) ->
     index_patterns = tuple(pattern.strip() for pattern in index_pattern.split(","))
     if not all(index_patterns):
         raise InfraOpsValidationError("Elasticsearch index pattern must not be empty.")
+    if any("/" in pattern or "\\" in pattern for pattern in index_patterns):
+        raise InfraOpsValidationError(
+            "Elasticsearch index pattern must not contain path separators."
+        )
 
     if all(
         any(fnmatch(pattern, allowed) for allowed in allowlist)
