@@ -21,7 +21,38 @@ def test_fastmcp_server_exposes_registry_tools() -> None:
             "list_mcp_servers",
             "list_mcp_tools",
             "get_mcp_tool_policy",
+            "preview_mcp_tool_execution",
         }
+
+    asyncio.run(run())
+
+
+def test_fastmcp_preview_tool_records_audit_when_service_is_provided() -> None:
+    class FakeAuditService:
+        def __init__(self) -> None:
+            self.calls = []
+
+        def record_tool_call(self, **kwargs) -> None:
+            self.calls.append(kwargs)
+
+    audit_service = FakeAuditService()
+
+    async def run() -> None:
+        async with Client(create_mcp_server(audit_service=audit_service)) as client:
+            result = await client.call_tool(
+                "preview_mcp_tool_execution",
+                {
+                    "server_name": "infraops-mcp",
+                    "tool_name": "query_prometheus",
+                    "request_payload": {"query": "up"},
+                },
+            )
+
+        assert result.data["will_execute"] is True
+        assert len(audit_service.calls) == 1
+        assert audit_service.calls[0]["context"].server_name == "infraops-mcp"
+        assert audit_service.calls[0]["permission"] == "READ"
+        assert audit_service.calls[0]["call_status"] == "SUCCESS"
 
     asyncio.run(run())
 
@@ -40,7 +71,7 @@ def test_fastmcp_tool_policy_blocks_destructive_tools() -> None:
             "tool_permission": "DESTRUCTIVE",
             "confirmation_policy": "BLOCKED",
             "execution_policy": "blocked",
+            "call_status": "BLOCKED",
         }
 
     asyncio.run(run())
-
