@@ -5,7 +5,7 @@ import json
 from collections.abc import Mapping
 from typing import Any
 from urllib.error import HTTPError, URLError
-from urllib.parse import urlencode, urljoin
+from urllib.parse import urlencode, urljoin, urlparse
 from urllib.request import Request, urlopen
 
 
@@ -25,6 +25,10 @@ class JsonHttpClient:
         request_url = url
         if params:
             request_url = f"{url}?{urlencode(params)}"
+
+        scheme = urlparse(request_url).scheme
+        if scheme not in {"http", "https"}:
+            raise InfraOpsClientError(f"Unsupported URL scheme for {request_url}")
 
         request = Request(request_url, headers=dict(headers or {}), method="GET")
         try:

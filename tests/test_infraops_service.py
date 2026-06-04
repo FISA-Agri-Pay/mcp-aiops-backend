@@ -1,6 +1,11 @@
 import pytest
 
-from aiops_platform.infraops.clients import ElasticsearchClient, PrometheusClient
+from aiops_platform.infraops.clients import (
+    ElasticsearchClient,
+    InfraOpsClientError,
+    JsonHttpClient,
+    PrometheusClient,
+)
 from aiops_platform.infraops.service import (
     InfraOpsService,
     InfraOpsValidationError,
@@ -53,6 +58,11 @@ def test_elasticsearch_client_calls_cluster_health_api() -> None:
     assert http_client.calls[0]["url"] == "http://elasticsearch:9200/_cluster/health"
     assert http_client.calls[0]["headers"]["Authorization"].startswith("Basic ")
     assert http_client.calls[0]["timeout"] == 5
+
+
+def test_json_http_client_rejects_non_http_url_scheme() -> None:
+    with pytest.raises(InfraOpsClientError):
+        JsonHttpClient().get_json("file:///etc/passwd")
 
 
 def test_infraops_service_rejects_non_allowlisted_index_pattern() -> None:
