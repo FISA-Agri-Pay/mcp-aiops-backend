@@ -4,6 +4,7 @@ from typing import Any
 
 from fastmcp import FastMCP
 
+from aiops_platform.infraops.service import InfraOpsService
 from aiops_platform.mcp.audit import McpToolAuditService, elapsed_ms
 from aiops_platform.mcp.policy import resolve_tool_policy
 from aiops_platform.mcp.registry import list_mcp_servers, list_mcp_tools
@@ -52,7 +53,42 @@ def _policy_response(tool: McpToolMetadata) -> dict[str, Any]:
     }
 
 
-def create_mcp_server(audit_service: McpToolAuditService | None = None) -> FastMCP:
+def _record_tool_audit(
+    *,
+    audit_service: McpToolAuditService | None,
+    tool: McpToolMetadata,
+    request_payload: dict[str, Any],
+    response_payload: dict[str, Any] | list[Any] | None,
+    call_status: McpToolCallStatus,
+    started_at: float,
+    last_error: str | None = None,
+) -> None:
+    if audit_service is None:
+        return
+
+    permission = McpToolPermission(tool.tool_permission)
+    try:
+        audit_service.record_tool_call(
+            context=McpToolExecutionContext(
+                server_name=tool.server_name,
+                tool_name=tool.tool_name,
+                request_payload=request_payload,
+            ),
+            permission=permission,
+            response_payload=response_payload,
+            call_status=call_status,
+            latency_ms=elapsed_ms(started_at),
+            last_error=last_error,
+        )
+    except Exception:
+        logger.exception("Failed to record MCP tool audit log.")
+
+
+def create_mcp_server(
+    audit_service: McpToolAuditService | None = None,
+    infraops_service: InfraOpsService | None = None,
+) -> FastMCP:
+    infraops = infraops_service or InfraOpsService.from_settings()
     mcp = FastMCP(
         name="aiops-platform-mcp",
         instructions="Use the registry tools to discover allowed AIOps MCP capabilities.",
@@ -122,21 +158,121 @@ def create_mcp_server(audit_service: McpToolAuditService | None = None) -> FastM
         }
 
         if audit_service is not None:
-            try:
-                audit_service.record_tool_call(
-                    context=McpToolExecutionContext(
-                        server_name=tool.server_name,
-                        tool_name=tool.tool_name,
-                        request_payload=request_payload or {},
-                    ),
-                    permission=permission,
-                    response_payload=response,
-                    call_status=McpToolCallStatus(policy.call_status),
-                    latency_ms=elapsed_ms(started_at),
-                )
-            except Exception:
-                logger.exception("Failed to record MCP tool audit log.")
+            _record_tool_audit(
+                audit_service=audit_service,
+                tool=tool,
+                request_payload=request_payload or {},
+                response_payload=response,
+                call_status=McpToolCallStatus(policy.call_status),
+                started_at=started_at,
+            )
 
         return response
+
+    @mcp.tool(
+        name="query_prometheus",
+        description="Run an instant PromQL query through infraops-mcp.",
+        tags={"infraops", "prometheus", "read"},
+        annotations={"readOnlyHint": True, "openWorldHint": False},
+    )
+    def query_prometheus_tool(query: str, time: str | None = None) -> dict[str, Any]:
+        started_at = perf_counter()
+        tool = _resolve_registered_tool("infraops-mcp", "query_prometheus")
+        request_payload = {"query": query, "time": time}
+
+        try:
+            result = infraops.query_prometheus(query=query, time=time).model_dump(mode="json")
+        except Exception as exc:
+            _record_tool_audit(
+                audit_service=audit_service,
+                tool=tool,
+                request_payload=request_payload,
+                response_payload=None,
+                call_status=McpToolCallStatus.FAILED,
+                started_at=started_at,
+                last_error=str(exc),
+            )
+            raise
+
+        _record_tool_audit(
+            audit_service=audit_service,
+            tool=tool,
+            request_payload=request_payload,
+            response_payload=result,
+            call_status=McpToolCallStatus.SUCCESS,
+            started_at=started_at,
+        )
+        return result
+
+    @mcp.tool(
+        name="get_elasticsearch_cluster_health",
+        description="Read Elasticsearch cluster health through infraops-mcp.",
+        tags={"infraops", "elasticsearch", "read"},
+        annotations={"readOnlyHint": True, "openWorldHint": False},
+    )
+    def get_elasticsearch_cluster_health_tool() -> dict[str, Any]:
+        started_at = perf_counter()
+        tool = _resolve_registered_tool("infraops-mcp", "get_elasticsearch_cluster_health")
+
+        try:
+            result = infraops.get_elasticsearch_cluster_health().model_dump(mode="json")
+        except Exception as exc:
+            _record_tool_audit(
+                audit_service=audit_service,
+                tool=tool,
+                request_payload={},
+                response_payload=None,
+                call_status=McpToolCallStatus.FAILED,
+                started_at=started_at,
+                last_error=str(exc),
+            )
+            raise
+
+        _record_tool_audit(
+            audit_service=audit_service,
+            tool=tool,
+            request_payload={},
+            response_payload=result,
+            call_status=McpToolCallStatus.SUCCESS,
+            started_at=started_at,
+        )
+        return result
+
+    @mcp.tool(
+        name="get_elasticsearch_index_health",
+        description="Read allowlisted Elasticsearch index health through infraops-mcp.",
+        tags={"infraops", "elasticsearch", "read"},
+        annotations={"readOnlyHint": True, "openWorldHint": False},
+    )
+    def get_elasticsearch_index_health_tool(index_pattern: str | None = None) -> dict[str, Any]:
+        started_at = perf_counter()
+        tool = _resolve_registered_tool("infraops-mcp", "get_elasticsearch_index_health")
+        request_payload = {"index_pattern": index_pattern}
+
+        try:
+            result = infraops.get_elasticsearch_index_health(
+                index_pattern=index_pattern,
+            ).model_dump(mode="json")
+        except Exception as exc:
+            _record_tool_audit(
+                audit_service=audit_service,
+                tool=tool,
+                request_payload=request_payload,
+                response_payload=None,
+                call_status=McpToolCallStatus.FAILED,
+                started_at=started_at,
+                last_error=str(exc),
+            )
+            raise
+
+        _record_tool_audit(
+            audit_service=audit_service,
+            tool=tool,
+            request_payload=request_payload,
+            response_payload=result,
+            call_status=McpToolCallStatus.SUCCESS,
+            started_at=started_at,
+        )
+        return result
 
     return mcp

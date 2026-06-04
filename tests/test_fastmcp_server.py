@@ -2,6 +2,12 @@ import asyncio
 
 from fastmcp.client import Client
 
+from aiops_platform.infraops.schemas import (
+    ElasticsearchClusterHealthResult,
+    ElasticsearchIndexHealthItem,
+    ElasticsearchIndexHealthResult,
+    PrometheusQueryResult,
+)
 from aiops_platform.main import create_app
 from aiops_platform.mcp.server import MCP_TRANSPORT_MOUNT_PATH, create_mcp_server
 
@@ -22,6 +28,9 @@ def test_fastmcp_server_exposes_registry_tools() -> None:
             "list_mcp_tools",
             "get_mcp_tool_policy",
             "preview_mcp_tool_execution",
+            "query_prometheus",
+            "get_elasticsearch_cluster_health",
+            "get_elasticsearch_index_health",
         }
 
     asyncio.run(run())
@@ -96,5 +105,87 @@ def test_fastmcp_tool_policy_blocks_destructive_tools() -> None:
             "execution_policy": "blocked",
             "call_status": "BLOCKED",
         }
+
+    asyncio.run(run())
+
+
+def test_fastmcp_query_prometheus_tool_records_success_audit() -> None:
+    class FakeInfraOpsService:
+        def query_prometheus(self, query: str, time: str | None = None):
+            assert query == "up"
+            assert time is None
+            return PrometheusQueryResult(
+                status="success",
+                data={"resultType": "vector", "result": []},
+            )
+
+    class FakeAuditService:
+        def __init__(self) -> None:
+            self.calls = []
+
+        def record_tool_call(self, **kwargs) -> None:
+            self.calls.append(kwargs)
+
+    audit_service = FakeAuditService()
+
+    async def run() -> None:
+        async with Client(
+            create_mcp_server(
+                audit_service=audit_service,
+                infraops_service=FakeInfraOpsService(),
+            )
+        ) as client:
+            result = await client.call_tool("query_prometheus", {"query": "up"})
+
+        assert result.data == {
+            "status": "success",
+            "data": {"resultType": "vector", "result": []},
+        }
+        assert len(audit_service.calls) == 1
+        assert audit_service.calls[0]["context"].tool_name == "query_prometheus"
+        assert audit_service.calls[0]["call_status"] == "SUCCESS"
+
+    asyncio.run(run())
+
+
+def test_fastmcp_elasticsearch_health_tools_return_results() -> None:
+    class FakeInfraOpsService:
+        def get_elasticsearch_cluster_health(self):
+            return ElasticsearchClusterHealthResult(
+                status="green",
+                cluster_name="local",
+                number_of_nodes=1,
+                active_shards=3,
+                relocating_shards=0,
+                initializing_shards=0,
+                unassigned_shards=0,
+                raw={"status": "green", "cluster_name": "local"},
+            )
+
+        def get_elasticsearch_index_health(self, index_pattern: str | None = None):
+            assert index_pattern == "logs-*"
+            return ElasticsearchIndexHealthResult(
+                indices=[
+                    ElasticsearchIndexHealthItem(
+                        index="logs-api-2026.06.04",
+                        health="green",
+                        status="open",
+                        docs_count="10",
+                        store_size="20kb",
+                    )
+                ]
+            )
+
+    async def run() -> None:
+        async with Client(create_mcp_server(infraops_service=FakeInfraOpsService())) as client:
+            cluster = await client.call_tool("get_elasticsearch_cluster_health", {})
+            indices = await client.call_tool(
+                "get_elasticsearch_index_health",
+                {"index_pattern": "logs-*"},
+            )
+
+        assert cluster.data["status"] == "green"
+        assert cluster.data["cluster_name"] == "local"
+        assert indices.data["indices"][0]["index"] == "logs-api-2026.06.04"
 
     asyncio.run(run())
