@@ -35,6 +35,7 @@ def test_mcp_tools_can_be_filtered_by_server_and_permission() -> None:
 
     assert response.status_code == 200
     tools = response.json()
-    assert {tool["tool_name"] for tool in tools} == {"delete_pod", "run_kubectl_exec"}
+    assert len(tools) == 2
+    assert [tool["tool_name"] for tool in tools] == ["delete_pod", "run_kubectl_exec"]
     assert all(tool["server_name"] == "infraops-mcp" for tool in tools)
     assert all(tool["tool_permission"] == "DESTRUCTIVE" for tool in tools)
