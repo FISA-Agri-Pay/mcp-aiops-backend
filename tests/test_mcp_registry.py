@@ -39,3 +39,20 @@ def test_mcp_tools_can_be_filtered_by_server_and_permission() -> None:
     assert [tool["tool_name"] for tool in tools] == ["delete_pod", "run_kubectl_exec"]
     assert all(tool["server_name"] == "infraops-mcp" for tool in tools)
     assert all(tool["tool_permission"] == "DESTRUCTIVE" for tool in tools)
+
+
+def test_mcp_tools_include_elk_registry_entries() -> None:
+    client = TestClient(create_app())
+
+    response = client.get("/mcp/tools", params={"server_name": "infraops-mcp"})
+
+    assert response.status_code == 200
+    tool_names = {tool["tool_name"] for tool in response.json()}
+    assert {
+        "query_elasticsearch",
+        "search_elasticsearch_logs",
+        "get_elasticsearch_cluster_health",
+        "get_elasticsearch_index_health",
+        "get_kibana_saved_objects",
+        "create_elk_snapshot",
+    }.issubset(tool_names)
