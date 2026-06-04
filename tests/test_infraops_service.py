@@ -10,6 +10,7 @@ from aiops_platform.infraops.clients import (
 from aiops_platform.infraops.service import (
     InfraOpsService,
     InfraOpsValidationError,
+    clamp_kibana_per_page,
     parse_allowlist,
     validate_index_pattern,
 )
@@ -172,3 +173,24 @@ def test_infraops_service_maps_elasticsearch_log_search() -> None:
     assert http_client.calls[0]["json_body"]["query"] == {
         "query_string": {"query": "level:error"},
     }
+
+
+def test_infraops_service_clamps_kibana_saved_objects_per_page() -> None:
+    http_client = FakeHttpClient({"saved_objects": []})
+    service = InfraOpsService(
+        prometheus_client=PrometheusClient("http://prometheus:9090"),
+        elasticsearch_client=ElasticsearchClient("http://elasticsearch:9200"),
+        kibana_client=KibanaClient("http://kibana:5601", http_client=http_client),
+        elasticsearch_index_allowlist=parse_allowlist("logs-*,filebeat-*"),
+    )
+
+    service.get_kibana_saved_objects(per_page=1000)
+    service.get_kibana_saved_objects(per_page=0)
+
+    assert http_client.calls[0]["params"]["per_page"] == "100"
+    assert http_client.calls[1]["params"]["per_page"] == "1"
+
+
+def test_kibana_per_page_rejects_non_integer_values() -> None:
+    with pytest.raises(InfraOpsValidationError):
+        clamp_kibana_per_page("20")  # type: ignore[arg-type]

@@ -23,6 +23,9 @@ class InfraOpsValidationError(ValueError):
     pass
 
 
+MAX_KIBANA_SAVED_OBJECTS_PER_PAGE = 100
+
+
 class InfraOpsService:
     def __init__(
         self,
@@ -147,10 +150,11 @@ class InfraOpsService:
         search: str | None = None,
         per_page: int = 20,
     ) -> KibanaSavedObjectsResult:
+        clamped_per_page = clamp_kibana_per_page(per_page)
         response = self._kibana_client.find_saved_objects(
             saved_object_type,
             search=search,
-            per_page=per_page,
+            per_page=clamped_per_page,
         )
         return KibanaSavedObjectsResult(
             saved_object_type=saved_object_type,
@@ -185,3 +189,9 @@ def validate_index_pattern(index_pattern: str, *, allowlist: tuple[str, ...]) ->
     ):
         return
     raise InfraOpsValidationError("Elasticsearch index pattern is not allowlisted.")
+
+
+def clamp_kibana_per_page(per_page: int) -> int:
+    if not isinstance(per_page, int) or isinstance(per_page, bool):
+        raise InfraOpsValidationError("Kibana per_page must be an integer.")
+    return min(max(per_page, 1), MAX_KIBANA_SAVED_OBJECTS_PER_PAGE)
