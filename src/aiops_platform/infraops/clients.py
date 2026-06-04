@@ -22,6 +22,43 @@ class JsonHttpClient:
         headers: Mapping[str, str] | None = None,
         timeout: float = 10.0,
     ) -> Any:
+        return self._request_json(
+            "GET",
+            url,
+            params=params,
+            headers=headers,
+            timeout=timeout,
+        )
+
+    def post_json(
+        self,
+        url: str,
+        *,
+        json_body: Mapping[str, Any],
+        params: Mapping[str, str] | None = None,
+        headers: Mapping[str, str] | None = None,
+        timeout: float = 10.0,
+    ) -> Any:
+        request_headers = {"Content-Type": "application/json", **dict(headers or {})}
+        return self._request_json(
+            "POST",
+            url,
+            params=params,
+            headers=request_headers,
+            timeout=timeout,
+            data=json.dumps(json_body).encode("utf-8"),
+        )
+
+    def _request_json(
+        self,
+        method: str,
+        url: str,
+        *,
+        params: Mapping[str, str] | None = None,
+        headers: Mapping[str, str] | None = None,
+        timeout: float = 10.0,
+        data: bytes | None = None,
+    ) -> Any:
         request_url = url
         if params:
             request_url = f"{url}?{urlencode(params)}"
@@ -30,7 +67,12 @@ class JsonHttpClient:
         if scheme not in {"http", "https"}:
             raise InfraOpsClientError(f"Unsupported URL scheme for {request_url}")
 
-        request = Request(request_url, headers=dict(headers or {}), method="GET")
+        request = Request(
+            request_url,
+            data=data,
+            headers=dict(headers or {}),
+            method=method,
+        )
         try:
             with urlopen(request, timeout=timeout) as response:
                 body = response.read().decode("utf-8")
@@ -106,6 +148,14 @@ class ElasticsearchClient:
             timeout=self._timeout_seconds,
         )
 
+    def search(self, index_pattern: str, query: Mapping[str, Any]) -> dict[str, Any]:
+        return self._http_client.post_json(
+            urljoin(self._base_url, f"{index_pattern}/_search"),
+            json_body=query,
+            headers=self._headers,
+            timeout=self._timeout_seconds,
+        )
+
     @staticmethod
     def _build_headers(username: str, password: str) -> dict[str, str]:
         if not username:
@@ -113,3 +163,36 @@ class ElasticsearchClient:
 
         token = base64.b64encode(f"{username}:{password}".encode()).decode("ascii")
         return {"Authorization": f"Basic {token}"}
+
+
+class KibanaClient:
+    def __init__(
+        self,
+        base_url: str,
+        *,
+        timeout_seconds: float = 10.0,
+        http_client: JsonHttpClient | None = None,
+    ) -> None:
+        self._base_url = base_url.rstrip("/") + "/"
+        self._timeout_seconds = timeout_seconds
+        self._http_client = http_client or JsonHttpClient()
+
+    def find_saved_objects(
+        self,
+        saved_object_type: str,
+        *,
+        search: str | None = None,
+        per_page: int = 20,
+    ) -> dict[str, Any]:
+        params = {
+            "type": saved_object_type,
+            "per_page": str(per_page),
+        }
+        if search:
+            params["search"] = search
+
+        return self._http_client.get_json(
+            urljoin(self._base_url, "api/saved_objects/_find"),
+            params=params,
+            timeout=self._timeout_seconds,
+        )

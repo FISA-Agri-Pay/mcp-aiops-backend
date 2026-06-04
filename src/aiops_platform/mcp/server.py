@@ -205,6 +205,87 @@ def create_mcp_server(
         return result
 
     @mcp.tool(
+        name="query_elasticsearch",
+        description="Run an allowlisted Elasticsearch search query through infraops-mcp.",
+        tags={"infraops", "elasticsearch", "read"},
+        annotations={"readOnlyHint": True, "openWorldHint": False},
+    )
+    def query_elasticsearch_tool(index_pattern: str, query: dict[str, Any]) -> dict[str, Any]:
+        started_at = perf_counter()
+        tool = _resolve_registered_tool("infraops-mcp", "query_elasticsearch")
+        request_payload = {"index_pattern": index_pattern, "query": query}
+
+        try:
+            result = infraops.query_elasticsearch(
+                index_pattern=index_pattern,
+                query=query,
+            ).model_dump(mode="json")
+        except Exception as exc:
+            _record_tool_audit(
+                audit_service=audit_service,
+                tool=tool,
+                request_payload=request_payload,
+                response_payload=None,
+                call_status=McpToolCallStatus.FAILED,
+                started_at=started_at,
+                last_error=str(exc),
+            )
+            raise
+
+        _record_tool_audit(
+            audit_service=audit_service,
+            tool=tool,
+            request_payload=request_payload,
+            response_payload=result,
+            call_status=McpToolCallStatus.SUCCESS,
+            started_at=started_at,
+        )
+        return result
+
+    @mcp.tool(
+        name="search_elasticsearch_logs",
+        description="Search allowlisted Elasticsearch log indices through infraops-mcp.",
+        tags={"infraops", "elasticsearch", "logs", "read"},
+        annotations={"readOnlyHint": True, "openWorldHint": False},
+    )
+    def search_elasticsearch_logs_tool(
+        query: str,
+        index_pattern: str | None = None,
+        size: int = 10,
+    ) -> dict[str, Any]:
+        started_at = perf_counter()
+        tool = _resolve_registered_tool("infraops-mcp", "search_elasticsearch_logs")
+        request_payload = {"query": query, "index_pattern": index_pattern, "size": size}
+
+        try:
+            result = infraops.search_elasticsearch_logs(
+                query=query,
+                index_pattern=index_pattern,
+                size=size,
+            ).model_dump(mode="json")
+        except Exception as exc:
+            _record_tool_audit(
+                audit_service=audit_service,
+                tool=tool,
+                request_payload=request_payload,
+                response_payload=None,
+                call_status=McpToolCallStatus.FAILED,
+                started_at=started_at,
+                last_error=str(exc),
+            )
+            raise
+
+        _record_tool_audit(
+            audit_service=audit_service,
+            tool=tool,
+            request_payload=request_payload,
+            response_payload=result,
+            call_status=McpToolCallStatus.SUCCESS,
+            started_at=started_at,
+        )
+        return result
+
+    @mcp.tool(
         name="get_elasticsearch_cluster_health",
         description="Read Elasticsearch cluster health through infraops-mcp.",
         tags={"infraops", "elasticsearch", "read"},
@@ -251,6 +332,90 @@ def create_mcp_server(
 
         try:
             result = infraops.get_elasticsearch_index_health(
+                index_pattern=index_pattern,
+            ).model_dump(mode="json")
+        except Exception as exc:
+            _record_tool_audit(
+                audit_service=audit_service,
+                tool=tool,
+                request_payload=request_payload,
+                response_payload=None,
+                call_status=McpToolCallStatus.FAILED,
+                started_at=started_at,
+                last_error=str(exc),
+            )
+            raise
+
+        _record_tool_audit(
+            audit_service=audit_service,
+            tool=tool,
+            request_payload=request_payload,
+            response_payload=result,
+            call_status=McpToolCallStatus.SUCCESS,
+            started_at=started_at,
+        )
+        return result
+
+    @mcp.tool(
+        name="get_kibana_saved_objects",
+        description="List Kibana saved objects through infraops-mcp.",
+        tags={"infraops", "kibana", "read"},
+        annotations={"readOnlyHint": True, "openWorldHint": False},
+    )
+    def get_kibana_saved_objects_tool(
+        saved_object_type: str = "dashboard",
+        search: str | None = None,
+        per_page: int = 20,
+    ) -> dict[str, Any]:
+        started_at = perf_counter()
+        tool = _resolve_registered_tool("infraops-mcp", "get_kibana_saved_objects")
+        request_payload = {
+            "saved_object_type": saved_object_type,
+            "search": search,
+            "per_page": per_page,
+        }
+
+        try:
+            result = infraops.get_kibana_saved_objects(
+                saved_object_type=saved_object_type,
+                search=search,
+                per_page=per_page,
+            ).model_dump(mode="json")
+        except Exception as exc:
+            _record_tool_audit(
+                audit_service=audit_service,
+                tool=tool,
+                request_payload=request_payload,
+                response_payload=None,
+                call_status=McpToolCallStatus.FAILED,
+                started_at=started_at,
+                last_error=str(exc),
+            )
+            raise
+
+        _record_tool_audit(
+            audit_service=audit_service,
+            tool=tool,
+            request_payload=request_payload,
+            response_payload=result,
+            call_status=McpToolCallStatus.SUCCESS,
+            started_at=started_at,
+        )
+        return result
+
+    @mcp.tool(
+        name="create_elk_snapshot",
+        description="Create a read-only ELK health snapshot through infraops-mcp.",
+        tags={"infraops", "elasticsearch", "kibana", "snapshot", "read"},
+        annotations={"readOnlyHint": True, "openWorldHint": False},
+    )
+    def create_elk_snapshot_tool(index_pattern: str | None = None) -> dict[str, Any]:
+        started_at = perf_counter()
+        tool = _resolve_registered_tool("infraops-mcp", "create_elk_snapshot")
+        request_payload = {"index_pattern": index_pattern}
+
+        try:
+            result = infraops.create_elk_snapshot(
                 index_pattern=index_pattern,
             ).model_dump(mode="json")
         except Exception as exc:

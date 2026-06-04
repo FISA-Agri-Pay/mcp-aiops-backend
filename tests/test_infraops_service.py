@@ -4,6 +4,7 @@ from aiops_platform.infraops.clients import (
     ElasticsearchClient,
     InfraOpsClientError,
     JsonHttpClient,
+    KibanaClient,
     PrometheusClient,
 )
 from aiops_platform.infraops.service import (
@@ -20,7 +21,11 @@ class FakeHttpClient:
         self.calls = []
 
     def get_json(self, url, **kwargs):
-        self.calls.append({"url": url, **kwargs})
+        self.calls.append({"method": "GET", "url": url, **kwargs})
+        return self.response
+
+    def post_json(self, url, **kwargs):
+        self.calls.append({"method": "POST", "url": url, **kwargs})
         return self.response
 
 
@@ -60,6 +65,41 @@ def test_elasticsearch_client_calls_cluster_health_api() -> None:
     assert http_client.calls[0]["timeout"] == 5
 
 
+def test_elasticsearch_client_calls_search_api() -> None:
+    http_client = FakeHttpClient({"hits": {"hits": []}})
+    client = ElasticsearchClient(
+        "http://elasticsearch:9200",
+        timeout_seconds=5,
+        http_client=http_client,
+    )
+
+    assert client.search("logs-*", {"query": {"match_all": {}}}) == {
+        "hits": {"hits": []},
+    }
+    assert http_client.calls[0]["method"] == "POST"
+    assert http_client.calls[0]["url"] == "http://elasticsearch:9200/logs-*/_search"
+    assert http_client.calls[0]["json_body"] == {"query": {"match_all": {}}}
+
+
+def test_kibana_client_calls_saved_objects_find_api() -> None:
+    http_client = FakeHttpClient({"saved_objects": []})
+    client = KibanaClient(
+        "http://kibana:5601",
+        timeout_seconds=5,
+        http_client=http_client,
+    )
+
+    assert client.find_saved_objects("dashboard", search="api") == {
+        "saved_objects": [],
+    }
+    assert http_client.calls[0]["url"] == "http://kibana:5601/api/saved_objects/_find"
+    assert http_client.calls[0]["params"] == {
+        "type": "dashboard",
+        "per_page": "20",
+        "search": "api",
+    }
+
+
 def test_json_http_client_rejects_non_http_url_scheme() -> None:
     with pytest.raises(InfraOpsClientError):
         JsonHttpClient().get_json("file:///etc/passwd")
@@ -87,6 +127,7 @@ def test_infraops_service_maps_elasticsearch_index_health() -> None:
                 ]
             ),
         ),
+        kibana_client=KibanaClient("http://kibana:5601"),
         elasticsearch_index_allowlist=parse_allowlist("logs-*,filebeat-*"),
     )
 
@@ -102,4 +143,25 @@ def test_infraops_service_maps_elasticsearch_index_health() -> None:
                 "store_size": "20kb",
             }
         ]
+    }
+
+
+def test_infraops_service_maps_elasticsearch_log_search() -> None:
+    http_client = FakeHttpClient({"hits": {"hits": []}})
+    service = InfraOpsService(
+        prometheus_client=PrometheusClient("http://prometheus:9090"),
+        elasticsearch_client=ElasticsearchClient(
+            "http://elasticsearch:9200",
+            http_client=http_client,
+        ),
+        kibana_client=KibanaClient("http://kibana:5601"),
+        elasticsearch_index_allowlist=parse_allowlist("logs-*,filebeat-*"),
+    )
+
+    result = service.search_elasticsearch_logs(query="level:error", index_pattern="logs-*")
+
+    assert result.index_pattern == "logs-*"
+    assert result.response == {"hits": {"hits": []}}
+    assert http_client.calls[0]["json_body"]["query"] == {
+        "query_string": {"query": "level:error"},
     }

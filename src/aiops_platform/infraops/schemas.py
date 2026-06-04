@@ -39,3 +39,33 @@ class ElasticsearchIndexHealthItem(BaseModel):
 class ElasticsearchIndexHealthResult(BaseModel):
     indices: list[ElasticsearchIndexHealthItem]
 
+
+class ElasticsearchQueryRequest(BaseModel):
+    index_pattern: str
+    query: dict[str, Any]
+
+
+class ElasticsearchQueryResult(BaseModel):
+    index_pattern: str
+    response: dict[str, Any]
+
+
+class ElasticsearchLogSearchRequest(BaseModel):
+    index_pattern: str | None = None
+    query: str = Field(min_length=1)
+    size: int = Field(default=10, ge=1, le=100)
+
+
+class ElasticsearchLogSearchResult(BaseModel):
+    index_pattern: str
+    response: dict[str, Any]
+
+
+class KibanaSavedObjectsResult(BaseModel):
+    saved_object_type: str
+    response: dict[str, Any]
+
+
+class ElkSnapshotResult(BaseModel):
+    cluster_health: ElasticsearchClusterHealthResult
+    index_health: ElasticsearchIndexHealthResult
