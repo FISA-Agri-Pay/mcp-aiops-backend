@@ -12,6 +12,7 @@ from sqlalchemy import (
     String,
     Text,
     UniqueConstraint,
+    func,
     text,
 )
 from sqlalchemy.dialects.postgresql import JSONB
@@ -94,6 +95,7 @@ class McpServer(Base):
         DateTime,
         nullable=False,
         server_default=text("CURRENT_TIMESTAMP"),
+        onupdate=func.now(),
     )
 
     tools: Mapped[list[McpTool]] = relationship(back_populates="server")
@@ -144,6 +146,7 @@ class McpTool(Base):
         DateTime,
         nullable=False,
         server_default=text("CURRENT_TIMESTAMP"),
+        onupdate=func.now(),
     )
 
     server: Mapped[McpServer] = relationship(back_populates="tools")
