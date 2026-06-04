@@ -175,6 +175,13 @@ def parse_allowlist(value: str) -> tuple[str, ...]:
 
 
 def validate_index_pattern(index_pattern: str, *, allowlist: tuple[str, ...]) -> None:
-    if any(fnmatch(index_pattern, allowed) for allowed in allowlist):
+    index_patterns = tuple(pattern.strip() for pattern in index_pattern.split(","))
+    if not all(index_patterns):
+        raise InfraOpsValidationError("Elasticsearch index pattern must not be empty.")
+
+    if all(
+        any(fnmatch(pattern, allowed) for allowed in allowlist)
+        for pattern in index_patterns
+    ):
         return
     raise InfraOpsValidationError("Elasticsearch index pattern is not allowlisted.")

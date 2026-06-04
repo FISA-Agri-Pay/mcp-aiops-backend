@@ -110,6 +110,13 @@ def test_infraops_service_rejects_non_allowlisted_index_pattern() -> None:
         validate_index_pattern("private-*", allowlist=("logs-*", "filebeat-*"))
 
 
+def test_infraops_service_validates_comma_separated_index_patterns() -> None:
+    validate_index_pattern("logs-*, filebeat-*", allowlist=("logs-*", "filebeat-*"))
+
+    with pytest.raises(InfraOpsValidationError):
+        validate_index_pattern("logs-*, private-*", allowlist=("logs-*", "filebeat-*"))
+
+
 def test_infraops_service_maps_elasticsearch_index_health() -> None:
     service = InfraOpsService(
         prometheus_client=PrometheusClient("http://prometheus:9090"),
