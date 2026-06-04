@@ -3,13 +3,17 @@ import asyncio
 from fastmcp.client import Client
 
 from aiops_platform.infraops.schemas import (
+    BatchRunStatusResult,
     ElasticsearchClusterHealthResult,
     ElasticsearchIndexHealthItem,
     ElasticsearchIndexHealthResult,
     ElasticsearchLogSearchResult,
     ElasticsearchQueryResult,
     ElkSnapshotResult,
+    KafkaConsumerLagResult,
     KibanaSavedObjectsResult,
+    KubernetesResourceResult,
+    LokiQueryResult,
     PrometheusQueryResult,
 )
 from aiops_platform.main import create_app
@@ -33,6 +37,13 @@ def test_fastmcp_server_exposes_registry_tools() -> None:
             "get_mcp_tool_policy",
             "preview_mcp_tool_execution",
             "query_prometheus",
+            "query_loki",
+            "get_k8s_pods",
+            "get_k8s_events",
+            "get_k8s_deployments",
+            "get_k8s_hpa",
+            "get_kafka_consumer_lag",
+            "get_batch_run_status",
             "query_elasticsearch",
             "search_elasticsearch_logs",
             "get_elasticsearch_cluster_health",
@@ -152,6 +163,105 @@ def test_fastmcp_query_prometheus_tool_records_success_audit() -> None:
         assert len(audit_service.calls) == 1
         assert audit_service.calls[0]["context"].tool_name == "query_prometheus"
         assert audit_service.calls[0]["call_status"] == "SUCCESS"
+
+    asyncio.run(run())
+
+
+def test_fastmcp_loki_tool_returns_results() -> None:
+    class FakeInfraOpsService:
+        def query_loki(
+            self,
+            query: str,
+            start: str | None = None,
+            end: str | None = None,
+            limit: int = 100,
+        ):
+            assert query == '{app="api"}'
+            assert start == "1"
+            assert end == "2"
+            assert limit == 50
+            return LokiQueryResult(status="success", data={"result": []})
+
+    async def run() -> None:
+        async with Client(create_mcp_server(infraops_service=FakeInfraOpsService())) as client:
+            result = await client.call_tool(
+                "query_loki",
+                {"query": '{app="api"}', "start": "1", "end": "2", "limit": 50},
+            )
+
+        assert result.data == {"status": "success", "data": {"result": []}}
+
+    asyncio.run(run())
+
+
+def test_fastmcp_kubernetes_read_tools_return_results() -> None:
+    class FakeInfraOpsService:
+        def get_k8s_pods(self, namespace: str | None = None):
+            assert namespace == "default"
+            return KubernetesResourceResult(
+                namespace="default",
+                items=[{"metadata": {"name": "api-pod"}}],
+                raw={"items": [{"metadata": {"name": "api-pod"}}]},
+            )
+
+        def get_k8s_events(self, namespace: str | None = None):
+            assert namespace == "default"
+            return KubernetesResourceResult(namespace="default", items=[], raw={"items": []})
+
+        def get_k8s_deployments(self, namespace: str | None = None):
+            assert namespace == "default"
+            return KubernetesResourceResult(namespace="default", items=[], raw={"items": []})
+
+        def get_k8s_hpa(self, namespace: str | None = None):
+            assert namespace == "default"
+            return KubernetesResourceResult(namespace="default", items=[], raw={"items": []})
+
+    async def run() -> None:
+        async with Client(create_mcp_server(infraops_service=FakeInfraOpsService())) as client:
+            pods = await client.call_tool("get_k8s_pods", {"namespace": "default"})
+            events = await client.call_tool("get_k8s_events", {"namespace": "default"})
+            deployments = await client.call_tool(
+                "get_k8s_deployments",
+                {"namespace": "default"},
+            )
+            hpa = await client.call_tool("get_k8s_hpa", {"namespace": "default"})
+
+        assert pods.data["items"][0]["metadata"]["name"] == "api-pod"
+        assert events.data["namespace"] == "default"
+        assert deployments.data["namespace"] == "default"
+        assert hpa.data["namespace"] == "default"
+
+    asyncio.run(run())
+
+
+def test_fastmcp_kafka_and_batch_tools_return_results() -> None:
+    class FakeInfraOpsService:
+        def get_kafka_consumer_lag(self, consumer_group: str, topic: str | None = None):
+            assert consumer_group == "payments"
+            assert topic == "orders"
+            return KafkaConsumerLagResult(
+                consumer_group=consumer_group,
+                topic=topic,
+                response={"total_lag": 3},
+            )
+
+        def get_batch_run_status(self, job_name: str | None = None):
+            assert job_name == "daily-close"
+            return BatchRunStatusResult(job_name=job_name, response={"runs": []})
+
+    async def run() -> None:
+        async with Client(create_mcp_server(infraops_service=FakeInfraOpsService())) as client:
+            lag = await client.call_tool(
+                "get_kafka_consumer_lag",
+                {"consumer_group": "payments", "topic": "orders"},
+            )
+            batch = await client.call_tool(
+                "get_batch_run_status",
+                {"job_name": "daily-close"},
+            )
+
+        assert lag.data["response"] == {"total_lag": 3}
+        assert batch.data["response"] == {"runs": []}
 
     asyncio.run(run())
 

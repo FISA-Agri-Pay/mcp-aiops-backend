@@ -1,10 +1,14 @@
 import pytest
 
 from aiops_platform.infraops.clients import (
+    BatchClient,
     ElasticsearchClient,
     InfraOpsClientError,
     JsonHttpClient,
+    KafkaAdminClient,
     KibanaClient,
+    KubernetesClient,
+    LokiClient,
     PrometheusClient,
 )
 from aiops_platform.infraops.service import (
@@ -13,6 +17,7 @@ from aiops_platform.infraops.service import (
     clamp_kibana_per_page,
     parse_allowlist,
     validate_index_pattern,
+    validate_namespace,
 )
 
 
@@ -28,6 +33,22 @@ class FakeHttpClient:
     def post_json(self, url, **kwargs):
         self.calls.append({"method": "POST", "url": url, **kwargs})
         return self.response
+
+
+def make_infraops_service(**overrides) -> InfraOpsService:
+    dependencies = {
+        "prometheus_client": PrometheusClient("http://prometheus:9090"),
+        "loki_client": LokiClient("http://loki:3100"),
+        "kubernetes_client": KubernetesClient("http://kubernetes:8001"),
+        "kafka_admin_client": KafkaAdminClient("http://kafka-admin:8080"),
+        "batch_client": BatchClient("http://batch-api:8081"),
+        "elasticsearch_client": ElasticsearchClient("http://elasticsearch:9200"),
+        "kibana_client": KibanaClient("http://kibana:5601"),
+        "kubernetes_namespace_allowlist": parse_allowlist("default,kube-system"),
+        "elasticsearch_index_allowlist": parse_allowlist("logs-*,filebeat-*"),
+    }
+    dependencies.update(overrides)
+    return InfraOpsService(**dependencies)
 
 
 def test_prometheus_client_calls_instant_query_api() -> None:
@@ -48,6 +69,94 @@ def test_prometheus_client_calls_instant_query_api() -> None:
         "time": "2026-06-04T00:00:00Z",
     }
     assert http_client.calls[0]["timeout"] == 3
+
+
+def test_loki_client_calls_query_range_api() -> None:
+    http_client = FakeHttpClient({"status": "success", "data": {"result": []}})
+    client = LokiClient(
+        "http://loki:3100",
+        timeout_seconds=3,
+        http_client=http_client,
+    )
+
+    assert client.query_range("{app=\"api\"}", start="1", end="2", limit=50) == {
+        "status": "success",
+        "data": {"result": []},
+    }
+    assert http_client.calls[0]["url"] == "http://loki:3100/loki/api/v1/query_range"
+    assert http_client.calls[0]["params"] == {
+        "query": '{app="api"}',
+        "start": "1",
+        "end": "2",
+        "limit": "50",
+    }
+
+
+def test_kubernetes_client_calls_namespaced_read_apis() -> None:
+    http_client = FakeHttpClient({"items": []})
+    client = KubernetesClient(
+        "http://kubernetes:8001",
+        bearer_token="token",
+        timeout_seconds=3,
+        http_client=http_client,
+    )
+
+    assert client.pods("default") == {"items": []}
+    assert client.deployments("default") == {"items": []}
+    assert client.hpa("default") == {"items": []}
+    assert http_client.calls[0]["url"] == (
+        "http://kubernetes:8001/api/v1/namespaces/default/pods"
+    )
+    assert http_client.calls[1]["url"] == (
+        "http://kubernetes:8001/apis/apps/v1/namespaces/default/deployments"
+    )
+    assert http_client.calls[2]["url"] == (
+        "http://kubernetes:8001/apis/autoscaling/v2/namespaces/default/"
+        "horizontalpodautoscalers"
+    )
+    assert http_client.calls[0]["headers"]["Authorization"] == "Bearer token"
+
+
+def test_kafka_admin_client_calls_consumer_lag_api() -> None:
+    http_client = FakeHttpClient({"total_lag": 3})
+    client = KafkaAdminClient(
+        "http://kafka-admin:8080",
+        timeout_seconds=3,
+        http_client=http_client,
+    )
+
+    assert client.consumer_lag("payments", topic="orders") == {"total_lag": 3}
+    assert http_client.calls[0]["url"] == (
+        "http://kafka-admin:8080/kafka/consumer-groups/payments/lag"
+    )
+    assert http_client.calls[0]["params"] == {"topic": "orders"}
+
+
+def test_kafka_admin_client_encodes_consumer_group_path_segment() -> None:
+    http_client = FakeHttpClient({"total_lag": 3})
+    client = KafkaAdminClient(
+        "http://kafka-admin:8080",
+        http_client=http_client,
+    )
+
+    client.consumer_lag("team/a")
+
+    assert http_client.calls[0]["url"] == (
+        "http://kafka-admin:8080/kafka/consumer-groups/team%2Fa/lag"
+    )
+
+
+def test_batch_client_calls_run_status_api() -> None:
+    http_client = FakeHttpClient({"runs": []})
+    client = BatchClient(
+        "http://batch-api:8081",
+        timeout_seconds=3,
+        http_client=http_client,
+    )
+
+    assert client.run_status(job_name="daily-close") == {"runs": []}
+    assert http_client.calls[0]["url"] == "http://batch-api:8081/batch/runs/status"
+    assert http_client.calls[0]["params"] == {"job_name": "daily-close"}
 
 
 def test_elasticsearch_client_calls_cluster_health_api() -> None:
@@ -80,6 +189,20 @@ def test_elasticsearch_client_calls_search_api() -> None:
     assert http_client.calls[0]["method"] == "POST"
     assert http_client.calls[0]["url"] == "http://elasticsearch:9200/logs-*/_search"
     assert http_client.calls[0]["json_body"] == {"query": {"match_all": {}}}
+
+
+def test_elasticsearch_client_encodes_index_pattern_path_segment() -> None:
+    http_client = FakeHttpClient({"hits": {"hits": []}})
+    client = ElasticsearchClient(
+        "http://elasticsearch:9200",
+        http_client=http_client,
+    )
+
+    client.search("logs api,*", {"query": {"match_all": {}}})
+
+    assert http_client.calls[0]["url"] == (
+        "http://elasticsearch:9200/logs%20api,*/_search"
+    )
 
 
 def test_kibana_client_calls_saved_objects_find_api() -> None:
@@ -118,9 +241,79 @@ def test_infraops_service_validates_comma_separated_index_patterns() -> None:
         validate_index_pattern("logs-*, private-*", allowlist=("logs-*", "filebeat-*"))
 
 
+def test_infraops_service_rejects_index_pattern_path_separators() -> None:
+    with pytest.raises(InfraOpsValidationError):
+        validate_index_pattern("logs-*/private", allowlist=("logs-*", "filebeat-*"))
+
+
+def test_infraops_service_rejects_non_allowlisted_namespace() -> None:
+    with pytest.raises(InfraOpsValidationError):
+        validate_namespace("prod", allowlist=("default", "kube-system"))
+
+
+def test_infraops_service_maps_loki_query() -> None:
+    service = make_infraops_service(
+        loki_client=LokiClient(
+            "http://loki:3100",
+            http_client=FakeHttpClient({"status": "success", "data": {"result": []}}),
+        ),
+    )
+
+    result = service.query_loki(query='{app="api"}', limit=50)
+
+    assert result.status == "success"
+    assert result.data == {"result": []}
+
+
+def test_infraops_service_maps_kubernetes_resources() -> None:
+    http_client = FakeHttpClient({"items": [{"metadata": {"name": "api-pod"}}]})
+    service = make_infraops_service(
+        kubernetes_client=KubernetesClient(
+            "http://kubernetes:8001",
+            http_client=http_client,
+        ),
+    )
+
+    result = service.get_k8s_pods(namespace="default")
+
+    assert result.namespace == "default"
+    assert result.items == [{"metadata": {"name": "api-pod"}}]
+    assert http_client.calls[0]["url"] == (
+        "http://kubernetes:8001/api/v1/namespaces/default/pods"
+    )
+
+
+def test_infraops_service_maps_kafka_consumer_lag() -> None:
+    service = make_infraops_service(
+        kafka_admin_client=KafkaAdminClient(
+            "http://kafka-admin:8080",
+            http_client=FakeHttpClient({"total_lag": 3}),
+        ),
+    )
+
+    result = service.get_kafka_consumer_lag("payments", topic="orders")
+
+    assert result.consumer_group == "payments"
+    assert result.topic == "orders"
+    assert result.response == {"total_lag": 3}
+
+
+def test_infraops_service_maps_batch_run_status() -> None:
+    service = make_infraops_service(
+        batch_client=BatchClient(
+            "http://batch-api:8081",
+            http_client=FakeHttpClient({"runs": []}),
+        ),
+    )
+
+    result = service.get_batch_run_status(job_name="daily-close")
+
+    assert result.job_name == "daily-close"
+    assert result.response == {"runs": []}
+
+
 def test_infraops_service_maps_elasticsearch_index_health() -> None:
-    service = InfraOpsService(
-        prometheus_client=PrometheusClient("http://prometheus:9090"),
+    service = make_infraops_service(
         elasticsearch_client=ElasticsearchClient(
             "http://elasticsearch:9200",
             http_client=FakeHttpClient(
@@ -135,8 +328,6 @@ def test_infraops_service_maps_elasticsearch_index_health() -> None:
                 ]
             ),
         ),
-        kibana_client=KibanaClient("http://kibana:5601"),
-        elasticsearch_index_allowlist=parse_allowlist("logs-*,filebeat-*"),
     )
 
     result = service.get_elasticsearch_index_health("logs-*")
@@ -156,14 +347,11 @@ def test_infraops_service_maps_elasticsearch_index_health() -> None:
 
 def test_infraops_service_maps_elasticsearch_log_search() -> None:
     http_client = FakeHttpClient({"hits": {"hits": []}})
-    service = InfraOpsService(
-        prometheus_client=PrometheusClient("http://prometheus:9090"),
+    service = make_infraops_service(
         elasticsearch_client=ElasticsearchClient(
             "http://elasticsearch:9200",
             http_client=http_client,
         ),
-        kibana_client=KibanaClient("http://kibana:5601"),
-        elasticsearch_index_allowlist=parse_allowlist("logs-*,filebeat-*"),
     )
 
     result = service.search_elasticsearch_logs(query="level:error", index_pattern="logs-*")
@@ -177,11 +365,8 @@ def test_infraops_service_maps_elasticsearch_log_search() -> None:
 
 def test_infraops_service_clamps_kibana_saved_objects_per_page() -> None:
     http_client = FakeHttpClient({"saved_objects": []})
-    service = InfraOpsService(
-        prometheus_client=PrometheusClient("http://prometheus:9090"),
-        elasticsearch_client=ElasticsearchClient("http://elasticsearch:9200"),
+    service = make_infraops_service(
         kibana_client=KibanaClient("http://kibana:5601", http_client=http_client),
-        elasticsearch_index_allowlist=parse_allowlist("logs-*,filebeat-*"),
     )
 
     service.get_kibana_saved_objects(per_page=1000)

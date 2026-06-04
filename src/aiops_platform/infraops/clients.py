@@ -5,7 +5,7 @@ import json
 from collections.abc import Mapping
 from typing import Any
 from urllib.error import HTTPError, URLError
-from urllib.parse import urlencode, urljoin, urlparse
+from urllib.parse import quote, urlencode, urljoin, urlparse
 from urllib.request import Request, urlopen
 
 
@@ -115,6 +115,141 @@ class PrometheusClient:
         )
 
 
+class LokiClient:
+    def __init__(
+        self,
+        base_url: str,
+        *,
+        timeout_seconds: float = 10.0,
+        http_client: JsonHttpClient | None = None,
+    ) -> None:
+        self._base_url = base_url.rstrip("/") + "/"
+        self._timeout_seconds = timeout_seconds
+        self._http_client = http_client or JsonHttpClient()
+
+    def query_range(
+        self,
+        query: str,
+        *,
+        start: str | None = None,
+        end: str | None = None,
+        limit: int = 100,
+    ) -> dict[str, Any]:
+        params = {"query": query, "limit": str(limit)}
+        if start is not None:
+            params["start"] = start
+        if end is not None:
+            params["end"] = end
+
+        return self._http_client.get_json(
+            urljoin(self._base_url, "loki/api/v1/query_range"),
+            params=params,
+            timeout=self._timeout_seconds,
+        )
+
+
+class KubernetesClient:
+    def __init__(
+        self,
+        base_url: str,
+        *,
+        bearer_token: str = "",
+        timeout_seconds: float = 10.0,
+        http_client: JsonHttpClient | None = None,
+    ) -> None:
+        self._base_url = base_url.rstrip("/") + "/"
+        self._timeout_seconds = timeout_seconds
+        self._http_client = http_client or JsonHttpClient()
+        self._headers = self._build_headers(bearer_token)
+
+    def pods(self, namespace: str) -> dict[str, Any]:
+        return self._get_namespaced_resource(namespace, "pods")
+
+    def events(self, namespace: str) -> dict[str, Any]:
+        return self._get_namespaced_resource(namespace, "events")
+
+    def deployments(self, namespace: str) -> dict[str, Any]:
+        return self._http_client.get_json(
+            urljoin(self._base_url, f"apis/apps/v1/namespaces/{namespace}/deployments"),
+            headers=self._headers,
+            timeout=self._timeout_seconds,
+        )
+
+    def hpa(self, namespace: str) -> dict[str, Any]:
+        return self._http_client.get_json(
+            urljoin(
+                self._base_url,
+                f"apis/autoscaling/v2/namespaces/{namespace}/horizontalpodautoscalers",
+            ),
+            headers=self._headers,
+            timeout=self._timeout_seconds,
+        )
+
+    def _get_namespaced_resource(self, namespace: str, resource: str) -> dict[str, Any]:
+        return self._http_client.get_json(
+            urljoin(self._base_url, f"api/v1/namespaces/{namespace}/{resource}"),
+            headers=self._headers,
+            timeout=self._timeout_seconds,
+        )
+
+    @staticmethod
+    def _build_headers(bearer_token: str) -> dict[str, str]:
+        if not bearer_token:
+            return {}
+        return {"Authorization": f"Bearer {bearer_token}"}
+
+
+class KafkaAdminClient:
+    def __init__(
+        self,
+        base_url: str,
+        *,
+        timeout_seconds: float = 10.0,
+        http_client: JsonHttpClient | None = None,
+    ) -> None:
+        self._base_url = base_url.rstrip("/") + "/"
+        self._timeout_seconds = timeout_seconds
+        self._http_client = http_client or JsonHttpClient()
+
+    def consumer_lag(
+        self,
+        consumer_group: str,
+        topic: str | None = None,
+    ) -> dict[str, Any]:
+        params = {}
+        if topic is not None:
+            params["topic"] = topic
+        encoded_consumer_group = quote(consumer_group, safe="")
+        return self._http_client.get_json(
+            urljoin(self._base_url, f"kafka/consumer-groups/{encoded_consumer_group}/lag"),
+            params=params,
+            timeout=self._timeout_seconds,
+        )
+
+
+class BatchClient:
+    def __init__(
+        self,
+        base_url: str,
+        *,
+        timeout_seconds: float = 10.0,
+        http_client: JsonHttpClient | None = None,
+    ) -> None:
+        self._base_url = base_url.rstrip("/") + "/"
+        self._timeout_seconds = timeout_seconds
+        self._http_client = http_client or JsonHttpClient()
+
+    def run_status(self, job_name: str | None = None) -> dict[str, Any]:
+        params = {}
+        if job_name is not None:
+            params["job_name"] = job_name
+        return self._http_client.get_json(
+            urljoin(self._base_url, "batch/runs/status"),
+            params=params,
+            timeout=self._timeout_seconds,
+        )
+
+
 class ElasticsearchClient:
     def __init__(
         self,
@@ -138,8 +273,9 @@ class ElasticsearchClient:
         )
 
     def index_health(self, index_pattern: str) -> list[dict[str, Any]]:
+        encoded_index_pattern = quote(index_pattern, safe="*,")
         return self._http_client.get_json(
-            urljoin(self._base_url, f"_cat/indices/{index_pattern}"),
+            urljoin(self._base_url, f"_cat/indices/{encoded_index_pattern}"),
             params={
                 "format": "json",
                 "h": "index,health,status,docs.count,store.size",
@@ -149,8 +285,9 @@ class ElasticsearchClient:
         )
 
     def search(self, index_pattern: str, query: Mapping[str, Any]) -> dict[str, Any]:
+        encoded_index_pattern = quote(index_pattern, safe="*,")
         return self._http_client.post_json(
-            urljoin(self._base_url, f"{index_pattern}/_search"),
+            urljoin(self._base_url, f"{encoded_index_pattern}/_search"),
             json_body=query,
             headers=self._headers,
             timeout=self._timeout_seconds,

@@ -28,6 +28,31 @@ class Settings(BaseSettings):
         alias="PROMETHEUS_TIMEOUT_SECONDS",
     )
     loki_base_url: str = Field(default="http://localhost:3100", alias="LOKI_BASE_URL")
+    loki_timeout_seconds: float = Field(default=10.0, gt=0, alias="LOKI_TIMEOUT_SECONDS")
+    kubernetes_api_base_url: str = Field(
+        default="http://localhost:8001",
+        alias="KUBERNETES_API_BASE_URL",
+    )
+    kubernetes_bearer_token: str = Field(default="", alias="KUBERNETES_BEARER_TOKEN")
+    kubernetes_namespace_allowlist: str = Field(
+        default="default,kube-system",
+        alias="KUBERNETES_NAMESPACE_ALLOWLIST",
+    )
+    kubernetes_timeout_seconds: float = Field(
+        default=10.0,
+        gt=0,
+        alias="KUBERNETES_TIMEOUT_SECONDS",
+    )
+    kafka_admin_base_url: str = Field(
+        default="http://localhost:8080",
+        alias="KAFKA_ADMIN_BASE_URL",
+    )
+    kafka_timeout_seconds: float = Field(default=10.0, gt=0, alias="KAFKA_TIMEOUT_SECONDS")
+    batch_api_base_url: str = Field(
+        default="http://localhost:8081",
+        alias="BATCH_API_BASE_URL",
+    )
+    batch_timeout_seconds: float = Field(default=10.0, gt=0, alias="BATCH_TIMEOUT_SECONDS")
     elasticsearch_base_url: str = Field(
         default="http://localhost:9200",
         alias="ELASTICSEARCH_BASE_URL",
