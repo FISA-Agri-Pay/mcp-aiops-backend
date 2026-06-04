@@ -3,7 +3,7 @@ from typing import Any
 from fastmcp import FastMCP
 
 from aiops_platform.mcp.registry import list_mcp_servers, list_mcp_tools
-from aiops_platform.mcp.schemas import McpToolPermission
+from aiops_platform.mcp.schemas import McpConfirmationPolicy, McpToolPermission
 
 MCP_TRANSPORT_MOUNT_PATH = "/mcp-server"
 MCP_TRANSPORT_PATH = "/mcp"
@@ -18,23 +18,23 @@ def _permission_from_query(permission: str | None) -> McpToolPermission | None:
 def _tool_policy(permission: McpToolPermission) -> dict[str, str]:
     policies = {
         McpToolPermission.READ: {
-            "confirmation_policy": "NONE",
+            "confirmation_policy": McpConfirmationPolicy.NONE.value,
             "execution_policy": "allowed",
         },
         McpToolPermission.WRITE: {
-            "confirmation_policy": "USER_CONFIRMATION",
+            "confirmation_policy": McpConfirmationPolicy.USER_CONFIRMATION.value,
             "execution_policy": "blocked_until_confirmed",
         },
         McpToolPermission.USER_CONFIRMED_WRITE: {
-            "confirmation_policy": "USER_CONFIRMATION",
+            "confirmation_policy": McpConfirmationPolicy.USER_CONFIRMATION.value,
             "execution_policy": "blocked_until_confirmed",
         },
         McpToolPermission.OPS_WRITE: {
-            "confirmation_policy": "ADMIN_APPROVAL",
+            "confirmation_policy": McpConfirmationPolicy.ADMIN_APPROVAL.value,
             "execution_policy": "blocked_until_approved",
         },
         McpToolPermission.DESTRUCTIVE: {
-            "confirmation_policy": "BLOCKED",
+            "confirmation_policy": McpConfirmationPolicy.BLOCKED.value,
             "execution_policy": "blocked",
         },
     }
@@ -105,4 +105,3 @@ def create_mcp_server() -> FastMCP:
         }
 
     return mcp
-
