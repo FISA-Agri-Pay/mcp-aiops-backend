@@ -13,6 +13,35 @@ class PrometheusQueryResult(BaseModel):
     data: dict[str, Any]
 
 
+class LokiQueryRequest(BaseModel):
+    query: str = Field(min_length=1)
+    start: str | None = None
+    end: str | None = None
+    limit: int = Field(default=100, ge=1, le=1000)
+
+
+class LokiQueryResult(BaseModel):
+    status: str
+    data: dict[str, Any]
+
+
+class KubernetesResourceResult(BaseModel):
+    namespace: str
+    items: list[dict[str, Any]]
+    raw: dict[str, Any]
+
+
+class KafkaConsumerLagResult(BaseModel):
+    consumer_group: str
+    topic: str | None = None
+    response: dict[str, Any]
+
+
+class BatchRunStatusResult(BaseModel):
+    job_name: str | None = None
+    response: dict[str, Any]
+
+
 class ElasticsearchClusterHealthResult(BaseModel):
     status: str
     cluster_name: str | None = None
