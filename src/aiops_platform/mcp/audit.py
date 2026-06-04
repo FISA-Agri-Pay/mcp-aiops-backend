@@ -67,6 +67,7 @@ class McpToolAuditService:
             context.tool_name,
         )
         policy = resolve_tool_policy(permission)
+        normalized_response_payload = normalize_response_payload(response_payload)
         record = McpToolAuditCreate(
             mcp_server_public_id=server_public_id,
             mcp_tool_public_id=tool_public_id,
@@ -75,7 +76,7 @@ class McpToolAuditService:
             confirmation_policy=McpConfirmationPolicy(policy.confirmation_policy),
             request_payload=context.request_payload,
             masked_request_payload=mask_payload(context.request_payload),
-            masked_response_payload=mask_payload(response_payload),
+            masked_response_payload=mask_payload(normalized_response_payload),
             call_status=call_status,
             latency_ms=latency_ms,
             last_error=last_error,
@@ -89,3 +90,11 @@ class McpToolAuditService:
 
 def elapsed_ms(started_at: float) -> int:
     return int((perf_counter() - started_at) * 1000)
+
+
+def normalize_response_payload(
+    response_payload: Mapping[str, Any] | list[Any] | None,
+) -> Mapping[str, Any] | None:
+    if isinstance(response_payload, list):
+        return {"items": response_payload}
+    return response_payload
