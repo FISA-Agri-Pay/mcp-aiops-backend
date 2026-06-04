@@ -4,8 +4,17 @@ from fnmatch import fnmatch
 from typing import Any
 
 from aiops_platform.core.config import Settings, settings
-from aiops_platform.infraops.clients import ElasticsearchClient, KibanaClient, PrometheusClient
+from aiops_platform.infraops.clients import (
+    BatchClient,
+    ElasticsearchClient,
+    KafkaAdminClient,
+    KibanaClient,
+    KubernetesClient,
+    LokiClient,
+    PrometheusClient,
+)
 from aiops_platform.infraops.schemas import (
+    BatchRunStatusResult,
     ElasticsearchClusterHealthResult,
     ElasticsearchIndexHealthItem,
     ElasticsearchIndexHealthResult,
@@ -14,7 +23,11 @@ from aiops_platform.infraops.schemas import (
     ElasticsearchQueryRequest,
     ElasticsearchQueryResult,
     ElkSnapshotResult,
+    KafkaConsumerLagResult,
     KibanaSavedObjectsResult,
+    KubernetesResourceResult,
+    LokiQueryRequest,
+    LokiQueryResult,
     PrometheusQueryResult,
 )
 
@@ -31,13 +44,23 @@ class InfraOpsService:
         self,
         *,
         prometheus_client: PrometheusClient,
+        loki_client: LokiClient,
+        kubernetes_client: KubernetesClient,
+        kafka_admin_client: KafkaAdminClient,
+        batch_client: BatchClient,
         elasticsearch_client: ElasticsearchClient,
         kibana_client: KibanaClient,
+        kubernetes_namespace_allowlist: tuple[str, ...],
         elasticsearch_index_allowlist: tuple[str, ...],
     ) -> None:
         self._prometheus_client = prometheus_client
+        self._loki_client = loki_client
+        self._kubernetes_client = kubernetes_client
+        self._kafka_admin_client = kafka_admin_client
+        self._batch_client = batch_client
         self._elasticsearch_client = elasticsearch_client
         self._kibana_client = kibana_client
+        self._kubernetes_namespace_allowlist = kubernetes_namespace_allowlist
         self._elasticsearch_index_allowlist = elasticsearch_index_allowlist
 
     @classmethod
@@ -46,6 +69,23 @@ class InfraOpsService:
             prometheus_client=PrometheusClient(
                 app_settings.prometheus_base_url,
                 timeout_seconds=app_settings.prometheus_timeout_seconds,
+            ),
+            loki_client=LokiClient(
+                app_settings.loki_base_url,
+                timeout_seconds=app_settings.loki_timeout_seconds,
+            ),
+            kubernetes_client=KubernetesClient(
+                app_settings.kubernetes_api_base_url,
+                bearer_token=app_settings.kubernetes_bearer_token,
+                timeout_seconds=app_settings.kubernetes_timeout_seconds,
+            ),
+            kafka_admin_client=KafkaAdminClient(
+                app_settings.kafka_admin_base_url,
+                timeout_seconds=app_settings.kafka_timeout_seconds,
+            ),
+            batch_client=BatchClient(
+                app_settings.batch_api_base_url,
+                timeout_seconds=app_settings.batch_timeout_seconds,
             ),
             elasticsearch_client=ElasticsearchClient(
                 app_settings.elasticsearch_base_url,
@@ -57,6 +97,9 @@ class InfraOpsService:
                 app_settings.kibana_base_url,
                 timeout_seconds=app_settings.elasticsearch_timeout_seconds,
             ),
+            kubernetes_namespace_allowlist=parse_allowlist(
+                app_settings.kubernetes_namespace_allowlist,
+            ),
             elasticsearch_index_allowlist=parse_allowlist(
                 app_settings.elasticsearch_index_allowlist,
             ),
@@ -65,6 +108,53 @@ class InfraOpsService:
     def query_prometheus(self, query: str, time: str | None = None) -> PrometheusQueryResult:
         response = self._prometheus_client.query(query=query, time=time)
         return PrometheusQueryResult(status=response["status"], data=response["data"])
+
+    def query_loki(
+        self,
+        query: str,
+        start: str | None = None,
+        end: str | None = None,
+        limit: int = 100,
+    ) -> LokiQueryResult:
+        request = LokiQueryRequest(query=query, start=start, end=end, limit=limit)
+        response = self._loki_client.query_range(
+            request.query,
+            start=request.start,
+            end=request.end,
+            limit=request.limit,
+        )
+        return LokiQueryResult(status=response["status"], data=response["data"])
+
+    def get_k8s_pods(self, namespace: str | None = None) -> KubernetesResourceResult:
+        return self._get_kubernetes_resource("pods", namespace=namespace)
+
+    def get_k8s_events(self, namespace: str | None = None) -> KubernetesResourceResult:
+        return self._get_kubernetes_resource("events", namespace=namespace)
+
+    def get_k8s_deployments(self, namespace: str | None = None) -> KubernetesResourceResult:
+        return self._get_kubernetes_resource("deployments", namespace=namespace)
+
+    def get_k8s_hpa(self, namespace: str | None = None) -> KubernetesResourceResult:
+        return self._get_kubernetes_resource("hpa", namespace=namespace)
+
+    def get_kafka_consumer_lag(
+        self,
+        consumer_group: str,
+        topic: str | None = None,
+    ) -> KafkaConsumerLagResult:
+        response = self._kafka_admin_client.consumer_lag(
+            consumer_group=consumer_group,
+            topic=topic,
+        )
+        return KafkaConsumerLagResult(
+            consumer_group=consumer_group,
+            topic=topic,
+            response=response,
+        )
+
+    def get_batch_run_status(self, job_name: str | None = None) -> BatchRunStatusResult:
+        response = self._batch_client.run_status(job_name=job_name)
+        return BatchRunStatusResult(job_name=job_name, response=response)
 
     def query_elasticsearch(
         self,
@@ -170,6 +260,29 @@ class InfraOpsService:
             index_health=self.get_elasticsearch_index_health(index_pattern=index_pattern),
         )
 
+    def _get_kubernetes_resource(
+        self,
+        resource: str,
+        *,
+        namespace: str | None,
+    ) -> KubernetesResourceResult:
+        resolved_namespace = namespace or self._kubernetes_namespace_allowlist[0]
+        validate_namespace(
+            resolved_namespace,
+            allowlist=self._kubernetes_namespace_allowlist,
+        )
+        response = {
+            "pods": self._kubernetes_client.pods,
+            "events": self._kubernetes_client.events,
+            "deployments": self._kubernetes_client.deployments,
+            "hpa": self._kubernetes_client.hpa,
+        }[resource](resolved_namespace)
+        return KubernetesResourceResult(
+            namespace=resolved_namespace,
+            items=response.get("items", []),
+            raw=response,
+        )
+
 
 def parse_allowlist(value: str) -> tuple[str, ...]:
     allowlist = tuple(item.strip() for item in value.split(",") if item.strip())
@@ -189,6 +302,12 @@ def validate_index_pattern(index_pattern: str, *, allowlist: tuple[str, ...]) ->
     ):
         return
     raise InfraOpsValidationError("Elasticsearch index pattern is not allowlisted.")
+
+
+def validate_namespace(namespace: str, *, allowlist: tuple[str, ...]) -> None:
+    if namespace in allowlist:
+        return
+    raise InfraOpsValidationError("Kubernetes namespace is not allowlisted.")
 
 
 def clamp_kibana_per_page(per_page: int) -> int:
