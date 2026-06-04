@@ -205,6 +205,267 @@ def create_mcp_server(
         return result
 
     @mcp.tool(
+        name="query_loki",
+        description="Run a Loki query_range log query through infraops-mcp.",
+        tags={"infraops", "loki", "logs", "read"},
+        annotations={"readOnlyHint": True, "openWorldHint": False},
+    )
+    def query_loki_tool(
+        query: str,
+        start: str | None = None,
+        end: str | None = None,
+        limit: int = 100,
+    ) -> dict[str, Any]:
+        started_at = perf_counter()
+        tool = _resolve_registered_tool("infraops-mcp", "query_loki")
+        request_payload = {"query": query, "start": start, "end": end, "limit": limit}
+
+        try:
+            result = infraops.query_loki(
+                query=query,
+                start=start,
+                end=end,
+                limit=limit,
+            ).model_dump(mode="json")
+        except Exception as exc:
+            _record_tool_audit(
+                audit_service=audit_service,
+                tool=tool,
+                request_payload=request_payload,
+                response_payload=None,
+                call_status=McpToolCallStatus.FAILED,
+                started_at=started_at,
+                last_error=str(exc),
+            )
+            raise
+
+        _record_tool_audit(
+            audit_service=audit_service,
+            tool=tool,
+            request_payload=request_payload,
+            response_payload=result,
+            call_status=McpToolCallStatus.SUCCESS,
+            started_at=started_at,
+        )
+        return result
+
+    @mcp.tool(
+        name="get_k8s_pods",
+        description="Read Kubernetes pods from an allowlisted namespace through infraops-mcp.",
+        tags={"infraops", "kubernetes", "read"},
+        annotations={"readOnlyHint": True, "openWorldHint": False},
+    )
+    def get_k8s_pods_tool(namespace: str | None = None) -> dict[str, Any]:
+        started_at = perf_counter()
+        tool = _resolve_registered_tool("infraops-mcp", "get_k8s_pods")
+        request_payload = {"namespace": namespace}
+
+        try:
+            result = infraops.get_k8s_pods(namespace=namespace).model_dump(mode="json")
+        except Exception as exc:
+            _record_tool_audit(
+                audit_service=audit_service,
+                tool=tool,
+                request_payload=request_payload,
+                response_payload=None,
+                call_status=McpToolCallStatus.FAILED,
+                started_at=started_at,
+                last_error=str(exc),
+            )
+            raise
+
+        _record_tool_audit(
+            audit_service=audit_service,
+            tool=tool,
+            request_payload=request_payload,
+            response_payload=result,
+            call_status=McpToolCallStatus.SUCCESS,
+            started_at=started_at,
+        )
+        return result
+
+    @mcp.tool(
+        name="get_k8s_events",
+        description="Read Kubernetes events from an allowlisted namespace through infraops-mcp.",
+        tags={"infraops", "kubernetes", "read"},
+        annotations={"readOnlyHint": True, "openWorldHint": False},
+    )
+    def get_k8s_events_tool(namespace: str | None = None) -> dict[str, Any]:
+        started_at = perf_counter()
+        tool = _resolve_registered_tool("infraops-mcp", "get_k8s_events")
+        request_payload = {"namespace": namespace}
+
+        try:
+            result = infraops.get_k8s_events(namespace=namespace).model_dump(mode="json")
+        except Exception as exc:
+            _record_tool_audit(
+                audit_service=audit_service,
+                tool=tool,
+                request_payload=request_payload,
+                response_payload=None,
+                call_status=McpToolCallStatus.FAILED,
+                started_at=started_at,
+                last_error=str(exc),
+            )
+            raise
+
+        _record_tool_audit(
+            audit_service=audit_service,
+            tool=tool,
+            request_payload=request_payload,
+            response_payload=result,
+            call_status=McpToolCallStatus.SUCCESS,
+            started_at=started_at,
+        )
+        return result
+
+    @mcp.tool(
+        name="get_k8s_deployments",
+        description="Read Kubernetes deployments from an allowlisted namespace.",
+        tags={"infraops", "kubernetes", "read"},
+        annotations={"readOnlyHint": True, "openWorldHint": False},
+    )
+    def get_k8s_deployments_tool(namespace: str | None = None) -> dict[str, Any]:
+        started_at = perf_counter()
+        tool = _resolve_registered_tool("infraops-mcp", "get_k8s_deployments")
+        request_payload = {"namespace": namespace}
+
+        try:
+            result = infraops.get_k8s_deployments(namespace=namespace).model_dump(mode="json")
+        except Exception as exc:
+            _record_tool_audit(
+                audit_service=audit_service,
+                tool=tool,
+                request_payload=request_payload,
+                response_payload=None,
+                call_status=McpToolCallStatus.FAILED,
+                started_at=started_at,
+                last_error=str(exc),
+            )
+            raise
+
+        _record_tool_audit(
+            audit_service=audit_service,
+            tool=tool,
+            request_payload=request_payload,
+            response_payload=result,
+            call_status=McpToolCallStatus.SUCCESS,
+            started_at=started_at,
+        )
+        return result
+
+    @mcp.tool(
+        name="get_k8s_hpa",
+        description="Read Kubernetes HPA objects from an allowlisted namespace.",
+        tags={"infraops", "kubernetes", "read"},
+        annotations={"readOnlyHint": True, "openWorldHint": False},
+    )
+    def get_k8s_hpa_tool(namespace: str | None = None) -> dict[str, Any]:
+        started_at = perf_counter()
+        tool = _resolve_registered_tool("infraops-mcp", "get_k8s_hpa")
+        request_payload = {"namespace": namespace}
+
+        try:
+            result = infraops.get_k8s_hpa(namespace=namespace).model_dump(mode="json")
+        except Exception as exc:
+            _record_tool_audit(
+                audit_service=audit_service,
+                tool=tool,
+                request_payload=request_payload,
+                response_payload=None,
+                call_status=McpToolCallStatus.FAILED,
+                started_at=started_at,
+                last_error=str(exc),
+            )
+            raise
+
+        _record_tool_audit(
+            audit_service=audit_service,
+            tool=tool,
+            request_payload=request_payload,
+            response_payload=result,
+            call_status=McpToolCallStatus.SUCCESS,
+            started_at=started_at,
+        )
+        return result
+
+    @mcp.tool(
+        name="get_kafka_consumer_lag",
+        description="Read Kafka consumer group lag through infraops-mcp.",
+        tags={"infraops", "kafka", "read"},
+        annotations={"readOnlyHint": True, "openWorldHint": False},
+    )
+    def get_kafka_consumer_lag_tool(
+        consumer_group: str,
+        topic: str | None = None,
+    ) -> dict[str, Any]:
+        started_at = perf_counter()
+        tool = _resolve_registered_tool("infraops-mcp", "get_kafka_consumer_lag")
+        request_payload = {"consumer_group": consumer_group, "topic": topic}
+
+        try:
+            result = infraops.get_kafka_consumer_lag(
+                consumer_group=consumer_group,
+                topic=topic,
+            ).model_dump(mode="json")
+        except Exception as exc:
+            _record_tool_audit(
+                audit_service=audit_service,
+                tool=tool,
+                request_payload=request_payload,
+                response_payload=None,
+                call_status=McpToolCallStatus.FAILED,
+                started_at=started_at,
+                last_error=str(exc),
+            )
+            raise
+
+        _record_tool_audit(
+            audit_service=audit_service,
+            tool=tool,
+            request_payload=request_payload,
+            response_payload=result,
+            call_status=McpToolCallStatus.SUCCESS,
+            started_at=started_at,
+        )
+        return result
+
+    @mcp.tool(
+        name="get_batch_run_status",
+        description="Read batch run status through infraops-mcp.",
+        tags={"infraops", "batch", "read"},
+        annotations={"readOnlyHint": True, "openWorldHint": False},
+    )
+    def get_batch_run_status_tool(job_name: str | None = None) -> dict[str, Any]:
+        started_at = perf_counter()
+        tool = _resolve_registered_tool("infraops-mcp", "get_batch_run_status")
+        request_payload = {"job_name": job_name}
+
+        try:
+            result = infraops.get_batch_run_status(job_name=job_name).model_dump(mode="json")
+        except Exception as exc:
+            _record_tool_audit(
+                audit_service=audit_service,
+                tool=tool,
+                request_payload=request_payload,
+                response_payload=None,
+                call_status=McpToolCallStatus.FAILED,
+                started_at=started_at,
+                last_error=str(exc),
+            )
+            raise
+
+        _record_tool_audit(
+            audit_service=audit_service,
+            tool=tool,
+            request_payload=request_payload,
+            response_payload=result,
+            call_status=McpToolCallStatus.SUCCESS,
+            started_at=started_at,
+        )
+        return result
+
+    @mcp.tool(
         name="query_elasticsearch",
         description="Run an allowlisted Elasticsearch search query through infraops-mcp.",
         tags={"infraops", "elasticsearch", "read"},
