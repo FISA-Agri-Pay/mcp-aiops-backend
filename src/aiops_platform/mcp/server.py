@@ -1,3 +1,4 @@
+import logging
 from time import perf_counter
 from typing import Any
 
@@ -16,6 +17,7 @@ from aiops_platform.mcp.schemas import (
 
 MCP_TRANSPORT_MOUNT_PATH = "/mcp-server"
 MCP_TRANSPORT_PATH = "/mcp"
+logger = logging.getLogger(__name__)
 
 
 def _permission_from_query(permission: str | None) -> McpToolPermission | None:
@@ -120,17 +122,20 @@ def create_mcp_server(audit_service: McpToolAuditService | None = None) -> FastM
         }
 
         if audit_service is not None:
-            audit_service.record_tool_call(
-                context=McpToolExecutionContext(
-                    server_name=tool.server_name,
-                    tool_name=tool.tool_name,
-                    request_payload=request_payload or {},
-                ),
-                permission=permission,
-                response_payload=response,
-                call_status=McpToolCallStatus(policy.call_status),
-                latency_ms=elapsed_ms(started_at),
-            )
+            try:
+                audit_service.record_tool_call(
+                    context=McpToolExecutionContext(
+                        server_name=tool.server_name,
+                        tool_name=tool.tool_name,
+                        request_payload=request_payload or {},
+                    ),
+                    permission=permission,
+                    response_payload=response,
+                    call_status=McpToolCallStatus(policy.call_status),
+                    latency_ms=elapsed_ms(started_at),
+                )
+            except Exception:
+                logger.exception("Failed to record MCP tool audit log.")
 
         return response
 

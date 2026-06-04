@@ -57,6 +57,29 @@ def test_fastmcp_preview_tool_records_audit_when_service_is_provided() -> None:
     asyncio.run(run())
 
 
+def test_fastmcp_preview_tool_continues_when_audit_fails() -> None:
+    class FailingAuditService:
+        def record_tool_call(self, **kwargs) -> None:
+            raise RuntimeError("audit unavailable")
+
+    async def run() -> None:
+        async with Client(create_mcp_server(audit_service=FailingAuditService())) as client:
+            result = await client.call_tool(
+                "preview_mcp_tool_execution",
+                {
+                    "server_name": "infraops-mcp",
+                    "tool_name": "query_prometheus",
+                    "request_payload": {"query": "up"},
+                },
+            )
+
+        assert result.data["server_name"] == "infraops-mcp"
+        assert result.data["tool_name"] == "query_prometheus"
+        assert result.data["will_execute"] is True
+
+    asyncio.run(run())
+
+
 def test_fastmcp_tool_policy_blocks_destructive_tools() -> None:
     async def run() -> None:
         async with Client(create_mcp_server()) as client:
