@@ -74,6 +74,7 @@ tmp/
 temp/
 reports/
 test-results/
+.playwright-mcp/
 junit.xml
 
 # Docker and local infrastructure state

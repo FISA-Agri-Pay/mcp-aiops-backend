@@ -1,6 +1,7 @@
 from fastapi import FastAPI
 
 from aiops_platform.api.health import router as health_router
+from aiops_platform.api.mcp import router as mcp_router
 from aiops_platform.core.config import settings
 
 
@@ -12,6 +13,7 @@ def create_app() -> FastAPI:
         redoc_url="/redoc",
     )
     app.include_router(health_router)
+    app.include_router(mcp_router)
     return app
 
 
