@@ -50,6 +50,23 @@ Health Check:
 GET http://localhost:8000/health
 ```
 
+## 클라이언트 연동 기준
+
+클라이언트 앱은 `docs/mcp-client-contract.md`를 기준으로 MCP 서버, Agent API, job/tool-call history 응답을 연동합니다.
+
+주요 확인 endpoint:
+
+```text
+GET /mcp/servers
+GET /mcp/tools
+POST /farmer/chat/ask
+POST /admin/copilot/ask
+GET /jobs
+GET /mcp/tool-calls
+```
+
+FastMCP transport는 `/mcp-server/mcp`에 mount됩니다.
+
 ## 문서 관리 원칙
 
 - 원본 기획서와 실제 DB schema SQL은 내부 공유용으로 관리합니다.
