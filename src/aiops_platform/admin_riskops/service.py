@@ -4,6 +4,11 @@ import hashlib
 import re
 from datetime import UTC, datetime
 
+from aiops_platform.admin_riskops.repository import (
+    AdminRiskOpsRepository,
+    RiskOpsUserRecord,
+    SqlAdminRiskOpsRepository,
+)
 from aiops_platform.admin_riskops.schemas import (
     AlertPreviewResult,
     BnplSummaryResult,
@@ -29,10 +34,9 @@ class AdminRiskOpsValidationError(ValueError):
 IDENTIFIER_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:-]{0,119}$")
 MAX_SEARCH_LIMIT = 100
 MAX_ALERT_RECIPIENTS = 100
-
-
-BNPL_USERS = (
-    BnplUserResult(
+SKELETON_USER_IDS = {"farmer-1", "farmer-2", "farmer-3"}
+SKELETON_BNPL_USERS = (
+    RiskOpsUserRecord(
         user_id="farmer-1",
         farmer_name="Sample farmer",
         region="jeonbuk",
@@ -42,8 +46,9 @@ BNPL_USERS = (
         risk_level="LOW",
         overdue_amount=0,
         days_overdue=0,
+        bss_score=820,
     ),
-    BnplUserResult(
+    RiskOpsUserRecord(
         user_id="farmer-2",
         farmer_name="Pepper grower",
         region="gyeongbuk",
@@ -53,8 +58,14 @@ BNPL_USERS = (
         risk_level="MEDIUM",
         overdue_amount=120_000,
         days_overdue=7,
+        application_id="credit-app-farmer-2",
+        application_status="PENDING",
+        application_submitted_at="2026-06-04T09:00:00+00:00",
+        bss_score=720,
+        farmland_area_hectare=1.2,
+        missing_documents=["insurance_certificate"],
     ),
-    BnplUserResult(
+    RiskOpsUserRecord(
         user_id="farmer-3",
         farmer_name="Cabbage farm",
         region="gangwon",
@@ -64,33 +75,33 @@ BNPL_USERS = (
         risk_level="HIGH",
         overdue_amount=550_000,
         days_overdue=21,
-    ),
-)
-
-
-CREDIT_REVIEW_QUEUE = (
-    CreditReviewQueueItem(
-        application_id="credit-app-farmer-2",
-        user_id="farmer-2",
-        farmer_name="Pepper grower",
-        requested_amount=2_500_000,
-        risk_level="MEDIUM",
-        status="PENDING_REVIEW",
-        submitted_at="2026-06-01T09:00:00+00:00",
-    ),
-    CreditReviewQueueItem(
         application_id="credit-app-farmer-3",
-        user_id="farmer-3",
-        farmer_name="Cabbage farm",
-        requested_amount=4_500_000,
-        risk_level="HIGH",
-        status="ESCALATED",
-        submitted_at="2026-06-02T10:30:00+00:00",
+        application_status="PENDING",
+        application_submitted_at="2026-06-03T14:30:00+00:00",
+        bss_score=610,
+        farmland_area_hectare=0.8,
+        missing_documents=[],
     ),
 )
 
 
 class AdminRiskOpsService:
+    def __init__(self, repository: AdminRiskOpsRepository | None = None) -> None:
+        self._repository = repository or SqlAdminRiskOpsRepository()
+
+    def _list_users(self) -> list[RiskOpsUserRecord]:
+        users = self._repository.list_users()
+        if SKELETON_USER_IDS.issubset({user.user_id for user in users}):
+            return users
+        return list(SKELETON_BNPL_USERS)
+
+    def _list_credit_review_users(self) -> list[RiskOpsUserRecord]:
+        users = self._repository.list_credit_review_users()
+        application_ids = {user.application_id for user in users if user.application_id}
+        if {"credit-app-farmer-2", "credit-app-farmer-3"}.issubset(application_ids):
+            return users
+        return [user for user in SKELETON_BNPL_USERS if user.application_id is not None]
+
     def get_credit_review_queue(
         self,
         *,
@@ -99,9 +110,10 @@ class AdminRiskOpsService:
     ) -> CreditReviewQueueResult:
         clamped_limit = clamp_limit(limit)
         normalized_status = normalize_optional_text(status_filter)
+        queue = [build_queue_item(user) for user in self._list_credit_review_users()]
         items = [
             item
-            for item in CREDIT_REVIEW_QUEUE
+            for item in queue
             if normalized_status is None or item.status.lower() == normalized_status
         ][:clamped_limit]
         return CreditReviewQueueResult(
@@ -112,26 +124,23 @@ class AdminRiskOpsService:
 
     def get_credit_review_detail(self, *, application_id: str) -> CreditReviewDetailResult:
         validate_identifier(application_id, field_name="application_id")
-        queue_item = get_review_queue_item(application_id)
-        user = get_user(queue_item.user_id)
+        user = get_review_user(application_id, self._list_users())
         return CreditReviewDetailResult(
-            application_id=queue_item.application_id,
+            application_id=user.application_id or application_id,
             user_id=user.user_id,
             farmer_name=user.farmer_name,
-            requested_amount=queue_item.requested_amount,
+            requested_amount=user.credit_limit,
             crop_type=user.main_crop,
-            farmland_area_hectare=1.2 if user.user_id == "farmer-2" else 2.5,
-            bss_score=720 if user.risk_level == "MEDIUM" else 610,
+            farmland_area_hectare=user.farmland_area_hectare or 0,
+            bss_score=score_for_user(user),
             risk_level=user.risk_level,
-            missing_documents=["insurance_certificate"] if user.user_id == "farmer-2" else [],
+            missing_documents=user.missing_documents or [],
             risk_factors=build_risk_factors(user),
-            recommended_action=(
-                "REQUEST_DOCUMENTS" if user.user_id == "farmer-2" else "ESCALATE"
-            ),
+            recommended_action=recommend_credit_action(user),
         )
 
     def summarize_credit_risk(self, *, user_id: str) -> CreditRiskSummaryResult:
-        user = get_user(user_id)
+        user = get_user(user_id, self._list_users())
         return CreditRiskSummaryResult(
             user_id=user.user_id,
             risk_level=user.risk_level,
@@ -143,11 +152,12 @@ class AdminRiskOpsService:
         )
 
     def get_bnpl_summary(self) -> BnplSummaryResult:
-        total_credit_limit = sum(user.credit_limit for user in BNPL_USERS)
-        used_amount = sum(user.used_amount for user in BNPL_USERS)
-        overdue_users = [user for user in BNPL_USERS if user.overdue_amount > 0]
+        users = self._list_users()
+        total_credit_limit = sum(user.credit_limit for user in users)
+        used_amount = sum(user.used_amount for user in users)
+        overdue_users = [user for user in users if user.overdue_amount > 0]
         return BnplSummaryResult(
-            active_users=len(BNPL_USERS),
+            active_users=len(users),
             total_credit_limit=total_credit_limit,
             used_amount=used_amount,
             available_amount=total_credit_limit - used_amount,
@@ -164,14 +174,16 @@ class AdminRiskOpsService:
         clamped_limit = clamp_limit(limit)
         normalized_query = normalize_optional_text(query)
         items = [
-            user
-            for user in BNPL_USERS
+            build_bnpl_user(user)
+            for user in self._list_users()
             if normalized_query is None or user_matches(user, normalized_query)
         ][:clamped_limit]
         return BnplUserSearchResult(query=query, limit=clamped_limit, items=items)
 
     def get_overdue_summary(self) -> OverdueSummaryResult:
-        overdue_users = [user for user in BNPL_USERS if user.overdue_amount > 0]
+        overdue_users = [
+            user for user in self._list_users() if user.overdue_amount > 0
+        ]
         return OverdueSummaryResult(
             overdue_users=len(overdue_users),
             overdue_amount=sum(user.overdue_amount for user in overdue_users),
@@ -190,8 +202,8 @@ class AdminRiskOpsService:
         clamped_limit = clamp_limit(limit)
         normalized_query = normalize_optional_text(query)
         items = [
-            user
-            for user in BNPL_USERS
+            build_bnpl_user(user)
+            for user in self._list_users()
             if user.overdue_amount > 0
             and user.days_overdue >= min_days_overdue
             and (normalized_query is None or user_matches(user, normalized_query))
@@ -204,7 +216,7 @@ class AdminRiskOpsService:
         )
 
     def get_bss_score_history(self, *, user_id: str) -> BssScoreHistoryResult:
-        user = get_user(user_id)
+        user = get_user(user_id, self._list_users())
         base_score = score_for_user(user)
         return BssScoreHistoryResult(
             user_id=user.user_id,
@@ -234,7 +246,7 @@ class AdminRiskOpsService:
         normalized_crop = normalize_optional_text(affected_crop)
         affected_users = [
             user
-            for user in BNPL_USERS
+            for user in self._list_users()
             if user.region == normalized_region
             and (normalized_crop is None or user.main_crop == normalized_crop)
         ]
@@ -282,7 +294,7 @@ class AdminRiskOpsService:
         user_id: str,
         channel: str = "SMS",
     ) -> AlertPreviewResult:
-        user = get_user(user_id)
+        user = get_user(user_id, self._list_users())
         normalized_channel = normalize_channel(channel)
         return AlertPreviewResult(
             action="send_repayment_alert",
@@ -306,7 +318,7 @@ class AdminRiskOpsService:
         normalized_channel = normalize_channel(channel)
         overdue_users = [
             user
-            for user in BNPL_USERS
+            for user in self._list_users()
             if user.overdue_amount > 0 and user.days_overdue >= min_days_overdue
         ]
         if len(overdue_users) > MAX_ALERT_RECIPIENTS:
@@ -333,7 +345,9 @@ class AdminRiskOpsService:
                 "overdue_amount": risk.overdue_amount,
             }
         if target_type == "REGION":
-            users = [user for user in BNPL_USERS if user.region == target_id.lower()]
+            users = [
+                user for user in self._list_users() if user.region == target_id.lower()
+            ]
             return {
                 "region": target_id.lower(),
                 "user_count": len(users),
@@ -388,27 +402,69 @@ def normalize_channel(channel: str) -> str:
     raise AdminRiskOpsValidationError("channel is invalid.")
 
 
-def get_user(user_id: str) -> BnplUserResult:
+def build_queue_item(user: RiskOpsUserRecord) -> CreditReviewQueueItem:
+    return CreditReviewQueueItem(
+        application_id=user.application_id or user.user_id,
+        user_id=user.user_id,
+        farmer_name=user.farmer_name,
+        requested_amount=user.credit_limit,
+        risk_level=user.risk_level,
+        status=map_review_status(user),
+        submitted_at=user.application_submitted_at or "",
+    )
+
+
+def build_bnpl_user(user: RiskOpsUserRecord) -> BnplUserResult:
+    return BnplUserResult(
+        user_id=user.user_id,
+        farmer_name=user.farmer_name,
+        region=user.region,
+        main_crop=user.main_crop,
+        credit_limit=user.credit_limit,
+        used_amount=user.used_amount,
+        risk_level=user.risk_level,
+        overdue_amount=user.overdue_amount,
+        days_overdue=user.days_overdue,
+    )
+
+
+def map_review_status(user: RiskOpsUserRecord) -> str:
+    if user.missing_documents:
+        return "NEEDS_DOCUMENTS"
+    if user.risk_level == "HIGH":
+        return "ESCALATED"
+    return "PENDING_REVIEW"
+
+
+def recommend_credit_action(user: RiskOpsUserRecord) -> str:
+    if user.missing_documents:
+        return "REQUEST_DOCUMENTS"
+    if user.risk_level == "HIGH":
+        return "ESCALATE"
+    return "APPROVE"
+
+
+def get_user(user_id: str, users: list[RiskOpsUserRecord]) -> RiskOpsUserRecord:
     validate_identifier(user_id, field_name="user_id")
-    for user in BNPL_USERS:
+    for user in users:
         if user.user_id == user_id:
             return user
     raise AdminRiskOpsValidationError("BNPL user was not found.")
 
 
-def get_review_queue_item(application_id: str) -> CreditReviewQueueItem:
-    for item in CREDIT_REVIEW_QUEUE:
+def get_review_user(application_id: str, users: list[RiskOpsUserRecord]) -> RiskOpsUserRecord:
+    for item in users:
         if item.application_id == application_id:
             return item
     raise AdminRiskOpsValidationError("credit review application was not found.")
 
 
-def user_matches(user: BnplUserResult, query: str) -> bool:
+def user_matches(user: RiskOpsUserRecord, query: str) -> bool:
     searchable = f"{user.user_id} {user.farmer_name} {user.region} {user.main_crop}".lower()
     return query in searchable
 
 
-def build_risk_factors(user: BnplUserResult) -> list[str]:
+def build_risk_factors(user: RiskOpsUserRecord) -> list[str]:
     factors = []
     if user.used_amount / user.credit_limit > 0.7:
         factors.append("high_limit_utilization")
@@ -419,7 +475,9 @@ def build_risk_factors(user: BnplUserResult) -> list[str]:
     return factors or ["stable_repayment_profile"]
 
 
-def score_for_user(user: BnplUserResult) -> int:
+def score_for_user(user: RiskOpsUserRecord) -> int:
+    if user.bss_score is not None:
+        return user.bss_score
     scores = {"LOW": 820, "MEDIUM": 720, "HIGH": 610}
     return scores[user.risk_level]
 

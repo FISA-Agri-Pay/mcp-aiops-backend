@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+from copy import deepcopy
 from typing import Any
 
 from pydantic import BaseModel
@@ -21,7 +22,14 @@ from aiops_platform.mcp.schemas import (
 from aiops_platform.prediction_scaling.service import PredictionScalingService
 
 ToolOperation = Callable[[dict[str, Any]], Any]
-EXECUTION_CONTEXT_KEYS = {"access_token"}
+EXECUTION_CONTEXT_KEYS = {
+    "access_token",
+    "api_key",
+    "authorization",
+    "password",
+    "secret",
+    "token",
+}
 
 
 class McpToolDispatcher:
@@ -47,11 +55,12 @@ class McpToolDispatcher:
         policy = resolve_tool_policy(permission)
         execution_policy = McpExecutionPolicy(policy.execution_policy)
         request_payload = dict(plan.request_payload)
+        sanitized_payload = sanitize_execution_context(request_payload)
 
         if execution_policy != McpExecutionPolicy.ALLOWED:
             return build_tool_result(
                 tool=tool,
-                request_payload=request_payload,
+                request_payload=sanitized_payload,
                 response_payload={
                     "dry_run": True,
                     "reason": plan.reason,
@@ -65,7 +74,7 @@ class McpToolDispatcher:
         if operation is None:
             return build_tool_result(
                 tool=tool,
-                request_payload=request_payload,
+                request_payload=sanitized_payload,
                 response_payload=None,
                 call_status=McpToolCallStatus.FAILED,
                 execution_policy=execution_policy,
@@ -73,11 +82,11 @@ class McpToolDispatcher:
             )
 
         try:
-            response_payload = dump_payload(operation(strip_execution_context(request_payload)))
+            response_payload = dump_payload(operation(sanitized_payload))
         except Exception as exc:
             return build_tool_result(
                 tool=tool,
-                request_payload=request_payload,
+                request_payload=sanitized_payload,
                 response_payload=None,
                 call_status=McpToolCallStatus.FAILED,
                 execution_policy=execution_policy,
@@ -86,7 +95,7 @@ class McpToolDispatcher:
 
         return build_tool_result(
             tool=tool,
-            request_payload=request_payload,
+            request_payload=sanitized_payload,
             response_payload=response_payload,
             call_status=McpToolCallStatus.SUCCESS,
             execution_policy=execution_policy,
@@ -191,8 +200,20 @@ def resolve_registered_tool(*, server_name: str, tool_name: str) -> McpToolMetad
     raise ValueError("MCP tool is not registered.")
 
 
-def strip_execution_context(payload: dict[str, Any]) -> dict[str, Any]:
-    return {key: value for key, value in payload.items() if key not in EXECUTION_CONTEXT_KEYS}
+def sanitize_execution_context(payload: dict[str, Any]) -> dict[str, Any]:
+    return sanitize_payload(deepcopy(payload))
+
+
+def sanitize_payload(value: Any) -> Any:
+    if isinstance(value, dict):
+        return {
+            key: sanitize_payload(item)
+            for key, item in value.items()
+            if key.lower() not in EXECUTION_CONTEXT_KEYS
+        }
+    if isinstance(value, list):
+        return [sanitize_payload(item) for item in value]
+    return value
 
 
 def build_multi_cluster_prometheus_stub(payload: dict[str, Any]) -> dict[str, Any]:

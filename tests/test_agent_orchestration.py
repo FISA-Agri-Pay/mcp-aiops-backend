@@ -37,7 +37,8 @@ def test_dispatcher_executes_read_tool_and_masks_payload() -> None:
     assert result.call_status == McpToolCallStatus.SUCCESS
     assert result.will_execute is True
     assert result.response_payload["available_limit"] == 2550000
-    assert result.masked_request_payload["access_token"] == "***MASKED***"
+    assert "access_token" not in result.request_payload
+    assert "access_token" not in result.masked_request_payload
 
 
 def test_dispatcher_blocks_user_confirmed_write_tool() -> None:
@@ -59,4 +60,3 @@ def test_dispatcher_blocks_user_confirmed_write_tool() -> None:
     assert result.will_execute is False
     assert result.requires_approval is True
     assert result.response_payload["dry_run"] is True
-
