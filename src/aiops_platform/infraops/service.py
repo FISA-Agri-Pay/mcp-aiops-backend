@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from fnmatch import fnmatch
 from typing import Any
 
@@ -23,12 +24,16 @@ from aiops_platform.infraops.schemas import (
     ElasticsearchQueryRequest,
     ElasticsearchQueryResult,
     ElkSnapshotResult,
+    InfraOpsChangePreviewResult,
     KafkaConsumerLagResult,
     KibanaSavedObjectsResult,
+    KubectlExecPreviewRequest,
     KubernetesResourceResult,
     LokiQueryRequest,
     LokiQueryResult,
+    PodOperationPreviewRequest,
     PrometheusQueryResult,
+    ScaleDeploymentPreviewRequest,
 )
 
 
@@ -37,6 +42,8 @@ class InfraOpsValidationError(ValueError):
 
 
 MAX_KIBANA_SAVED_OBJECTS_PER_PAGE = 100
+KUBERNETES_RESOURCE_NAME_PATTERN = re.compile(r"^[a-z0-9]([-a-z0-9.]*[a-z0-9])?$")
+MAX_KUBECTL_COMMAND_PART_LENGTH = 200
 
 
 class InfraOpsService:
@@ -157,6 +164,105 @@ class InfraOpsService:
         response = self._batch_client.run_status(job_name=job_name)
         return BatchRunStatusResult(job_name=job_name, response=response)
 
+    def preview_scale_deployment(
+        self,
+        deployment_name: str,
+        replicas: int,
+        namespace: str | None = None,
+    ) -> InfraOpsChangePreviewResult:
+        request = ScaleDeploymentPreviewRequest(
+            namespace=namespace,
+            deployment_name=deployment_name,
+            replicas=replicas,
+        )
+        resolved_namespace = self._resolve_namespace(request.namespace)
+        validate_kubernetes_resource_name(request.deployment_name, resource="deployment")
+        return InfraOpsChangePreviewResult(
+            action="scale_deployment",
+            namespace=resolved_namespace,
+            target_kind="deployment",
+            target_name=request.deployment_name,
+            request_payload={
+                "namespace": resolved_namespace,
+                "deployment_name": request.deployment_name,
+                "replicas": request.replicas,
+            },
+            safety_notes=[
+                "Execution is blocked until administrator approval is implemented.",
+                "No Kubernetes scale request was sent.",
+            ],
+        )
+
+    def preview_restart_pod(
+        self,
+        pod_name: str,
+        namespace: str | None = None,
+    ) -> InfraOpsChangePreviewResult:
+        request = PodOperationPreviewRequest(namespace=namespace, pod_name=pod_name)
+        resolved_namespace = self._resolve_namespace(request.namespace)
+        validate_kubernetes_resource_name(request.pod_name, resource="pod")
+        return InfraOpsChangePreviewResult(
+            action="restart_pod",
+            namespace=resolved_namespace,
+            target_kind="pod",
+            target_name=request.pod_name,
+            request_payload={"namespace": resolved_namespace, "pod_name": request.pod_name},
+            safety_notes=[
+                "Execution is blocked until administrator approval is implemented.",
+                "No Kubernetes pod mutation request was sent.",
+            ],
+        )
+
+    def preview_delete_pod(
+        self,
+        pod_name: str,
+        namespace: str | None = None,
+    ) -> InfraOpsChangePreviewResult:
+        request = PodOperationPreviewRequest(namespace=namespace, pod_name=pod_name)
+        resolved_namespace = self._resolve_namespace(request.namespace)
+        validate_kubernetes_resource_name(request.pod_name, resource="pod")
+        return InfraOpsChangePreviewResult(
+            action="delete_pod",
+            namespace=resolved_namespace,
+            target_kind="pod",
+            target_name=request.pod_name,
+            request_payload={"namespace": resolved_namespace, "pod_name": request.pod_name},
+            safety_notes=[
+                "Destructive tool execution is blocked by policy.",
+                "No Kubernetes delete request was sent.",
+            ],
+        )
+
+    def preview_kubectl_exec(
+        self,
+        pod_name: str,
+        command: list[str],
+        namespace: str | None = None,
+    ) -> InfraOpsChangePreviewResult:
+        request = KubectlExecPreviewRequest(
+            namespace=namespace,
+            pod_name=pod_name,
+            command=command,
+        )
+        resolved_namespace = self._resolve_namespace(request.namespace)
+        validate_kubernetes_resource_name(request.pod_name, resource="pod")
+        validate_kubectl_exec_command(request.command)
+        return InfraOpsChangePreviewResult(
+            action="run_kubectl_exec",
+            namespace=resolved_namespace,
+            target_kind="pod",
+            target_name=request.pod_name,
+            request_payload={
+                "namespace": resolved_namespace,
+                "pod_name": request.pod_name,
+                "command": request.command,
+            },
+            safety_notes=[
+                "Destructive exec tool execution is blocked by policy.",
+                "No Kubernetes exec request was sent.",
+            ],
+        )
+
     def query_elasticsearch(
         self,
         index_pattern: str,
@@ -267,11 +373,7 @@ class InfraOpsService:
         *,
         namespace: str | None,
     ) -> KubernetesResourceResult:
-        resolved_namespace = namespace or self._kubernetes_namespace_allowlist[0]
-        validate_namespace(
-            resolved_namespace,
-            allowlist=self._kubernetes_namespace_allowlist,
-        )
+        resolved_namespace = self._resolve_namespace(namespace)
         response = {
             "pods": self._kubernetes_client.pods,
             "events": self._kubernetes_client.events,
@@ -283,6 +385,14 @@ class InfraOpsService:
             items=response.get("items", []),
             raw=response,
         )
+
+    def _resolve_namespace(self, namespace: str | None) -> str:
+        resolved_namespace = namespace or self._kubernetes_namespace_allowlist[0]
+        validate_namespace(
+            resolved_namespace,
+            allowlist=self._kubernetes_namespace_allowlist,
+        )
+        return resolved_namespace
 
 
 def parse_allowlist(value: str) -> tuple[str, ...]:
@@ -313,6 +423,19 @@ def validate_namespace(namespace: str, *, allowlist: tuple[str, ...]) -> None:
     if namespace in allowlist:
         return
     raise InfraOpsValidationError("Kubernetes namespace is not allowlisted.")
+
+
+def validate_kubernetes_resource_name(name: str, *, resource: str) -> None:
+    if KUBERNETES_RESOURCE_NAME_PATTERN.fullmatch(name):
+        return
+    raise InfraOpsValidationError(f"Kubernetes {resource} name is invalid.")
+
+
+def validate_kubectl_exec_command(command: list[str]) -> None:
+    if any(not part.strip() for part in command):
+        raise InfraOpsValidationError("kubectl exec command parts must not be empty.")
+    if any(len(part) > MAX_KUBECTL_COMMAND_PART_LENGTH for part in command):
+        raise InfraOpsValidationError("kubectl exec command part is too long.")
 
 
 def clamp_kibana_per_page(per_page: int) -> int:
