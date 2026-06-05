@@ -1,9 +1,11 @@
 import logging
+from collections.abc import Callable
 from time import perf_counter
 from typing import Any
 
 from fastmcp import FastMCP
 
+from aiops_platform.farmer_bnpl.service import FarmerBnplService
 from aiops_platform.infraops.service import InfraOpsService
 from aiops_platform.mcp.audit import McpToolAuditService, elapsed_ms
 from aiops_platform.mcp.policy import resolve_tool_policy
@@ -105,8 +107,10 @@ def _record_tool_audit(
 
 def create_mcp_server(
     audit_service: McpToolAuditService | None = None,
+    farmer_bnpl_service: FarmerBnplService | None = None,
     infraops_service: InfraOpsService | None = None,
 ) -> FastMCP:
+    farmer_bnpl = farmer_bnpl_service or FarmerBnplService()
     infraops = infraops_service or InfraOpsService.from_settings()
     mcp = FastMCP(
         name="aiops-platform-mcp",
@@ -187,6 +191,432 @@ def create_mcp_server(
             )
 
         return response
+
+    def call_farmer_bnpl_tool(
+        *,
+        tool_name: str,
+        request_payload: dict[str, Any],
+        operation: Callable[[], Any],
+    ) -> dict[str, Any]:
+        started_at = perf_counter()
+        tool = _resolve_registered_tool("farmer-bnpl-mcp", tool_name)
+        permission = McpToolPermission(tool.tool_permission)
+        policy = resolve_tool_policy(permission)
+
+        try:
+            result_payload = operation().model_dump(mode="json")
+            if McpExecutionPolicy(policy.execution_policy) == McpExecutionPolicy.ALLOWED:
+                response = result_payload
+            else:
+                response = _policy_preview_response(tool, result_payload)
+        except Exception as exc:
+            _record_tool_audit(
+                audit_service=audit_service,
+                tool=tool,
+                request_payload=request_payload,
+                response_payload=None,
+                call_status=McpToolCallStatus.FAILED,
+                started_at=started_at,
+                last_error=str(exc),
+            )
+            raise
+
+        _record_tool_audit(
+            audit_service=audit_service,
+            tool=tool,
+            request_payload=request_payload,
+            response_payload=response,
+            call_status=McpToolCallStatus(policy.call_status),
+            started_at=started_at,
+        )
+        return response
+
+    @mcp.tool(
+        name="start_credit_application",
+        description="Create a dry-run BNPL credit application draft for a farmer.",
+        tags={"farmer-bnpl", "credit", "write", "preview"},
+        annotations={"readOnlyHint": True, "openWorldHint": False},
+    )
+    def start_credit_application_tool(
+        user_id: str,
+        requested_amount: int,
+        crop_type: str | None = None,
+        season: str | None = None,
+    ) -> dict[str, Any]:
+        request_payload = {
+            "user_id": user_id,
+            "requested_amount": requested_amount,
+            "crop_type": crop_type,
+            "season": season,
+        }
+        return call_farmer_bnpl_tool(
+            tool_name="start_credit_application",
+            request_payload=request_payload,
+            operation=lambda: farmer_bnpl.start_credit_application(**request_payload),
+        )
+
+    @mcp.tool(
+        name="save_farmland_info",
+        description="Prepare a farmer farmland information draft.",
+        tags={"farmer-bnpl", "profile", "write", "preview"},
+        annotations={"readOnlyHint": True, "openWorldHint": False},
+    )
+    def save_farmland_info_tool(
+        user_id: str,
+        location: str,
+        area_hectare: float,
+        ownership_type: str,
+    ) -> dict[str, Any]:
+        request_payload = {
+            "user_id": user_id,
+            "location": location,
+            "area_hectare": area_hectare,
+            "ownership_type": ownership_type,
+        }
+        return call_farmer_bnpl_tool(
+            tool_name="save_farmland_info",
+            request_payload=request_payload,
+            operation=lambda: farmer_bnpl.save_farmland_info(**request_payload),
+        )
+
+    @mcp.tool(
+        name="save_crop_info",
+        description="Prepare a farmer crop information draft.",
+        tags={"farmer-bnpl", "profile", "write", "preview"},
+        annotations={"readOnlyHint": True, "openWorldHint": False},
+    )
+    def save_crop_info_tool(
+        user_id: str,
+        crop_type: str,
+        expected_yield_kg: int | None = None,
+        expected_revenue: int | None = None,
+    ) -> dict[str, Any]:
+        request_payload = {
+            "user_id": user_id,
+            "crop_type": crop_type,
+            "expected_yield_kg": expected_yield_kg,
+            "expected_revenue": expected_revenue,
+        }
+        return call_farmer_bnpl_tool(
+            tool_name="save_crop_info",
+            request_payload=request_payload,
+            operation=lambda: farmer_bnpl.save_crop_info(**request_payload),
+        )
+
+    @mcp.tool(
+        name="save_insurance_info",
+        description="Prepare a farmer crop insurance information draft.",
+        tags={"farmer-bnpl", "profile", "insurance", "write", "preview"},
+        annotations={"readOnlyHint": True, "openWorldHint": False},
+    )
+    def save_insurance_info_tool(
+        user_id: str,
+        provider: str,
+        policy_number: str | None = None,
+        coverage_amount: int | None = None,
+    ) -> dict[str, Any]:
+        request_payload = {
+            "user_id": user_id,
+            "provider": provider,
+            "policy_number": policy_number,
+            "coverage_amount": coverage_amount,
+        }
+        return call_farmer_bnpl_tool(
+            tool_name="save_insurance_info",
+            request_payload=request_payload,
+            operation=lambda: farmer_bnpl.save_insurance_info(**request_payload),
+        )
+
+    @mcp.tool(
+        name="get_required_documents",
+        description="List required documents for a farmer BNPL credit application.",
+        tags={"farmer-bnpl", "credit", "documents", "read"},
+        annotations={"readOnlyHint": True, "openWorldHint": False},
+    )
+    def get_required_documents_tool(
+        user_id: str,
+        application_type: str = "credit_application",
+    ) -> dict[str, Any]:
+        request_payload = {"user_id": user_id, "application_type": application_type}
+        return call_farmer_bnpl_tool(
+            tool_name="get_required_documents",
+            request_payload=request_payload,
+            operation=lambda: farmer_bnpl.get_required_documents(**request_payload),
+        )
+
+    @mcp.tool(
+        name="submit_credit_documents",
+        description="Prepare a credit document submission draft.",
+        tags={"farmer-bnpl", "credit", "documents", "write", "preview"},
+        annotations={"readOnlyHint": True, "openWorldHint": False},
+    )
+    def submit_credit_documents_tool(
+        user_id: str,
+        application_id: str,
+        document_types: list[str],
+    ) -> dict[str, Any]:
+        request_payload = {
+            "user_id": user_id,
+            "application_id": application_id,
+            "document_types": document_types,
+        }
+        return call_farmer_bnpl_tool(
+            tool_name="submit_credit_documents",
+            request_payload=request_payload,
+            operation=lambda: farmer_bnpl.submit_credit_documents(**request_payload),
+        )
+
+    @mcp.tool(
+        name="get_credit_limit_status",
+        description="Read the skeleton credit limit review status.",
+        tags={"farmer-bnpl", "credit", "read"},
+        annotations={"readOnlyHint": True, "openWorldHint": False},
+    )
+    def get_credit_limit_status_tool(
+        user_id: str,
+        application_id: str | None = None,
+    ) -> dict[str, Any]:
+        request_payload = {"user_id": user_id, "application_id": application_id}
+        return call_farmer_bnpl_tool(
+            tool_name="get_credit_limit_status",
+            request_payload=request_payload,
+            operation=lambda: farmer_bnpl.get_credit_limit_status(**request_payload),
+        )
+
+    @mcp.tool(
+        name="get_user_credit_limit",
+        description="Read the user's skeleton BNPL credit limit.",
+        tags={"farmer-bnpl", "credit", "read"},
+        annotations={"readOnlyHint": True, "openWorldHint": False},
+    )
+    def get_user_credit_limit_tool(user_id: str) -> dict[str, Any]:
+        request_payload = {"user_id": user_id}
+        return call_farmer_bnpl_tool(
+            tool_name="get_user_credit_limit",
+            request_payload=request_payload,
+            operation=lambda: farmer_bnpl.get_user_credit_limit(**request_payload),
+        )
+
+    @mcp.tool(
+        name="get_farmer_profile",
+        description="Read the farmer profile summary used by the BNPL chatbot.",
+        tags={"farmer-bnpl", "profile", "read"},
+        annotations={"readOnlyHint": True, "openWorldHint": False},
+    )
+    def get_farmer_profile_tool(user_id: str) -> dict[str, Any]:
+        request_payload = {"user_id": user_id}
+        return call_farmer_bnpl_tool(
+            tool_name="get_farmer_profile",
+            request_payload=request_payload,
+            operation=lambda: farmer_bnpl.get_farmer_profile(**request_payload),
+        )
+
+    @mcp.tool(
+        name="get_repayment_schedule",
+        description="Read the user's skeleton BNPL repayment schedule.",
+        tags={"farmer-bnpl", "repayment", "read"},
+        annotations={"readOnlyHint": True, "openWorldHint": False},
+    )
+    def get_repayment_schedule_tool(user_id: str) -> dict[str, Any]:
+        request_payload = {"user_id": user_id}
+        return call_farmer_bnpl_tool(
+            tool_name="get_repayment_schedule",
+            request_payload=request_payload,
+            operation=lambda: farmer_bnpl.get_repayment_schedule(**request_payload),
+        )
+
+    @mcp.tool(
+        name="get_interest_due",
+        description="Read the next BNPL interest due amount.",
+        tags={"farmer-bnpl", "repayment", "read"},
+        annotations={"readOnlyHint": True, "openWorldHint": False},
+    )
+    def get_interest_due_tool(user_id: str) -> dict[str, Any]:
+        request_payload = {"user_id": user_id}
+        return call_farmer_bnpl_tool(
+            tool_name="get_interest_due",
+            request_payload=request_payload,
+            operation=lambda: farmer_bnpl.get_interest_due(**request_payload),
+        )
+
+    @mcp.tool(
+        name="get_overdue_status",
+        description="Read the user's skeleton overdue status.",
+        tags={"farmer-bnpl", "repayment", "read"},
+        annotations={"readOnlyHint": True, "openWorldHint": False},
+    )
+    def get_overdue_status_tool(user_id: str) -> dict[str, Any]:
+        request_payload = {"user_id": user_id}
+        return call_farmer_bnpl_tool(
+            tool_name="get_overdue_status",
+            request_payload=request_payload,
+            operation=lambda: farmer_bnpl.get_overdue_status(**request_payload),
+        )
+
+    @mcp.tool(
+        name="search_products",
+        description="Search the skeleton agricultural input catalog.",
+        tags={"farmer-bnpl", "products", "read"},
+        annotations={"readOnlyHint": True, "openWorldHint": False},
+    )
+    def search_products_tool(
+        query: str | None = None,
+        category: str | None = None,
+        limit: int = 20,
+    ) -> dict[str, Any]:
+        request_payload = {"query": query, "category": category, "limit": limit}
+        return call_farmer_bnpl_tool(
+            tool_name="search_products",
+            request_payload=request_payload,
+            operation=lambda: farmer_bnpl.search_products(**request_payload),
+        )
+
+    @mcp.tool(
+        name="search_lowest_price_fertilizer",
+        description="Search the lowest-priced fertilizer items in the skeleton catalog.",
+        tags={"farmer-bnpl", "products", "fertilizer", "read"},
+        annotations={"readOnlyHint": True, "openWorldHint": False},
+    )
+    def search_lowest_price_fertilizer_tool(limit: int = 5) -> dict[str, Any]:
+        request_payload = {"limit": limit}
+        return call_farmer_bnpl_tool(
+            tool_name="search_lowest_price_fertilizer",
+            request_payload=request_payload,
+            operation=lambda: farmer_bnpl.search_lowest_price_fertilizer(**request_payload),
+        )
+
+    @mcp.tool(
+        name="get_product_detail",
+        description="Read a skeleton agricultural input product detail.",
+        tags={"farmer-bnpl", "products", "read"},
+        annotations={"readOnlyHint": True, "openWorldHint": False},
+    )
+    def get_product_detail_tool(product_id: str) -> dict[str, Any]:
+        request_payload = {"product_id": product_id}
+        return call_farmer_bnpl_tool(
+            tool_name="get_product_detail",
+            request_payload=request_payload,
+            operation=lambda: farmer_bnpl.get_product_detail(**request_payload),
+        )
+
+    @mcp.tool(
+        name="calculate_cart_total",
+        description="Calculate a skeleton cart total for BNPL eligibility checks.",
+        tags={"farmer-bnpl", "cart", "read"},
+        annotations={"readOnlyHint": True, "openWorldHint": False},
+    )
+    def calculate_cart_total_tool(items: list[dict[str, Any]]) -> dict[str, Any]:
+        request_payload = {"items": items}
+        return call_farmer_bnpl_tool(
+            tool_name="calculate_cart_total",
+            request_payload=request_payload,
+            operation=lambda: farmer_bnpl.calculate_cart_total(**request_payload),
+        )
+
+    @mcp.tool(
+        name="prepare_bnpl_checkout_payload",
+        description="Prepare a dry-run BNPL checkout payload from cart items.",
+        tags={"farmer-bnpl", "checkout", "read"},
+        annotations={"readOnlyHint": True, "openWorldHint": False},
+    )
+    def prepare_bnpl_checkout_payload_tool(
+        user_id: str,
+        items: list[dict[str, Any]],
+        credit_limit_id: str | None = None,
+    ) -> dict[str, Any]:
+        request_payload = {
+            "user_id": user_id,
+            "items": items,
+            "credit_limit_id": credit_limit_id,
+        }
+        return call_farmer_bnpl_tool(
+            tool_name="prepare_bnpl_checkout_payload",
+            request_payload=request_payload,
+            operation=lambda: farmer_bnpl.prepare_bnpl_checkout_payload(**request_payload),
+        )
+
+    @mcp.tool(
+        name="create_checkout_intent",
+        description="Create a dry-run checkout intent that still requires user confirmation.",
+        tags={"farmer-bnpl", "checkout", "write", "preview"},
+        annotations={"readOnlyHint": True, "openWorldHint": False},
+    )
+    def create_checkout_intent_tool(
+        user_id: str,
+        items: list[dict[str, Any]],
+    ) -> dict[str, Any]:
+        request_payload = {"user_id": user_id, "items": items}
+        return call_farmer_bnpl_tool(
+            tool_name="create_checkout_intent",
+            request_payload=request_payload,
+            operation=lambda: farmer_bnpl.create_checkout_intent(**request_payload),
+        )
+
+    @mcp.tool(
+        name="add_cart_item",
+        description="Prepare a cart item add draft.",
+        tags={"farmer-bnpl", "cart", "write", "preview"},
+        annotations={"readOnlyHint": True, "openWorldHint": False},
+    )
+    def add_cart_item_tool(
+        user_id: str,
+        product_id: str,
+        quantity: int,
+    ) -> dict[str, Any]:
+        request_payload = {
+            "user_id": user_id,
+            "product_id": product_id,
+            "quantity": quantity,
+        }
+        return call_farmer_bnpl_tool(
+            tool_name="add_cart_item",
+            request_payload=request_payload,
+            operation=lambda: farmer_bnpl.add_cart_item(**request_payload),
+        )
+
+    @mcp.tool(
+        name="update_cart_item",
+        description="Prepare a cart item quantity update draft.",
+        tags={"farmer-bnpl", "cart", "write", "preview"},
+        annotations={"readOnlyHint": True, "openWorldHint": False},
+    )
+    def update_cart_item_tool(
+        user_id: str,
+        product_id: str,
+        quantity: int,
+    ) -> dict[str, Any]:
+        request_payload = {
+            "user_id": user_id,
+            "product_id": product_id,
+            "quantity": quantity,
+        }
+        return call_farmer_bnpl_tool(
+            tool_name="update_cart_item",
+            request_payload=request_payload,
+            operation=lambda: farmer_bnpl.update_cart_item(**request_payload),
+        )
+
+    @mcp.tool(
+        name="create_bnpl_checkout",
+        description="Prepare the final BNPL checkout action that requires user confirmation.",
+        tags={"farmer-bnpl", "checkout", "user-confirmed-write", "preview"},
+        annotations={"readOnlyHint": True, "openWorldHint": False},
+    )
+    def create_bnpl_checkout_tool(
+        user_id: str,
+        checkout_intent_id: str,
+        confirmation_token: str | None = None,
+    ) -> dict[str, Any]:
+        request_payload = {
+            "user_id": user_id,
+            "checkout_intent_id": checkout_intent_id,
+            "confirmation_token": confirmation_token,
+        }
+        return call_farmer_bnpl_tool(
+            tool_name="create_bnpl_checkout",
+            request_payload=request_payload,
+            operation=lambda: farmer_bnpl.create_bnpl_checkout(**request_payload),
+        )
 
     @mcp.tool(
         name="query_prometheus",

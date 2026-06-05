@@ -41,6 +41,27 @@ def test_fastmcp_server_exposes_registry_tools() -> None:
             "list_mcp_tools",
             "get_mcp_tool_policy",
             "preview_mcp_tool_execution",
+            "start_credit_application",
+            "save_farmland_info",
+            "save_crop_info",
+            "save_insurance_info",
+            "get_required_documents",
+            "submit_credit_documents",
+            "get_credit_limit_status",
+            "get_user_credit_limit",
+            "get_farmer_profile",
+            "get_repayment_schedule",
+            "get_interest_due",
+            "get_overdue_status",
+            "search_products",
+            "search_lowest_price_fertilizer",
+            "get_product_detail",
+            "calculate_cart_total",
+            "prepare_bnpl_checkout_payload",
+            "create_checkout_intent",
+            "add_cart_item",
+            "update_cart_item",
+            "create_bnpl_checkout",
             "query_prometheus",
             "query_loki",
             "get_k8s_pods",
@@ -64,6 +85,70 @@ def test_fastmcp_server_exposes_registry_tools() -> None:
             "search_incidents",
             "search_rca_history",
         }
+
+    asyncio.run(run())
+
+
+def test_fastmcp_farmer_bnpl_read_tools_return_results() -> None:
+    async def run() -> None:
+        async with Client(create_mcp_server()) as client:
+            products = await client.call_tool(
+                "search_products",
+                {"query": "fertilizer", "limit": 10},
+            )
+            total = await client.call_tool(
+                "calculate_cart_total",
+                {
+                    "items": [
+                        {"product_id": "fertilizer-organic-20kg", "quantity": 2},
+                        {"product_id": "seed-rice-10kg", "quantity": 1},
+                    ]
+                },
+            )
+            payload = await client.call_tool(
+                "prepare_bnpl_checkout_payload",
+                {
+                    "user_id": "farmer-1",
+                    "items": [{"product_id": "fertilizer-organic-20kg", "quantity": 2}],
+                },
+            )
+
+        assert products.data["items"][0]["category"] == "fertilizer"
+        assert total.data["total_amount"] == 84_000
+        assert payload.data["eligible"] is True
+        assert payload.data["payload"]["total_amount"] == 48_000
+
+    asyncio.run(run())
+
+
+def test_fastmcp_farmer_bnpl_write_tools_return_user_confirmation_preview() -> None:
+    async def run() -> None:
+        async with Client(create_mcp_server()) as client:
+            application = await client.call_tool(
+                "start_credit_application",
+                {
+                    "user_id": "farmer-1",
+                    "requested_amount": 1_500_000,
+                    "crop_type": "rice",
+                },
+            )
+            checkout = await client.call_tool(
+                "create_bnpl_checkout",
+                {
+                    "user_id": "farmer-1",
+                    "checkout_intent_id": "checkout-intent-farmer-1",
+                    "confirmation_token": "confirm-1",
+                },
+            )
+
+        assert application.data["tool_permission"] == "WRITE"
+        assert application.data["call_status"] == "APPROVAL_REQUIRED"
+        assert application.data["confirmation_policy"] == "USER_CONFIRMATION"
+        assert application.data["will_execute"] is False
+        assert application.data["preview"]["application_id"] == "credit-app-farmer-1"
+        assert checkout.data["tool_permission"] == "USER_CONFIRMED_WRITE"
+        assert checkout.data["call_status"] == "APPROVAL_REQUIRED"
+        assert checkout.data["preview"]["payment_method"] == "BNPL"
 
     asyncio.run(run())
 
