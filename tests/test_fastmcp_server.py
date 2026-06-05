@@ -10,6 +10,7 @@ from aiops_platform.infraops.schemas import (
     ElasticsearchLogSearchResult,
     ElasticsearchQueryResult,
     ElkSnapshotResult,
+    InfraOpsChangePreviewResult,
     KafkaConsumerLagResult,
     KibanaSavedObjectsResult,
     KubernetesResourceResult,
@@ -44,6 +45,10 @@ def test_fastmcp_server_exposes_registry_tools() -> None:
             "get_k8s_hpa",
             "get_kafka_consumer_lag",
             "get_batch_run_status",
+            "scale_deployment",
+            "restart_pod",
+            "delete_pod",
+            "run_kubectl_exec",
             "query_elasticsearch",
             "search_elasticsearch_logs",
             "get_elasticsearch_cluster_health",
@@ -262,6 +267,147 @@ def test_fastmcp_kafka_and_batch_tools_return_results() -> None:
 
         assert lag.data["response"] == {"total_lag": 3}
         assert batch.data["response"] == {"runs": []}
+
+    asyncio.run(run())
+
+
+def test_fastmcp_ops_write_tools_return_approval_required_preview() -> None:
+    class FakeInfraOpsService:
+        def preview_scale_deployment(
+            self,
+            deployment_name: str,
+            replicas: int,
+            namespace: str | None = None,
+        ):
+            assert deployment_name == "api"
+            assert replicas == 3
+            assert namespace == "default"
+            return InfraOpsChangePreviewResult(
+                action="scale_deployment",
+                namespace="default",
+                target_kind="deployment",
+                target_name="api",
+                request_payload={
+                    "namespace": "default",
+                    "deployment_name": "api",
+                    "replicas": 3,
+                },
+                safety_notes=["No Kubernetes scale request was sent."],
+            )
+
+        def preview_restart_pod(self, pod_name: str, namespace: str | None = None):
+            assert pod_name == "api-123"
+            assert namespace == "default"
+            return InfraOpsChangePreviewResult(
+                action="restart_pod",
+                namespace="default",
+                target_kind="pod",
+                target_name="api-123",
+                request_payload={"namespace": "default", "pod_name": "api-123"},
+                safety_notes=["No Kubernetes pod mutation request was sent."],
+            )
+
+    class FakeAuditService:
+        def __init__(self) -> None:
+            self.calls = []
+
+        def record_tool_call(self, **kwargs) -> None:
+            self.calls.append(kwargs)
+
+    audit_service = FakeAuditService()
+
+    async def run() -> None:
+        async with Client(
+            create_mcp_server(
+                audit_service=audit_service,
+                infraops_service=FakeInfraOpsService(),
+            )
+        ) as client:
+            scale = await client.call_tool(
+                "scale_deployment",
+                {
+                    "deployment_name": "api",
+                    "replicas": 3,
+                    "namespace": "default",
+                },
+            )
+            restart = await client.call_tool(
+                "restart_pod",
+                {"pod_name": "api-123", "namespace": "default"},
+            )
+
+        assert scale.data["call_status"] == "APPROVAL_REQUIRED"
+        assert scale.data["confirmation_policy"] == "ADMIN_APPROVAL"
+        assert scale.data["execution_policy"] == "blocked_until_approved"
+        assert scale.data["requires_approval"] is True
+        assert scale.data["will_execute"] is False
+        assert scale.data["preview"]["dry_run"] is True
+        assert restart.data["call_status"] == "APPROVAL_REQUIRED"
+
+    asyncio.run(run())
+    assert [call["call_status"] for call in audit_service.calls] == [
+        "APPROVAL_REQUIRED",
+        "APPROVAL_REQUIRED",
+    ]
+
+
+def test_fastmcp_destructive_tools_return_blocked_preview() -> None:
+    class FakeInfraOpsService:
+        def preview_delete_pod(self, pod_name: str, namespace: str | None = None):
+            assert pod_name == "api-123"
+            assert namespace == "default"
+            return InfraOpsChangePreviewResult(
+                action="delete_pod",
+                namespace="default",
+                target_kind="pod",
+                target_name="api-123",
+                request_payload={"namespace": "default", "pod_name": "api-123"},
+                safety_notes=["No Kubernetes delete request was sent."],
+            )
+
+        def preview_kubectl_exec(
+            self,
+            pod_name: str,
+            command: list[str],
+            namespace: str | None = None,
+        ):
+            assert pod_name == "api-123"
+            assert command == ["sh", "-c", "date"]
+            assert namespace == "default"
+            return InfraOpsChangePreviewResult(
+                action="run_kubectl_exec",
+                namespace="default",
+                target_kind="pod",
+                target_name="api-123",
+                request_payload={
+                    "namespace": "default",
+                    "pod_name": "api-123",
+                    "command": ["sh", "-c", "date"],
+                },
+                safety_notes=["No Kubernetes exec request was sent."],
+            )
+
+    async def run() -> None:
+        async with Client(create_mcp_server(infraops_service=FakeInfraOpsService())) as client:
+            delete = await client.call_tool(
+                "delete_pod",
+                {"pod_name": "api-123", "namespace": "default"},
+            )
+            exec_result = await client.call_tool(
+                "run_kubectl_exec",
+                {
+                    "pod_name": "api-123",
+                    "command": ["sh", "-c", "date"],
+                    "namespace": "default",
+                },
+            )
+
+        assert delete.data["call_status"] == "BLOCKED"
+        assert delete.data["confirmation_policy"] == "BLOCKED"
+        assert delete.data["execution_policy"] == "blocked"
+        assert delete.data["is_blocked"] is True
+        assert delete.data["will_execute"] is False
+        assert exec_result.data["call_status"] == "BLOCKED"
 
     asyncio.run(run())
 

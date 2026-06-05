@@ -53,6 +53,25 @@ def _policy_response(tool: McpToolMetadata) -> dict[str, Any]:
     }
 
 
+def _policy_preview_response(
+    tool: McpToolMetadata,
+    preview_payload: dict[str, Any],
+) -> dict[str, Any]:
+    policy = resolve_tool_policy(McpToolPermission(tool.tool_permission))
+    return {
+        **_policy_response(tool),
+        "will_execute": False,
+        "requires_approval": (
+            McpExecutionPolicy(policy.execution_policy)
+            == McpExecutionPolicy.BLOCKED_UNTIL_APPROVED
+        ),
+        "is_blocked": (
+            McpExecutionPolicy(policy.execution_policy) == McpExecutionPolicy.BLOCKED
+        ),
+        "preview": preview_payload,
+    }
+
+
 def _record_tool_audit(
     *,
     audit_service: McpToolAuditService | None,
@@ -464,6 +483,186 @@ def create_mcp_server(
             started_at=started_at,
         )
         return result
+
+    @mcp.tool(
+        name="scale_deployment",
+        description="Preview a Kubernetes deployment scale request without executing it.",
+        tags={"infraops", "kubernetes", "ops-write", "preview"},
+        annotations={"readOnlyHint": True, "openWorldHint": False},
+    )
+    def scale_deployment_tool(
+        deployment_name: str,
+        replicas: int,
+        namespace: str | None = None,
+    ) -> dict[str, Any]:
+        started_at = perf_counter()
+        tool = _resolve_registered_tool("infraops-mcp", "scale_deployment")
+        request_payload = {
+            "deployment_name": deployment_name,
+            "replicas": replicas,
+            "namespace": namespace,
+        }
+
+        try:
+            preview = infraops.preview_scale_deployment(
+                deployment_name=deployment_name,
+                replicas=replicas,
+                namespace=namespace,
+            ).model_dump(mode="json")
+            response = _policy_preview_response(tool, preview)
+        except Exception as exc:
+            _record_tool_audit(
+                audit_service=audit_service,
+                tool=tool,
+                request_payload=request_payload,
+                response_payload=None,
+                call_status=McpToolCallStatus.FAILED,
+                started_at=started_at,
+                last_error=str(exc),
+            )
+            raise
+
+        _record_tool_audit(
+            audit_service=audit_service,
+            tool=tool,
+            request_payload=request_payload,
+            response_payload=response,
+            call_status=McpToolCallStatus.APPROVAL_REQUIRED,
+            started_at=started_at,
+        )
+        return response
+
+    @mcp.tool(
+        name="restart_pod",
+        description="Preview a Kubernetes pod restart request without executing it.",
+        tags={"infraops", "kubernetes", "ops-write", "preview"},
+        annotations={"readOnlyHint": True, "openWorldHint": False},
+    )
+    def restart_pod_tool(
+        pod_name: str,
+        namespace: str | None = None,
+    ) -> dict[str, Any]:
+        started_at = perf_counter()
+        tool = _resolve_registered_tool("infraops-mcp", "restart_pod")
+        request_payload = {"pod_name": pod_name, "namespace": namespace}
+
+        try:
+            preview = infraops.preview_restart_pod(
+                pod_name=pod_name,
+                namespace=namespace,
+            ).model_dump(mode="json")
+            response = _policy_preview_response(tool, preview)
+        except Exception as exc:
+            _record_tool_audit(
+                audit_service=audit_service,
+                tool=tool,
+                request_payload=request_payload,
+                response_payload=None,
+                call_status=McpToolCallStatus.FAILED,
+                started_at=started_at,
+                last_error=str(exc),
+            )
+            raise
+
+        _record_tool_audit(
+            audit_service=audit_service,
+            tool=tool,
+            request_payload=request_payload,
+            response_payload=response,
+            call_status=McpToolCallStatus.APPROVAL_REQUIRED,
+            started_at=started_at,
+        )
+        return response
+
+    @mcp.tool(
+        name="delete_pod",
+        description="Return the blocked policy preview for a Kubernetes pod delete request.",
+        tags={"infraops", "kubernetes", "destructive", "blocked"},
+        annotations={"readOnlyHint": True, "openWorldHint": False},
+    )
+    def delete_pod_tool(
+        pod_name: str,
+        namespace: str | None = None,
+    ) -> dict[str, Any]:
+        started_at = perf_counter()
+        tool = _resolve_registered_tool("infraops-mcp", "delete_pod")
+        request_payload = {"pod_name": pod_name, "namespace": namespace}
+
+        try:
+            preview = infraops.preview_delete_pod(
+                pod_name=pod_name,
+                namespace=namespace,
+            ).model_dump(mode="json")
+            response = _policy_preview_response(tool, preview)
+        except Exception as exc:
+            _record_tool_audit(
+                audit_service=audit_service,
+                tool=tool,
+                request_payload=request_payload,
+                response_payload=None,
+                call_status=McpToolCallStatus.FAILED,
+                started_at=started_at,
+                last_error=str(exc),
+            )
+            raise
+
+        _record_tool_audit(
+            audit_service=audit_service,
+            tool=tool,
+            request_payload=request_payload,
+            response_payload=response,
+            call_status=McpToolCallStatus.BLOCKED,
+            started_at=started_at,
+        )
+        return response
+
+    @mcp.tool(
+        name="run_kubectl_exec",
+        description="Return the blocked policy preview for a Kubernetes exec request.",
+        tags={"infraops", "kubernetes", "destructive", "blocked"},
+        annotations={"readOnlyHint": True, "openWorldHint": False},
+    )
+    def run_kubectl_exec_tool(
+        pod_name: str,
+        command: list[str],
+        namespace: str | None = None,
+    ) -> dict[str, Any]:
+        started_at = perf_counter()
+        tool = _resolve_registered_tool("infraops-mcp", "run_kubectl_exec")
+        request_payload = {
+            "pod_name": pod_name,
+            "command": command,
+            "namespace": namespace,
+        }
+
+        try:
+            preview = infraops.preview_kubectl_exec(
+                pod_name=pod_name,
+                command=command,
+                namespace=namespace,
+            ).model_dump(mode="json")
+            response = _policy_preview_response(tool, preview)
+        except Exception as exc:
+            _record_tool_audit(
+                audit_service=audit_service,
+                tool=tool,
+                request_payload=request_payload,
+                response_payload=None,
+                call_status=McpToolCallStatus.FAILED,
+                started_at=started_at,
+                last_error=str(exc),
+            )
+            raise
+
+        _record_tool_audit(
+            audit_service=audit_service,
+            tool=tool,
+            request_payload=request_payload,
+            response_payload=response,
+            call_status=McpToolCallStatus.BLOCKED,
+            started_at=started_at,
+        )
+        return response
 
     @mcp.tool(
         name="query_elasticsearch",
