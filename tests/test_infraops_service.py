@@ -254,8 +254,16 @@ def test_infraops_service_rejects_non_allowlisted_namespace() -> None:
 
 
 def test_infraops_service_rejects_invalid_kubernetes_resource_name() -> None:
-    with pytest.raises(InfraOpsValidationError):
-        validate_kubernetes_resource_name("../api", resource="pod")
+    invalid_names = [
+        "../api",
+        "a..b",
+        "a.-b",
+        "a" * 64,
+    ]
+
+    for name in invalid_names:
+        with pytest.raises(InfraOpsValidationError):
+            validate_kubernetes_resource_name(name, resource="pod")
 
 
 def test_infraops_service_rejects_invalid_kubectl_exec_command() -> None:

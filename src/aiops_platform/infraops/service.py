@@ -42,7 +42,7 @@ class InfraOpsValidationError(ValueError):
 
 
 MAX_KIBANA_SAVED_OBJECTS_PER_PAGE = 100
-KUBERNETES_RESOURCE_NAME_PATTERN = re.compile(r"^[a-z0-9]([-a-z0-9.]*[a-z0-9])?$")
+KUBERNETES_RESOURCE_NAME_PATTERN = re.compile(r"^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$")
 MAX_KUBECTL_COMMAND_PART_LENGTH = 200
 
 
@@ -426,7 +426,7 @@ def validate_namespace(namespace: str, *, allowlist: tuple[str, ...]) -> None:
 
 
 def validate_kubernetes_resource_name(name: str, *, resource: str) -> None:
-    if KUBERNETES_RESOURCE_NAME_PATTERN.fullmatch(name):
+    if len(name) <= 63 and KUBERNETES_RESOURCE_NAME_PATTERN.fullmatch(name):
         return
     raise InfraOpsValidationError(f"Kubernetes {resource} name is invalid.")
 
