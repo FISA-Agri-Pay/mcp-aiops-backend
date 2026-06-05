@@ -1,6 +1,9 @@
 from fastapi.testclient import TestClient
+from sqlalchemy import text
 
+from aiops_platform.core.database import SessionLocal
 from aiops_platform.main import create_app
+from aiops_platform.orchestration.repository import SqlOrchestrationRepository
 from aiops_platform.orchestration.service import OrchestrationService
 from tests.seed_constants import FARMER_1_ID
 
@@ -187,6 +190,34 @@ def test_jobs_reject_invalid_status_filter() -> None:
 
     assert response.status_code == 400
     assert response.json()["detail"] == "job status is invalid."
+
+
+def test_job_updated_at_uses_finished_timestamp() -> None:
+    repository = SqlOrchestrationRepository()
+    job = repository.create_job(
+        job_type="farmer_chat",
+        entity_type="ai.chat_sessions",
+        entity_id=FARMER_1_ID,
+        status="RUNNING",
+    )
+    finished_at = "2030-01-01 00:00:00"
+    with SessionLocal() as session:
+        session.execute(
+            text(
+                """
+                update ai.job_runs
+                set finished_at = timestamp '2030-01-01 00:00:00'
+                where public_id = cast(:job_id as uuid)
+                """
+            ),
+            {"job_id": job.job_id},
+        )
+        session.commit()
+
+    updated = repository.get_job(job.job_id)
+
+    assert updated is not None
+    assert updated.updated_at == finished_at
 
 
 def test_agent_failure_finishes_job() -> None:

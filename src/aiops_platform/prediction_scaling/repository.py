@@ -158,11 +158,31 @@ class SqlPredictionScalingRepository:
         return [build_prediction_run(row) for row in rows]
 
     def get_prediction_run(self, prediction_run_id: str) -> PredictionRunResult | None:
-        runs = self.list_prediction_runs(model_version_id=None, status=None, limit=10_000)
-        for run in runs:
-            if run.prediction_run_id == prediction_run_id:
-                return run
-        return None
+        if not is_uuid(prediction_run_id):
+            return None
+        query = text(
+            """
+            select
+                public_id::text as prediction_run_id,
+                model_version_public_id::text as model_version_id,
+                target_service,
+                target_namespace,
+                target_metric,
+                prediction_horizon_minutes,
+                run_status,
+                started_at::text as started_at,
+                finished_at::text as finished_at
+            from ai.prediction_runs
+            where public_id = cast(:prediction_run_id as uuid)
+            limit 1
+            """
+        )
+        with self._session_scope() as session:
+            row = session.execute(
+                query,
+                {"prediction_run_id": prediction_run_id},
+            ).mappings().first()
+        return build_prediction_run(row) if row is not None else None
 
     def list_prediction_points(
         self,

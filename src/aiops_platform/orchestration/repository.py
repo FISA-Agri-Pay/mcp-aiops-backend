@@ -306,7 +306,8 @@ class SqlOrchestrationRepository:
                 target_table,
                 target_public_id::text as target_public_id,
                 last_error,
-                created_at::text as created_at
+                created_at::text as created_at,
+                coalesce(finished_at, created_at)::text as updated_at
             """
         )
         params = {
@@ -343,7 +344,8 @@ class SqlOrchestrationRepository:
                 target_table,
                 target_public_id::text as target_public_id,
                 last_error,
-                created_at::text as created_at
+                created_at::text as created_at,
+                coalesce(finished_at, created_at)::text as updated_at
             """
         )
         with self._session_scope(commit=True) as session:
@@ -365,7 +367,8 @@ class SqlOrchestrationRepository:
                 target_table,
                 target_public_id::text as target_public_id,
                 last_error,
-                created_at::text as created_at
+                created_at::text as created_at,
+                coalesce(finished_at, created_at)::text as updated_at
             from ai.job_runs
             where public_id = cast(:job_id as uuid)
             limit 1
@@ -391,7 +394,8 @@ class SqlOrchestrationRepository:
                 target_table,
                 target_public_id::text as target_public_id,
                 last_error,
-                created_at::text as created_at
+                created_at::text as created_at,
+                coalesce(finished_at, created_at)::text as updated_at
             from ai.job_runs
             where (
                 cast(:status as text) is null
@@ -656,7 +660,7 @@ def build_job(row, *, api_job_type: str | None = None) -> JobResult:
         entity_type=row["target_table"] or "",
         entity_id=row["target_public_id"] or "",
         created_at=row["created_at"],
-        updated_at=row["created_at"],
+        updated_at=row["updated_at"],
         error_message=row["last_error"],
     )
 

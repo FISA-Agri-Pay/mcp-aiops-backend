@@ -1,5 +1,6 @@
 import pytest
 
+from aiops_platform.prediction_scaling.repository import SqlPredictionScalingRepository
 from aiops_platform.prediction_scaling.service import (
     PredictionScalingService,
     PredictionScalingValidationError,
@@ -58,6 +59,20 @@ def test_prediction_metrics_actuals_and_errors_are_deterministic() -> None:
     assert error_metrics.sample_count == 3
     assert error_metrics.mean_absolute_error == 6.67
     assert error_metrics.root_mean_squared_error == 7.12
+
+
+def test_prediction_run_lookup_does_not_depend_on_list_scan(monkeypatch) -> None:
+    repository = SqlPredictionScalingRepository()
+
+    def fail_list_scan(**kwargs):
+        raise AssertionError("get_prediction_run should use direct lookup")
+
+    monkeypatch.setattr(repository, "list_prediction_runs", fail_list_scan)
+
+    run = repository.get_prediction_run(PREDICTION_RUN_API_ID)
+
+    assert run is not None
+    assert run.prediction_run_id == PREDICTION_RUN_API_ID
 
 
 def test_latest_prediction_and_scaling_summary_match_filtered_workload() -> None:
