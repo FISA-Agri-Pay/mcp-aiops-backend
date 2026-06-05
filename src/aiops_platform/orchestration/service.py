@@ -4,10 +4,12 @@ from datetime import UTC, datetime
 from typing import Any, get_args
 from uuid import uuid4
 
+from aiops_platform.agent.orchestrator import AgentOrchestrator
+from aiops_platform.agent.schemas import AgentToolExecutionResult
 from aiops_platform.mcp.masking import mask_payload
 from aiops_platform.mcp.policy import resolve_tool_policy
 from aiops_platform.mcp.registry import list_mcp_tools
-from aiops_platform.mcp.schemas import McpExecutionPolicy, McpToolCallStatus, McpToolPermission
+from aiops_platform.mcp.schemas import McpToolCallStatus, McpToolPermission
 from aiops_platform.orchestration.schemas import (
     ChatAskResult,
     ChatMessageResult,
@@ -37,11 +39,12 @@ MAX_LIST_LIMIT = 100
 
 
 class OrchestrationService:
-    def __init__(self) -> None:
+    def __init__(self, *, agent_orchestrator: AgentOrchestrator | None = None) -> None:
         self._sessions: dict[str, ChatSessionResult] = {}
         self._messages: dict[str, list[ChatMessageResult]] = {}
         self._jobs: dict[str, JobResult] = {}
         self._tool_calls: dict[str, McpToolCallResult] = {}
+        self._agent_orchestrator = agent_orchestrator or AgentOrchestrator()
 
     def create_chat_session(
         self,
@@ -101,18 +104,8 @@ class OrchestrationService:
         return self._answer_chat(
             session=session,
             message=message,
+            user_id=user_id,
             job_type="farmer_chat",
-            planned_tools=[
-                ("farmer-bnpl-mcp", "get_user_credit_limit"),
-                ("farmer-bnpl-mcp", "get_farmer_profile"),
-                ("farm-advisory-mcp", "recommend_fertilizer_requirements"),
-                ("farmer-bnpl-mcp", "search_lowest_price_fertilizer"),
-                ("farmer-bnpl-mcp", "prepare_bnpl_checkout_payload"),
-            ],
-            answer=(
-                "MCP orchestration preview created. The client can execute the planned "
-                "Farmer BNPL and farm advisory tools before showing a checkout confirmation UI."
-            ),
         )
 
     def ask_admin_copilot(
@@ -131,17 +124,8 @@ class OrchestrationService:
         return self._answer_chat(
             session=session,
             message=message,
+            user_id=user_id,
             job_type="admin_copilot",
-            planned_tools=[
-                ("admin-riskops-mcp", "get_credit_review_queue"),
-                ("admin-riskops-mcp", "get_bnpl_summary"),
-                ("infraops-mcp", "query_multi_cluster_prometheus"),
-                ("prediction-scaling-mcp", "get_scaling_summary"),
-            ],
-            answer=(
-                "MCP orchestration preview created. The client can execute the planned "
-                "RiskOps, InfraOps, and prediction-scaling tools for the copilot answer."
-            ),
         )
 
     def list_jobs(
@@ -248,9 +232,8 @@ class OrchestrationService:
         *,
         session: ChatSessionResult,
         message: str,
+        user_id: str,
         job_type: str,
-        planned_tools: list[tuple[str, str]],
-        answer: str,
     ) -> ChatAskResult:
         user_message = self._append_message(
             session_id=session.session_id,
@@ -261,39 +244,38 @@ class OrchestrationService:
             job_type=job_type,
             entity_type="chat_session",
             entity_id=session.session_id,
+            status="RUNNING",
+        )
+        agent_run = self._agent_orchestrator.run(
+            chat_type=session.chat_type,
+            message=message,
+            user_id=user_id,
         )
         planned_tool_results = [
-            self._build_planned_tool(server_name=server_name, tool_name=tool_name)
-            for server_name, tool_name in planned_tools
+            self._build_planned_tool(
+                server_name=tool_result.server_name,
+                tool_name=tool_result.tool_name,
+            )
+            for tool_result in agent_run.tool_results
         ]
-        tool_calls = [
-            self._record_tool_call(
-                server_name=tool.server_name,
-                tool_name=tool.tool_name,
-                request_payload={
-                    "session_id": session.session_id,
-                    "message": message,
-                    "access_token": "example-token",
-                },
-                response_payload={
-                    "dry_run": True,
-                    "planned_by": "api_orchestration_skeleton",
-                },
-                call_status=(
-                    McpToolCallStatus.SUCCESS
-                    if tool.execution_policy == McpExecutionPolicy.ALLOWED
-                    else McpToolCallStatus.APPROVAL_REQUIRED
-                ),
+        tool_results = [
+            self._persist_agent_tool_result(
+                tool_result=tool_result,
                 job_id=job.job_id,
                 session_id=session.session_id,
             )
-            for tool in planned_tool_results
+            for tool_result in agent_run.tool_results
         ]
+        job = self._finish_job(job.job_id, tool_results)
         assistant_message = self._append_message(
             session_id=session.session_id,
             role="ASSISTANT",
-            content=answer,
-            mcp_tool_call_ids=[tool_call.tool_call_id for tool_call in tool_calls],
+            content=agent_run.answer,
+            mcp_tool_call_ids=[
+                tool_result.tool_call_id
+                for tool_result in tool_results
+                if tool_result.tool_call_id is not None
+            ],
         )
         self._touch_session(session.session_id)
         return ChatAskResult(
@@ -302,6 +284,7 @@ class OrchestrationService:
             assistant_message=assistant_message,
             job=job,
             planned_tools=planned_tool_results,
+            tool_results=tool_results,
         )
 
     def _append_message(
@@ -323,12 +306,19 @@ class OrchestrationService:
         self._messages.setdefault(session_id, []).append(message)
         return message
 
-    def _create_job(self, *, job_type: str, entity_type: str, entity_id: str) -> JobResult:
+    def _create_job(
+        self,
+        *,
+        job_type: str,
+        entity_type: str,
+        entity_id: str,
+        status: JobStatus = "QUEUED",
+    ) -> JobResult:
         now = current_timestamp()
         job = JobResult(
             job_id=build_public_id("job"),
             job_type=job_type,
-            status="QUEUED",
+            status=status,
             entity_type=entity_type,
             entity_id=entity_id,
             created_at=now,
@@ -348,16 +338,64 @@ class OrchestrationService:
             execution_policy=policy.execution_policy,
         )
 
+    def _persist_agent_tool_result(
+        self,
+        *,
+        tool_result: AgentToolExecutionResult,
+        job_id: str,
+        session_id: str,
+    ) -> AgentToolExecutionResult:
+        tool_call = self._record_tool_call(
+            server_name=tool_result.server_name,
+            tool_name=tool_result.tool_name,
+            request_payload=tool_result.request_payload | {"access_token": "example-token"},
+            response_payload=tool_result.response_payload,
+            call_status=McpToolCallStatus(tool_result.call_status),
+            job_id=job_id,
+            session_id=session_id,
+            last_error=tool_result.error_message,
+        )
+        return tool_result.model_copy(
+            update={
+                "tool_call_id": tool_call.tool_call_id,
+                "masked_request_payload": tool_call.masked_request_payload,
+                "masked_response_payload": tool_call.masked_response_payload,
+            }
+        )
+
+    def _finish_job(
+        self,
+        job_id: str,
+        tool_results: list[AgentToolExecutionResult],
+    ) -> JobResult:
+        job = self.get_job(job_id)
+        has_failed_tool = any(
+            McpToolCallStatus(result.call_status) == McpToolCallStatus.FAILED
+            for result in tool_results
+        )
+        finished_job = job.model_copy(
+            update={
+                "status": "FAILED" if has_failed_tool else "SUCCEEDED",
+                "updated_at": current_timestamp(),
+                "error_message": (
+                    "One or more MCP tool executions failed." if has_failed_tool else None
+                ),
+            }
+        )
+        self._jobs[job_id] = finished_job
+        return finished_job
+
     def _record_tool_call(
         self,
         *,
         server_name: str,
         tool_name: str,
         request_payload: dict[str, Any],
-        response_payload: dict[str, Any],
+        response_payload: dict[str, Any] | list[Any] | None,
         call_status: McpToolCallStatus,
         job_id: str,
         session_id: str,
+        last_error: str | None = None,
     ) -> McpToolCallResult:
         tool = resolve_registered_tool(server_name=server_name, tool_name=tool_name)
         policy = resolve_tool_policy(McpToolPermission(tool.tool_permission))
@@ -375,6 +413,7 @@ class OrchestrationService:
             job_id=job_id,
             session_id=session_id,
             created_at=current_timestamp(),
+            last_error=last_error,
         )
         self._tool_calls[tool_call.tool_call_id] = tool_call
         return tool_call
