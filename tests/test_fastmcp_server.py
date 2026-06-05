@@ -85,6 +85,17 @@ def test_fastmcp_server_exposes_registry_tools() -> None:
             "create_risk_analysis_snapshot",
             "send_repayment_alert",
             "send_overdue_alerts",
+            "get_model_versions",
+            "get_prediction_runs",
+            "get_prediction_metrics",
+            "get_latest_prediction",
+            "get_actual_metrics",
+            "get_prediction_errors",
+            "get_prediction_error_metrics",
+            "get_scaling_events",
+            "get_scaling_summary",
+            "create_prediction_snapshot",
+            "create_scaling_analysis_snapshot",
             "query_prometheus",
             "query_loki",
             "get_k8s_pods",
@@ -166,6 +177,46 @@ def test_fastmcp_admin_riskops_write_tools_return_confirmation_preview() -> None
         assert repayment.data["preview"]["dry_run"] is True
         assert repayment.data["preview"]["target_user_ids"] == ["farmer-1"]
         assert overdue.data["preview"]["target_user_ids"] == ["farmer-2", "farmer-3"]
+
+    asyncio.run(run())
+
+
+def test_fastmcp_prediction_scaling_tools_return_results() -> None:
+    async def run() -> None:
+        async with Client(create_mcp_server()) as client:
+            models = await client.call_tool(
+                "get_model_versions",
+                {"service_name": "api", "limit": 10},
+            )
+            latest = await client.call_tool(
+                "get_latest_prediction",
+                {
+                    "metric_name": "http_requests_per_second",
+                    "namespace": "default",
+                    "workload": "api",
+                },
+            )
+            errors = await client.call_tool(
+                "get_prediction_error_metrics",
+                {"prediction_run_id": "pred-run-20260605-001"},
+            )
+            snapshot = await client.call_tool(
+                "create_scaling_analysis_snapshot",
+                {"namespace": "default", "workload": "api"},
+            )
+
+        assert [item["model_version_id"] for item in models.data["items"]] == [
+            "traffic-forecast-v2",
+            "traffic-forecast-v1",
+        ]
+        assert latest.data["prediction_run_id"] == "pred-run-20260605-001"
+        assert latest.data["predicted_value"] == 150.0
+        assert errors.data["sample_count"] == 3
+        assert errors.data["mean_absolute_error"] == 6.67
+        assert snapshot.data["summary"]["prediction_driven_events"] == 1
+        assert snapshot.data["evidence"]["related_prediction_run_ids"] == [
+            "pred-run-20260605-001"
+        ]
 
     asyncio.run(run())
 

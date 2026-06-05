@@ -171,9 +171,10 @@ def list_mcp_tools(
     permission: McpToolPermission | None = None,
 ) -> list[McpToolMetadata]:
     tools = [tool for server in MCP_SERVERS for tool in server.tools]
+    normalized_server_name = server_name.strip() if server_name is not None else None
 
-    if server_name is not None:
-        tools = [tool for tool in tools if tool.server_name == server_name]
+    if normalized_server_name:
+        tools = [tool for tool in tools if tool.server_name == normalized_server_name]
 
     if permission is not None:
         tools = [tool for tool in tools if tool.tool_permission == permission]
