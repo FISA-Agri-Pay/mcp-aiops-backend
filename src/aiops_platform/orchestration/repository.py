@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from collections.abc import Iterator
 from contextlib import contextmanager
 from typing import Any, Protocol
@@ -22,6 +23,8 @@ from aiops_platform.orchestration.schemas import (
     McpToolCallResult,
     MessageRole,
 )
+
+logger = logging.getLogger(__name__)
 
 
 class OrchestrationRepository(Protocol):
@@ -98,6 +101,15 @@ class OrchestrationRepository(Protocol):
         latency_ms: int = 0,
         last_error: str | None = None,
     ) -> McpToolCallResult:
+        pass
+
+    def attach_llm_run_to_tool_calls(
+        self,
+        *,
+        job_id: str,
+        session_id: str,
+        llm_run_id: str,
+    ) -> None:
         pass
 
     def get_tool_call(self, tool_call_id: str) -> McpToolCallResult | None:
@@ -486,6 +498,7 @@ class SqlOrchestrationRepository:
                         latency_ms,
                         job_run_public_id::text as job_id,
                         session_public_id::text as session_id,
+                        llm_run_public_id::text as llm_run_id,
                         created_at::text as created_at,
                         last_error
                     """
@@ -507,6 +520,50 @@ class SqlOrchestrationRepository:
                 },
             ).mappings().one()
         return build_tool_call(row, server_name=server_name)
+
+    def attach_llm_run_to_tool_calls(
+        self,
+        *,
+        job_id: str,
+        session_id: str,
+        llm_run_id: str,
+    ) -> None:
+        invalid_identifiers = {
+            name: value
+            for name, value in {
+                "job_id": job_id,
+                "session_id": session_id,
+                "llm_run_id": llm_run_id,
+            }.items()
+            if not is_uuid(value)
+        }
+        if invalid_identifiers:
+            logger.error(
+                "Invalid MCP tool call LLM run link identifiers: %s",
+                invalid_identifiers,
+            )
+            raise ValueError(
+                "invalid MCP tool call LLM run link identifiers: "
+                f"{invalid_identifiers}"
+            )
+        query = text(
+            """
+            update ai.mcp_tool_calls
+            set llm_run_public_id = cast(:llm_run_id as uuid)
+            where job_run_public_id = cast(:job_id as uuid)
+              and session_public_id = cast(:session_id as uuid)
+              and llm_run_public_id is null
+            """
+        )
+        with self._session_scope(commit=True) as session:
+            session.execute(
+                query,
+                {
+                    "job_id": job_id,
+                    "session_id": session_id,
+                    "llm_run_id": llm_run_id,
+                },
+            )
 
     def get_tool_call(self, tool_call_id: str) -> McpToolCallResult | None:
         if not is_uuid(tool_call_id):
@@ -681,6 +738,7 @@ def build_tool_call(row, *, server_name: str | None = None) -> McpToolCallResult
         latency_ms=row["latency_ms"] or 0,
         job_id=row["job_id"],
         session_id=row["session_id"],
+        llm_run_id=row["llm_run_id"],
         created_at=row["created_at"],
         last_error=row["last_error"],
     )
@@ -701,6 +759,7 @@ def base_tool_call_query(where_clause: str):
             mtc.latency_ms,
             mtc.job_run_public_id::text as job_id,
             mtc.session_public_id::text as session_id,
+            mtc.llm_run_public_id::text as llm_run_id,
             mtc.created_at::text as created_at,
             mtc.last_error
         from ai.mcp_tool_calls mtc

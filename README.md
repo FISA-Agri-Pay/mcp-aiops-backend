@@ -50,6 +50,40 @@ Health Check:
 GET http://localhost:8000/health
 ```
 
+### 4. LLM Provider 설정
+
+기본값은 로컬 테스트용 `fake` provider입니다. 외부 Chat Completions 호환 API를 사용할 때는 `.env`에 아래 값을 설정합니다.
+
+```text
+LLM_PROVIDER=openai
+LLM_MODEL=gpt-4o-mini
+LLM_API_KEY=...
+LLM_API_BASE_URL=https://api.openai.com/v1
+```
+
+Claude/Anthropic 계열은 아래처럼 설정합니다.
+
+```text
+LLM_PROVIDER=anthropic
+LLM_MODEL=claude-3-5-sonnet-latest
+LLM_API_KEY=...
+```
+
+GPU Pod에서 vLLM OpenAI-compatible server를 외부 노출할 때는 API key 없이도 연결할 수 있습니다.
+
+```text
+LLM_PROVIDER=openai-compatible
+LLM_MODEL=Qwen/Qwen3-32B
+LLM_API_BASE_URL=http://gpu-pod-host:8000/v1
+LLM_API_KEY=
+LLM_REQUIRE_API_KEY=false
+```
+
+`LLM_MODEL`은 vLLM server의 served model 이름과 맞춰야 합니다. `--served-model-name`을 별도로 지정했다면 그 값을 사용합니다.
+
+`LLM_API_KEY`가 비어 있으면 외부 호출 대신 fake provider로 fallback합니다.
+단, `LLM_REQUIRE_API_KEY=false`이고 `LLM_PROVIDER=openai-compatible`이면 keyless vLLM endpoint를 호출합니다.
+
 ## 클라이언트 연동 기준
 
 클라이언트 앱은 `docs/mcp-client-contract.md`를 기준으로 MCP 서버, Agent API, job/tool-call history 응답을 연동합니다.

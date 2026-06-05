@@ -114,6 +114,7 @@ class McpToolCallResult(BaseModel):
     latency_ms: int
     job_id: str | None = None
     session_id: str | None = None
+    llm_run_id: str | None = None
     created_at: str
     last_error: str | None = None
 

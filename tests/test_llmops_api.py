@@ -1,8 +1,18 @@
 from fastapi.testclient import TestClient
 
-from aiops_platform.llmops.service import LlmOpsValidationError
+from aiops_platform.llmops.client import FakeLlmClient
+from aiops_platform.llmops.service import LlmOpsService, LlmOpsValidationError
 from aiops_platform.main import create_app
+from aiops_platform.orchestration.service import OrchestrationService
 from tests.seed_constants import FARMER_1_ID
+
+
+def create_llmops_test_client() -> TestClient:
+    app = create_app()
+    llmops_service = LlmOpsService(llm_client=FakeLlmClient())
+    app.state.llmops_service = llmops_service
+    app.state.orchestration_service = OrchestrationService(llmops_service=llmops_service)
+    return TestClient(app)
 
 
 class FailingPromptVersionService:
@@ -16,7 +26,7 @@ class FailingAgentSnapshotService:
 
 
 def test_farmer_agent_records_llm_run_and_prompt_version() -> None:
-    client = TestClient(create_app())
+    client = create_llmops_test_client()
 
     answer_response = client.post(
         "/farmer/chat/ask",
@@ -59,7 +69,7 @@ def test_farmer_agent_records_llm_run_and_prompt_version() -> None:
 
 
 def test_llm_runs_can_be_filtered_for_client_history() -> None:
-    client = TestClient(create_app())
+    client = create_llmops_test_client()
     ask_response = client.post(
         "/admin/copilot/ask",
         json={"user_id": "admin-1", "message": "위험 현황 요약"},
@@ -80,7 +90,7 @@ def test_llm_runs_can_be_filtered_for_client_history() -> None:
 
 
 def test_checkout_confirmation_creates_approval_request_skeleton() -> None:
-    client = TestClient(create_app())
+    client = create_llmops_test_client()
     ask_response = client.post(
         "/farmer/chat/ask",
         json={"user_id": FARMER_1_ID, "message": "confirm checkout 생성"},

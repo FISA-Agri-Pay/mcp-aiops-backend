@@ -54,7 +54,7 @@
   },
   "llm_run": {
     "llm_run_id": "string",
-    "provider": "fake",
+    "provider": "fake|openai-compatible|anthropic",
     "run_status": "SUCCESS"
   },
   "planned_tools": [],
@@ -65,6 +65,7 @@
 클라이언트는 `planned_tools`로 실행 계획을 먼저 보여주고, `tool_results`로 실제 실행 결과 또는 승인 필요 상태를 표시한다.
 LLM 실행 근거와 prompt version은 `llm_run`과 `/llm-runs/{llm_run_id}`에서 확인한다.
 Agent 실행 snapshot은 `/agent-snapshots`의 `session_id`, `llm_run_id`, `payload`로 채팅 세션과 LLM 실행 근거를 연결한다.
+외부 LLM provider를 사용할 때도 LLM은 DB를 직접 조회하지 않고, MCP tool 실행 결과와 masking된 context만 입력으로 받는다.
 
 ## Tool Result States
 
