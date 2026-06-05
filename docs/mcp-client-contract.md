@@ -9,6 +9,10 @@
 | Swagger | `GET /docs` |
 | MCP registry API | `GET /mcp/servers`, `GET /mcp/tools` |
 | MCP tool-call history | `GET /mcp/tool-calls` |
+| LLM run history | `GET /llm-runs` |
+| Approval queue | `GET /approvals` |
+| Notification outbox | `GET /notifications` |
+| Agent snapshots | `GET /agent-snapshots` |
 | Farmer chatbot | `POST /farmer/chat/ask` |
 | Admin Copilot | `POST /admin/copilot/ask` |
 | Job history | `GET /jobs` |
@@ -48,12 +52,18 @@
     "job_type": "farmer_chat",
     "status": "SUCCEEDED"
   },
+  "llm_run": {
+    "llm_run_id": "string",
+    "provider": "fake",
+    "run_status": "SUCCESS"
+  },
   "planned_tools": [],
   "tool_results": []
 }
 ```
 
 클라이언트는 `planned_tools`로 실행 계획을 먼저 보여주고, `tool_results`로 실제 실행 결과 또는 승인 필요 상태를 표시한다.
+LLM 실행 근거와 prompt version은 `llm_run`과 `/llm-runs/{llm_run_id}`에서 확인한다.
 
 ## Tool Result States
 
@@ -80,6 +90,10 @@
    - Agent 실행 job이 조회되는지 확인한다.
 6. `GET /mcp/tool-calls`
    - tool-call history에 민감 payload가 노출되지 않는지 확인한다.
+7. `GET /llm-runs`
+   - Agent 답변을 생성한 LLM run history가 조회되는지 확인한다.
+8. `GET /approvals`
+   - 승인 필요 tool 실행이 approval queue에 기록되는지 확인한다.
 
 ## Client Implementation Notes
 
@@ -88,3 +102,4 @@
 - 승인 필요 CTA는 `requires_approval=true` 또는 `call_status=APPROVAL_REQUIRED` 기준으로 표시한다.
 - 차단된 작업은 `is_blocked=true` 또는 `call_status=BLOCKED` 기준으로 표시한다.
 - 실행 이력 화면은 `/jobs`와 `/mcp/tool-calls`를 함께 사용한다.
+- 감사/근거 화면은 `/llm-runs`, `/prompt-versions`, `/approvals`, `/notifications`, `/agent-snapshots`를 사용한다.

@@ -63,6 +63,10 @@ POST /farmer/chat/ask
 POST /admin/copilot/ask
 GET /jobs
 GET /mcp/tool-calls
+GET /llm-runs
+GET /approvals
+GET /notifications
+GET /agent-snapshots
 ```
 
 FastMCP transport는 `/mcp-server/mcp`에 mount됩니다.
