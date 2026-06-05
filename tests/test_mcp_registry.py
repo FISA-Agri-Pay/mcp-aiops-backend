@@ -56,3 +56,18 @@ def test_mcp_tools_include_elk_registry_entries() -> None:
         "get_kibana_saved_objects",
         "create_elk_snapshot",
     }.issubset(tool_names)
+
+
+def test_mcp_tools_trims_server_name_filter() -> None:
+    client = TestClient(create_app())
+
+    response = client.get(
+        "/mcp/tools",
+        params={"server_name": "prediction-scaling-mcp "},
+    )
+
+    assert response.status_code == 200
+    tools = response.json()
+    assert len(tools) == 11
+    assert {tool["server_name"] for tool in tools} == {"prediction-scaling-mcp"}
+    assert "get_model_versions" in {tool["tool_name"] for tool in tools}
