@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import Protocol
 
 from aiops_platform.agent.schemas import AgentPlanResult, AgentToolPlan
+from aiops_platform.core.config import settings
 from aiops_platform.orchestration.schemas import ChatType
 
 
@@ -85,7 +86,12 @@ def plan_farmer_bnpl_tools(*, message: str, user_id: str) -> list[AgentToolPlan]
 
     purchase_keywords = ("fertilizer", "비료", "product", "농자재", "checkout", "결제", "한도")
     if any(keyword in message for keyword in purchase_keywords):
-        default_cart_items = [{"product_id": "fertilizer-organic-20kg", "quantity": 2}]
+        default_cart_items = [
+            {
+                "product_id": settings.farmer_bnpl_default_checkout_product_id,
+                "quantity": settings.farmer_bnpl_default_checkout_quantity,
+            }
+        ]
         plans.extend(
             [
                 AgentToolPlan(

@@ -4,6 +4,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from math import ceil
 
+from aiops_platform.core.config import settings
 from aiops_platform.farm_advisory.schemas import (
     CashflowMonth,
     CropCalendarResult,
@@ -22,16 +23,16 @@ from aiops_platform.farm_advisory.schemas import (
     WeatherRiskItem,
     WeatherRiskResult,
 )
+from aiops_platform.farmer_bnpl.repository import FarmerBnplRepository, SqlFarmerBnplRepository
 from aiops_platform.farmer_bnpl.schemas import ProductResult
-from aiops_platform.farmer_bnpl.service import PRODUCT_CATALOG
 
 
 class FarmAdvisoryValidationError(ValueError):
     pass
 
 
-DEFAULT_BNPL_ELIGIBLE_BUDGET = 3_000_000
-MAX_RECOMMENDATION_AREA_HECTARE = 1000
+DEFAULT_BNPL_ELIGIBLE_BUDGET = settings.farm_advisory_default_bnpl_budget
+MAX_RECOMMENDATION_AREA_HECTARE = settings.farm_advisory_max_area_hectare
 
 
 @dataclass(frozen=True)
@@ -99,6 +100,9 @@ FINANCE_TERMS = {
 
 
 class FarmAdvisoryService:
+    def __init__(self, product_repository: FarmerBnplRepository | None = None) -> None:
+        self._product_repository = product_repository or SqlFarmerBnplRepository()
+
     def get_crop_calendar(
         self,
         *,
@@ -150,7 +154,11 @@ class FarmAdvisoryService:
     ) -> MaterialRecommendationResult:
         profile = resolve_crop_profile(crop_type)
         validate_area(area_hectare)
-        recommendations = build_material_recommendations(profile, area_hectare)
+        recommendations = build_material_recommendations(
+            profile,
+            area_hectare,
+            self._product_repository,
+        )
         estimated_budget = sum(item.estimated_cost for item in recommendations)
         return MaterialRecommendationResult(
             crop_type=profile.crop_type,
@@ -173,7 +181,7 @@ class FarmAdvisoryService:
         nitrogen_kg = round(profile.fertilizer_bags_per_hectare * area_hectare * 1.6, 2)
         phosphate_kg = round(profile.fertilizer_bags_per_hectare * area_hectare * 0.9, 2)
         potassium_kg = round(profile.fertilizer_bags_per_hectare * area_hectare * 1.1, 2)
-        fertilizer = get_catalog_product("fertilizer-organic-20kg")
+        fertilizer = get_catalog_product_by_category(self._product_repository, "fertilizer")
         bag_count = quantity_for_area(profile.fertilizer_bags_per_hectare, area_hectare)
         return FertilizerRequirementResult(
             crop_type=profile.crop_type,
@@ -196,12 +204,16 @@ class FarmAdvisoryService:
         profile = resolve_crop_profile(crop_type)
         resolved_material_type = normalize_required_text(material_type, field_name="material_type")
         validate_optional_non_negative_int(budget, field_name="budget")
-        products = [
-            product
-            for product in PRODUCT_CATALOG
-            if product.category == resolved_material_type
-            or resolved_material_type in product.name.lower()
-        ]
+        products = self._product_repository.list_products(
+            query=resolved_material_type,
+            category=resolved_material_type,
+            limit=50,
+        )
+        if not products:
+            products = self._product_repository.list_products(
+                query=resolved_material_type,
+                limit=50,
+            )
         options = [
             RankedMaterialOption(
                 product_id=product.product_id,
@@ -236,8 +248,12 @@ class FarmAdvisoryService:
         validate_optional_non_negative_int(budget, field_name="budget")
 
         bundle_items = []
-        for recommendation in build_material_recommendations(profile, area_hectare):
-            product = get_catalog_product(recommendation.product_id)
+        for recommendation in build_material_recommendations(
+            profile,
+            area_hectare,
+            self._product_repository,
+        ):
+            product = get_catalog_product(self._product_repository, recommendation.product_id)
             bundle_items.append(
                 ProductBundleItem(
                     product_id=product.product_id,
@@ -493,20 +509,31 @@ def quantity_for_area(rate_per_hectare: int, area_hectare: float) -> int:
     return max(1, ceil(rate_per_hectare * area_hectare))
 
 
-def get_catalog_product(product_id: str) -> ProductResult:
-    for product in PRODUCT_CATALOG:
-        if product.product_id == product_id:
-            return product
+def get_catalog_product(repository: FarmerBnplRepository, product_id: str) -> ProductResult:
+    product = repository.get_product(product_id)
+    if product is not None:
+        return product
     raise FarmAdvisoryValidationError("recommended product is not in the BNPL catalog.")
+
+
+def get_catalog_product_by_category(
+    repository: FarmerBnplRepository,
+    category: str,
+) -> ProductResult:
+    products = repository.list_products(category=category, limit=10)
+    if products:
+        return min(products, key=lambda product: product.unit_price)
+    raise FarmAdvisoryValidationError(f"{category} product is not in the BNPL catalog.")
 
 
 def build_material_recommendations(
     profile: CropProfile,
     area_hectare: float,
+    repository: FarmerBnplRepository,
 ) -> list[MaterialRecommendation]:
-    fertilizer = get_catalog_product("fertilizer-organic-20kg")
-    seed = get_catalog_product("seed-rice-10kg")
-    pesticide = get_catalog_product("pesticide-safe-1l")
+    fertilizer = get_catalog_product_by_category(repository, "fertilizer")
+    seed = get_catalog_product_by_category(repository, "seed")
+    pesticide = get_catalog_product_by_category(repository, "pesticide")
     recommendations = [
         MaterialRecommendation(
             material_type="fertilizer",
