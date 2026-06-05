@@ -63,6 +63,16 @@ def test_fastmcp_server_exposes_registry_tools() -> None:
             "add_cart_item",
             "update_cart_item",
             "create_bnpl_checkout",
+            "get_crop_calendar",
+            "recommend_farming_materials",
+            "recommend_fertilizer_requirements",
+            "rank_material_options",
+            "recommend_product_bundle",
+            "get_weather_risk",
+            "triage_crop_disease",
+            "simulate_crop_income",
+            "simulate_season_cashflow",
+            "translate_finance_terms_for_farmer",
             "query_prometheus",
             "query_loki",
             "get_k8s_pods",
@@ -86,6 +96,44 @@ def test_fastmcp_server_exposes_registry_tools() -> None:
             "search_incidents",
             "search_rca_history",
         }
+
+    asyncio.run(run())
+
+
+def test_fastmcp_farm_advisory_tools_return_bnpl_ready_results() -> None:
+    async def run() -> None:
+        async with Client(create_mcp_server()) as client:
+            calendar = await client.call_tool(
+                "get_crop_calendar",
+                {"crop_type": "rice", "region": "jeonbuk"},
+            )
+            bundle = await client.call_tool(
+                "recommend_product_bundle",
+                {"crop_type": "rice", "area_hectare": 1.0},
+            )
+            cashflow = await client.call_tool(
+                "simulate_season_cashflow",
+                {
+                    "crop_type": "rice",
+                    "area_hectare": 1.0,
+                    "starting_cash": 100_000,
+                    "bnpl_limit": 1_000_000,
+                },
+            )
+            term = await client.call_tool(
+                "translate_finance_terms_for_farmer",
+                {"term": "credit limit"},
+            )
+
+        assert calendar.data["stages"][0]["stage"] == "planning"
+        assert bundle.data["cart_items"] == [
+            {"product_id": "fertilizer-organic-20kg", "quantity": 12},
+            {"product_id": "seed-rice-10kg", "quantity": 3},
+            {"product_id": "pesticide-safe-1l", "quantity": 2},
+        ]
+        assert bundle.data["estimated_budget"] == 432_000
+        assert cashflow.data["recommended_bnpl_amount"] == 332_000
+        assert "maximum BNPL amount" in term.data["plain_language"]
 
     asyncio.run(run())
 

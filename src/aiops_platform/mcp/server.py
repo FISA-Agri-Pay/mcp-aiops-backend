@@ -5,6 +5,7 @@ from typing import Any
 
 from fastmcp import FastMCP
 
+from aiops_platform.farm_advisory.service import FarmAdvisoryService
 from aiops_platform.farmer_bnpl.service import FarmerBnplService
 from aiops_platform.infraops.service import InfraOpsService
 from aiops_platform.mcp.audit import McpToolAuditService, elapsed_ms
@@ -109,8 +110,10 @@ def create_mcp_server(
     audit_service: McpToolAuditService | None = None,
     infraops_service: InfraOpsService | None = None,
     farmer_bnpl_service: FarmerBnplService | None = None,
+    farm_advisory_service: FarmAdvisoryService | None = None,
 ) -> FastMCP:
     farmer_bnpl = farmer_bnpl_service or FarmerBnplService()
+    farm_advisory = farm_advisory_service or FarmAdvisoryService()
     infraops = infraops_service or InfraOpsService.from_settings()
     mcp = FastMCP(
         name="aiops-platform-mcp",
@@ -616,6 +619,259 @@ def create_mcp_server(
             tool_name="create_bnpl_checkout",
             request_payload=request_payload,
             operation=lambda: farmer_bnpl.create_bnpl_checkout(**request_payload),
+        )
+
+    def call_farm_advisory_tool(
+        *,
+        tool_name: str,
+        request_payload: dict[str, Any],
+        operation: Callable[[], Any],
+    ) -> dict[str, Any]:
+        started_at = perf_counter()
+        tool = _resolve_registered_tool("farm-advisory-mcp", tool_name)
+
+        try:
+            result = operation().model_dump(mode="json")
+        except Exception as exc:
+            _record_tool_audit(
+                audit_service=audit_service,
+                tool=tool,
+                request_payload=request_payload,
+                response_payload=None,
+                call_status=McpToolCallStatus.FAILED,
+                started_at=started_at,
+                last_error=str(exc),
+            )
+            raise
+
+        _record_tool_audit(
+            audit_service=audit_service,
+            tool=tool,
+            request_payload=request_payload,
+            response_payload=result,
+            call_status=McpToolCallStatus.SUCCESS,
+            started_at=started_at,
+        )
+        return result
+
+    @mcp.tool(
+        name="get_crop_calendar",
+        description="Read a crop calendar for the farmer advisory chatbot.",
+        tags={"farm-advisory", "crop", "calendar", "read"},
+        annotations={"readOnlyHint": True, "openWorldHint": False},
+    )
+    def get_crop_calendar_tool(
+        crop_type: str,
+        region: str | None = None,
+        season: str | None = None,
+    ) -> dict[str, Any]:
+        request_payload = {"crop_type": crop_type, "region": region, "season": season}
+        return call_farm_advisory_tool(
+            tool_name="get_crop_calendar",
+            request_payload=request_payload,
+            operation=lambda: farm_advisory.get_crop_calendar(**request_payload),
+        )
+
+    @mcp.tool(
+        name="recommend_farming_materials",
+        description="Recommend farm input materials and BNPL-ready product ids.",
+        tags={"farm-advisory", "materials", "products", "read"},
+        annotations={"readOnlyHint": True, "openWorldHint": False},
+    )
+    def recommend_farming_materials_tool(
+        crop_type: str,
+        area_hectare: float,
+        region: str | None = None,
+        season: str | None = None,
+    ) -> dict[str, Any]:
+        request_payload = {
+            "crop_type": crop_type,
+            "area_hectare": area_hectare,
+            "region": region,
+            "season": season,
+        }
+        return call_farm_advisory_tool(
+            tool_name="recommend_farming_materials",
+            request_payload=request_payload,
+            operation=lambda: farm_advisory.recommend_farming_materials(**request_payload),
+        )
+
+    @mcp.tool(
+        name="recommend_fertilizer_requirements",
+        description="Recommend fertilizer nutrient requirements and product ids.",
+        tags={"farm-advisory", "fertilizer", "read"},
+        annotations={"readOnlyHint": True, "openWorldHint": False},
+    )
+    def recommend_fertilizer_requirements_tool(
+        crop_type: str,
+        area_hectare: float,
+        soil_type: str | None = None,
+    ) -> dict[str, Any]:
+        request_payload = {
+            "crop_type": crop_type,
+            "area_hectare": area_hectare,
+            "soil_type": soil_type,
+        }
+        return call_farm_advisory_tool(
+            tool_name="recommend_fertilizer_requirements",
+            request_payload=request_payload,
+            operation=lambda: farm_advisory.recommend_fertilizer_requirements(
+                **request_payload,
+            ),
+        )
+
+    @mcp.tool(
+        name="rank_material_options",
+        description="Rank agricultural material options from the skeleton BNPL catalog.",
+        tags={"farm-advisory", "materials", "ranking", "read"},
+        annotations={"readOnlyHint": True, "openWorldHint": False},
+    )
+    def rank_material_options_tool(
+        crop_type: str,
+        material_type: str,
+        budget: int | None = None,
+    ) -> dict[str, Any]:
+        request_payload = {
+            "crop_type": crop_type,
+            "material_type": material_type,
+            "budget": budget,
+        }
+        return call_farm_advisory_tool(
+            tool_name="rank_material_options",
+            request_payload=request_payload,
+            operation=lambda: farm_advisory.rank_material_options(**request_payload),
+        )
+
+    @mcp.tool(
+        name="recommend_product_bundle",
+        description="Recommend a BNPL-ready farm input product bundle.",
+        tags={"farm-advisory", "products", "bundle", "bnpl", "read"},
+        annotations={"readOnlyHint": True, "openWorldHint": False},
+    )
+    def recommend_product_bundle_tool(
+        crop_type: str,
+        area_hectare: float,
+        budget: int | None = None,
+    ) -> dict[str, Any]:
+        request_payload = {
+            "crop_type": crop_type,
+            "area_hectare": area_hectare,
+            "budget": budget,
+        }
+        return call_farm_advisory_tool(
+            tool_name="recommend_product_bundle",
+            request_payload=request_payload,
+            operation=lambda: farm_advisory.recommend_product_bundle(**request_payload),
+        )
+
+    @mcp.tool(
+        name="get_weather_risk",
+        description="Return skeleton weather risk guidance for a crop and region.",
+        tags={"farm-advisory", "weather", "risk", "read"},
+        annotations={"readOnlyHint": True, "openWorldHint": False},
+    )
+    def get_weather_risk_tool(
+        crop_type: str,
+        region: str,
+        forecast_days: int = 7,
+    ) -> dict[str, Any]:
+        request_payload = {
+            "crop_type": crop_type,
+            "region": region,
+            "forecast_days": forecast_days,
+        }
+        return call_farm_advisory_tool(
+            tool_name="get_weather_risk",
+            request_payload=request_payload,
+            operation=lambda: farm_advisory.get_weather_risk(**request_payload),
+        )
+
+    @mcp.tool(
+        name="triage_crop_disease",
+        description="Triage crop symptoms as advisory decision-support.",
+        tags={"farm-advisory", "disease", "triage", "read"},
+        annotations={"readOnlyHint": True, "openWorldHint": False},
+    )
+    def triage_crop_disease_tool(
+        crop_type: str,
+        symptoms: list[str],
+        severity: str = "medium",
+    ) -> dict[str, Any]:
+        request_payload = {
+            "crop_type": crop_type,
+            "symptoms": symptoms,
+            "severity": severity,
+        }
+        return call_farm_advisory_tool(
+            tool_name="triage_crop_disease",
+            request_payload=request_payload,
+            operation=lambda: farm_advisory.triage_crop_disease(**request_payload),
+        )
+
+    @mcp.tool(
+        name="simulate_crop_income",
+        description="Simulate crop income and net income with skeleton assumptions.",
+        tags={"farm-advisory", "income", "simulation", "read"},
+        annotations={"readOnlyHint": True, "openWorldHint": False},
+    )
+    def simulate_crop_income_tool(
+        crop_type: str,
+        area_hectare: float,
+        expected_yield_kg_per_hectare: int | None = None,
+        expected_price_per_kg: int | None = None,
+        estimated_input_cost: int | None = None,
+    ) -> dict[str, Any]:
+        request_payload = {
+            "crop_type": crop_type,
+            "area_hectare": area_hectare,
+            "expected_yield_kg_per_hectare": expected_yield_kg_per_hectare,
+            "expected_price_per_kg": expected_price_per_kg,
+            "estimated_input_cost": estimated_input_cost,
+        }
+        return call_farm_advisory_tool(
+            tool_name="simulate_crop_income",
+            request_payload=request_payload,
+            operation=lambda: farm_advisory.simulate_crop_income(**request_payload),
+        )
+
+    @mcp.tool(
+        name="simulate_season_cashflow",
+        description="Simulate season cashflow and suggested BNPL amount.",
+        tags={"farm-advisory", "cashflow", "bnpl", "simulation", "read"},
+        annotations={"readOnlyHint": True, "openWorldHint": False},
+    )
+    def simulate_season_cashflow_tool(
+        crop_type: str,
+        area_hectare: float,
+        starting_cash: int = 0,
+        bnpl_limit: int = 3_000_000,
+    ) -> dict[str, Any]:
+        request_payload = {
+            "crop_type": crop_type,
+            "area_hectare": area_hectare,
+            "starting_cash": starting_cash,
+            "bnpl_limit": bnpl_limit,
+        }
+        return call_farm_advisory_tool(
+            tool_name="simulate_season_cashflow",
+            request_payload=request_payload,
+            operation=lambda: farm_advisory.simulate_season_cashflow(**request_payload),
+        )
+
+    @mcp.tool(
+        name="translate_finance_terms_for_farmer",
+        description="Translate BNPL finance terms into plain farmer-facing language.",
+        tags={"farm-advisory", "finance", "education", "read"},
+        annotations={"readOnlyHint": True, "openWorldHint": False},
+    )
+    def translate_finance_terms_for_farmer_tool(term: str) -> dict[str, Any]:
+        request_payload = {"term": term}
+        return call_farm_advisory_tool(
+            tool_name="translate_finance_terms_for_farmer",
+            request_payload=request_payload,
+            operation=lambda: farm_advisory.translate_finance_terms_for_farmer(
+                **request_payload,
+            ),
         )
 
     @mcp.tool(
