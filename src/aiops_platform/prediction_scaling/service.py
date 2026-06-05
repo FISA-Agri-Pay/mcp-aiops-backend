@@ -298,7 +298,7 @@ class PredictionScalingService:
         ]
         if not matching_runs:
             raise PredictionScalingValidationError("prediction was not found.")
-        latest_run = matching_runs[0]
+        latest_run = max(matching_runs, key=lambda run: run.started_at)
         points = [
             point
             for point in PREDICTION_POINTS
@@ -306,7 +306,7 @@ class PredictionScalingService:
         ]
         if not points:
             raise PredictionScalingValidationError("prediction metric was not found.")
-        latest_point = points[-1]
+        latest_point = max(points, key=lambda point: point.target_timestamp)
         return LatestPredictionResult(
             metric_name=latest_point.metric_name,
             namespace=latest_run.namespace,
@@ -353,9 +353,10 @@ class PredictionScalingService:
         limit: int = 20,
     ) -> PredictionErrorResult:
         clamped_limit = clamp_limit(limit)
-        errors = build_prediction_errors(get_prediction_run(prediction_run_id))[:clamped_limit]
+        run = get_prediction_run(prediction_run_id)
+        errors = build_prediction_errors(run)[:clamped_limit]
         return PredictionErrorResult(
-            prediction_run_id=prediction_run_id,
+            prediction_run_id=run.prediction_run_id,
             limit=clamped_limit,
             items=errors,
         )

@@ -10,12 +10,13 @@ def test_model_versions_and_prediction_runs_can_be_filtered() -> None:
     service = PredictionScalingService()
 
     models = service.get_model_versions(service_name="api", limit=10)
-    runs = service.get_prediction_runs(model_version_id="traffic-forecast-v2")
+    runs = service.get_prediction_runs(model_version_id="traffic-forecast-v2", status="succeeded")
 
     assert [item.model_version_id for item in models.items] == [
         "traffic-forecast-v2",
         "traffic-forecast-v1",
     ]
+    assert runs.status == "SUCCEEDED"
     assert [run.prediction_run_id for run in runs.items] == ["pred-run-20260605-001"]
     assert runs.items[0].status == "SUCCEEDED"
 
@@ -33,7 +34,7 @@ def test_prediction_metrics_actuals_and_errors_are_deterministic() -> None:
         limit=10,
     )
     errors = service.get_prediction_errors(
-        prediction_run_id="pred-run-20260605-001",
+        prediction_run_id=" PRED-RUN-20260605-001 ",
         limit=10,
     )
     error_metrics = service.get_prediction_error_metrics(
@@ -42,6 +43,7 @@ def test_prediction_metrics_actuals_and_errors_are_deterministic() -> None:
 
     assert [point.predicted_value for point in predictions.items] == [100.0, 120.0, 150.0]
     assert [item.actual_value for item in actuals.items] == [96.0, 130.0, 144.0]
+    assert errors.prediction_run_id == "pred-run-20260605-001"
     assert [item.absolute_error for item in errors.items] == [4.0, 10.0, 6.0]
     assert error_metrics.sample_count == 3
     assert error_metrics.mean_absolute_error == 6.67

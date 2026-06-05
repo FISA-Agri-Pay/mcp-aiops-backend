@@ -34,7 +34,7 @@ class PredictionRunResult(BaseModel):
 
 class PredictionRunListResult(BaseModel):
     model_version_id: str | None = None
-    status: str | None = None
+    status: Literal["SUCCEEDED", "RUNNING", "FAILED"] | None = None
     limit: int
     items: list[PredictionRunResult]
 
