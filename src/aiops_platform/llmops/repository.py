@@ -595,14 +595,22 @@ class SqlLlmOpsRepository:
     @contextmanager
     def _session_scope(self, *, commit: bool = False) -> Iterator[Session]:
         if self._session is not None:
-            yield self._session
-            if commit:
-                self._session.commit()
+            try:
+                yield self._session
+                if commit:
+                    self._session.commit()
+            except Exception:
+                self._session.rollback()
+                raise
             return
         with SessionLocal() as session:
-            yield session
-            if commit:
-                session.commit()
+            try:
+                yield session
+                if commit:
+                    session.commit()
+            except Exception:
+                session.rollback()
+                raise
 
 
 def build_prompt_version(row) -> PromptVersionResult:
