@@ -14,6 +14,7 @@ from aiops_platform.infraops.clients import (
 from aiops_platform.infraops.service import (
     InfraOpsService,
     InfraOpsValidationError,
+    capture_observability_source,
     clamp_kibana_per_page,
     parse_allowlist,
     parse_observability_source_urls,
@@ -40,10 +41,10 @@ class FakeHttpClient:
 
 class FailingHttpClient:
     def get_json(self, url, **kwargs):
-        raise RuntimeError("source unavailable")
+        raise InfraOpsClientError("source unavailable")
 
     def post_json(self, url, **kwargs):
-        raise RuntimeError("source unavailable")
+        raise InfraOpsClientError("source unavailable")
 
 
 def make_infraops_service(**overrides) -> InfraOpsService:
@@ -376,7 +377,15 @@ def test_infraops_service_maps_multi_cluster_prometheus_partial_results() -> Non
         "data": {"result": [{"value": 1}]},
     }
     assert result.sources[1].status == "FAILED"
-    assert result.sources[1].error == "source unavailable"
+    assert result.sources[1].error == "loader failure: InfraOpsClientError"
+
+
+def test_multi_cluster_source_capture_reraises_unexpected_errors() -> None:
+    def broken_loader():
+        raise RuntimeError("programming bug")
+
+    with pytest.raises(RuntimeError, match="programming bug"):
+        capture_observability_source("onprem", broken_loader)
 
 
 def test_infraops_service_maps_multi_cluster_loki_results() -> None:

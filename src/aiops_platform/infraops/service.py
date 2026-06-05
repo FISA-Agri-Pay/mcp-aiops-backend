@@ -10,6 +10,7 @@ from aiops_platform.core.config import Settings, settings
 from aiops_platform.infraops.clients import (
     BatchClient,
     ElasticsearchClient,
+    InfraOpsClientError,
     KafkaAdminClient,
     KibanaClient,
     KubernetesClient,
@@ -766,11 +767,11 @@ def capture_observability_source(
             status="SUCCESS",
             data=loader(),
         )
-    except Exception as exc:
+    except InfraOpsClientError as exc:
         return MultiClusterQuerySourceResult(
             source=source_name,
             status="FAILED",
-            error=str(exc),
+            error=f"loader failure: {type(exc).__name__}",
         )
 
 

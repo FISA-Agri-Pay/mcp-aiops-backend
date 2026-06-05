@@ -132,10 +132,16 @@ def test_fastmcp_server_exposes_registry_tools() -> None:
 def test_fastmcp_server_exposes_all_registry_tools() -> None:
     async def run() -> None:
         async with Client(create_mcp_server()) as client:
-            exposed_tools = {tool.name for tool in await client.list_tools()}
+            system_tools = {
+                "list_mcp_servers",
+                "list_mcp_tools",
+                "get_mcp_tool_policy",
+                "preview_mcp_tool_execution",
+            }
+            exposed_tools = {tool.name for tool in await client.list_tools()} - system_tools
 
         registry_tools = {tool.tool_name for tool in list_mcp_tools()}
-        assert registry_tools.issubset(exposed_tools)
+        assert exposed_tools == registry_tools
 
     asyncio.run(run())
 
