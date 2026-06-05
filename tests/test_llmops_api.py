@@ -1,7 +1,18 @@
 from fastapi.testclient import TestClient
 
+from aiops_platform.llmops.service import LlmOpsValidationError
 from aiops_platform.main import create_app
 from tests.seed_constants import FARMER_1_ID
+
+
+class FailingPromptVersionService:
+    def list_prompt_versions(self, **kwargs: object) -> None:
+        raise LlmOpsValidationError("prompt scope is invalid.")
+
+
+class FailingAgentSnapshotService:
+    def list_agent_snapshots(self, **kwargs: object) -> None:
+        raise LlmOpsValidationError("snapshot type is invalid.")
 
 
 def test_farmer_agent_records_llm_run_and_prompt_version() -> None:
@@ -103,3 +114,25 @@ def test_notification_outbox_skeleton_is_queryable() -> None:
     assert matched
     assert matched[0]["channel"] == "DASHBOARD"
     assert matched[0]["payload"]["access_token"] == "***MASKED***"
+
+
+def test_prompt_versions_validation_error_returns_400() -> None:
+    app = create_app()
+    app.state.llmops_service = FailingPromptVersionService()
+    client = TestClient(app)
+
+    response = client.get("/prompt-versions")
+
+    assert response.status_code == 400
+    assert response.json()["detail"] == "prompt scope is invalid."
+
+
+def test_agent_snapshots_validation_error_returns_400() -> None:
+    app = create_app()
+    app.state.llmops_service = FailingAgentSnapshotService()
+    client = TestClient(app)
+
+    response = client.get("/agent-snapshots")
+
+    assert response.status_code == 400
+    assert response.json()["detail"] == "snapshot type is invalid."

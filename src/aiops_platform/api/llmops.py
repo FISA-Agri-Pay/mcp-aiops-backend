@@ -26,7 +26,10 @@ def list_prompt_versions(
     scope: Annotated[PromptScope | None, Query()] = None,
     limit: Annotated[int, Query(ge=1, le=100)] = 20,
 ) -> PromptVersionListResult:
-    return service.list_prompt_versions(scope=scope, limit=limit)
+    try:
+        return service.list_prompt_versions(scope=scope, limit=limit)
+    except LlmOpsValidationError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 @router.get("/llm-runs", response_model=LlmRunListResult)
@@ -80,4 +83,7 @@ def list_agent_snapshots(
     snapshot_type: Annotated[str | None, Query()] = None,
     limit: Annotated[int, Query(ge=1, le=100)] = 20,
 ) -> AgentSnapshotListResult:
-    return service.list_agent_snapshots(snapshot_type=snapshot_type, limit=limit)
+    try:
+        return service.list_agent_snapshots(snapshot_type=snapshot_type, limit=limit)
+    except LlmOpsValidationError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
