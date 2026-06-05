@@ -1,7 +1,10 @@
+import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import text
 
 from aiops_platform.core.database import SessionLocal
+from aiops_platform.llmops.client import FakeLlmClient
+from aiops_platform.llmops.service import LlmOpsService
 from aiops_platform.main import create_app
 from aiops_platform.orchestration.repository import SqlOrchestrationRepository
 from aiops_platform.orchestration.service import OrchestrationService
@@ -13,8 +16,20 @@ class FailingAgentOrchestrator:
         raise RuntimeError("planner unavailable")
 
 
+def create_orchestration_test_client(
+    *,
+    agent_orchestrator: object | None = None,
+) -> TestClient:
+    app = create_app()
+    app.state.orchestration_service = OrchestrationService(
+        agent_orchestrator=agent_orchestrator,
+        llmops_service=LlmOpsService(llm_client=FakeLlmClient()),
+    )
+    return TestClient(app)
+
+
 def test_farmer_chat_api_creates_session_and_records_masked_tool_calls() -> None:
-    client = TestClient(create_app())
+    client = create_orchestration_test_client()
 
     session_response = client.post(
         "/farmer/chat/sessions",
@@ -89,7 +104,7 @@ def test_farmer_chat_api_creates_session_and_records_masked_tool_calls() -> None
 
 
 def test_admin_copilot_api_creates_job_and_planned_tools() -> None:
-    client = TestClient(create_app())
+    client = create_orchestration_test_client()
 
     ask_response = client.post(
         "/admin/copilot/ask",
@@ -131,7 +146,7 @@ def test_admin_copilot_api_creates_job_and_planned_tools() -> None:
 
 
 def test_chat_session_close_blocks_follow_up_questions() -> None:
-    client = TestClient(create_app())
+    client = create_orchestration_test_client()
 
     session = client.post("/farmer/chat/sessions", json={"user_id": FARMER_1_ID}).json()
     close_response = client.post(f"/farmer/chat/sessions/{session['session_id']}/close")
@@ -150,7 +165,7 @@ def test_chat_session_close_blocks_follow_up_questions() -> None:
 
 
 def test_farmer_chat_blank_session_id_creates_new_session() -> None:
-    client = TestClient(create_app())
+    client = create_orchestration_test_client()
 
     ask_response = client.post(
         "/farmer/chat/ask",
@@ -166,7 +181,7 @@ def test_farmer_chat_blank_session_id_creates_new_session() -> None:
 
 
 def test_farmer_chat_checkout_confirmation_requires_approval() -> None:
-    client = TestClient(create_app())
+    client = create_orchestration_test_client()
 
     ask_response = client.post(
         "/farmer/chat/ask",
@@ -225,12 +240,26 @@ def test_job_updated_at_uses_finished_timestamp() -> None:
     assert updated.updated_at == finished_at
 
 
+def test_attach_llm_run_to_tool_calls_rejects_invalid_identifiers(caplog) -> None:
+    repository = SqlOrchestrationRepository()
+
+    with caplog.at_level("ERROR"), pytest.raises(ValueError) as exc_info:
+        repository.attach_llm_run_to_tool_calls(
+            job_id="not-a-uuid",
+            session_id=FARMER_1_ID,
+            llm_run_id="also-not-a-uuid",
+        )
+
+    error_message = str(exc_info.value)
+    assert "job_id" in error_message
+    assert "llm_run_id" in error_message
+    assert "Invalid MCP tool call LLM run link identifiers" in caplog.text
+
+
 def test_agent_failure_finishes_job() -> None:
-    app = create_app()
-    app.state.orchestration_service = OrchestrationService(
+    client = create_orchestration_test_client(
         agent_orchestrator=FailingAgentOrchestrator()
     )
-    client = TestClient(app)
 
     response = client.post(
         "/farmer/chat/ask",

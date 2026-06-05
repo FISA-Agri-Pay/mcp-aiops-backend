@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from collections.abc import Iterator
 from contextlib import contextmanager
 from typing import Any, Protocol
@@ -22,6 +23,8 @@ from aiops_platform.orchestration.schemas import (
     McpToolCallResult,
     MessageRole,
 )
+
+logger = logging.getLogger(__name__)
 
 
 class OrchestrationRepository(Protocol):
@@ -525,8 +528,24 @@ class SqlOrchestrationRepository:
         session_id: str,
         llm_run_id: str,
     ) -> None:
-        if not is_uuid(job_id) or not is_uuid(session_id) or not is_uuid(llm_run_id):
-            return
+        invalid_identifiers = {
+            name: value
+            for name, value in {
+                "job_id": job_id,
+                "session_id": session_id,
+                "llm_run_id": llm_run_id,
+            }.items()
+            if not is_uuid(value)
+        }
+        if invalid_identifiers:
+            logger.error(
+                "Invalid MCP tool call LLM run link identifiers: %s",
+                invalid_identifiers,
+            )
+            raise ValueError(
+                "invalid MCP tool call LLM run link identifiers: "
+                f"{invalid_identifiers}"
+            )
         query = text(
             """
             update ai.mcp_tool_calls

@@ -1,5 +1,7 @@
 import json
 
+import pytest
+
 from aiops_platform.core.config import Settings
 from aiops_platform.llmops.client import (
     AnthropicLlmClient,
@@ -158,6 +160,31 @@ def test_llm_client_factory_uses_keyless_openai_compatible_when_allowed() -> Non
     )
 
     assert client.provider == "openai-compatible"
+
+
+def test_llm_client_factory_rejects_invalid_openai_compatible_base_url() -> None:
+    with pytest.raises(ValueError, match="absolute http"):
+        create_llm_client(
+            Settings(
+                LLM_PROVIDER="openai-compatible",
+                LLM_MODEL="Qwen/Qwen3-32B",
+                LLM_API_BASE_URL="file:///tmp/model",
+                LLM_API_KEY="",
+                LLM_REQUIRE_API_KEY=False,
+            )
+        )
+
+
+def test_llm_client_factory_rejects_invalid_anthropic_base_url() -> None:
+    with pytest.raises(ValueError, match="absolute http"):
+        create_llm_client(
+            Settings(
+                LLM_PROVIDER="anthropic",
+                LLM_MODEL="claude-test",
+                LLM_API_BASE_URL="ftp://anthropic.example.test/v1",
+                LLM_API_KEY="test-key",
+            )
+        )
 
 
 def test_anthropic_client_sends_mcp_context_and_parses_json_answer() -> None:

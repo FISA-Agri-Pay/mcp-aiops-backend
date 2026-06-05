@@ -5,7 +5,7 @@ import time
 from collections.abc import Callable
 from typing import Any, Protocol
 from urllib.error import HTTPError, URLError
-from urllib.parse import urljoin
+from urllib.parse import urljoin, urlparse
 from urllib.request import Request, urlopen
 
 from pydantic import BaseModel, Field
@@ -213,7 +213,7 @@ def create_llm_client(settings: Settings) -> LlmClient:
         return OpenAICompatibleLlmClient(
             model=settings.llm_model,
             api_key=settings.llm_api_key or None,
-            base_url=settings.llm_api_base_url,
+            base_url=validate_llm_base_url(settings.llm_api_base_url),
             timeout_seconds=settings.llm_timeout_seconds,
             temperature=settings.llm_temperature,
             max_tokens=settings.llm_max_tokens,
@@ -222,12 +222,22 @@ def create_llm_client(settings: Settings) -> LlmClient:
         return AnthropicLlmClient(
             model=settings.llm_model,
             api_key=settings.llm_api_key,
-            base_url=resolve_anthropic_base_url(settings.llm_api_base_url),
+            base_url=validate_llm_base_url(
+                resolve_anthropic_base_url(settings.llm_api_base_url)
+            ),
             timeout_seconds=settings.llm_timeout_seconds,
             temperature=settings.llm_temperature,
             max_tokens=settings.llm_max_tokens,
         )
     return FakeLlmClient()
+
+
+def validate_llm_base_url(base_url: str) -> str:
+    normalized = base_url.strip()
+    parsed = urlparse(normalized)
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        raise ValueError("LLM API base URL must be an absolute http(s) URL.")
+    return normalized
 
 
 def build_openai_compatible_headers(api_key: str | None) -> dict[str, str]:
