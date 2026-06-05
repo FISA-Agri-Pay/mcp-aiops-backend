@@ -627,10 +627,15 @@ def test_observability_source_url_parser_supports_named_and_default_sources() ->
         ("onprem", "http://prometheus:9090"),
         ("aws", "http://aws-prometheus:9090"),
     )
+    assert parse_observability_source_urls(
+        "http://prometheus:9090/api/v1?tenant=a",
+        default_name="default",
+        default_url="http://prometheus:9090",
+    ) == (("source-1", "http://prometheus:9090/api/v1?tenant=a"),)
 
 
 def test_observability_source_url_parser_rejects_invalid_sources() -> None:
-    with pytest.raises(InfraOpsValidationError, match="source name is invalid"):
+    with pytest.raises(InfraOpsValidationError, match="must be http or https"):
         parse_observability_source_urls(
             "bad source=http://prometheus:9090",
             default_name="default",
@@ -639,7 +644,21 @@ def test_observability_source_url_parser_rejects_invalid_sources() -> None:
 
     with pytest.raises(InfraOpsValidationError, match="source names must be unique"):
         parse_observability_source_urls(
-            "aws=http://a,aws=http://b",
+            "aws=http://a,AWS=http://b",
             default_name="default",
             default_url="http://prometheus:9090",
+        )
+
+    with pytest.raises(InfraOpsValidationError, match="must be http or https"):
+        parse_observability_source_urls(
+            "aws=file:///etc/passwd",
+            default_name="default",
+            default_url="http://prometheus:9090",
+        )
+
+    with pytest.raises(InfraOpsValidationError, match="must be http or https"):
+        parse_observability_source_urls(
+            "",
+            default_name="default",
+            default_url="localhost:9090",
         )

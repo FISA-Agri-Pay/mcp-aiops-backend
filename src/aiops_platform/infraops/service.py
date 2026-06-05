@@ -4,6 +4,7 @@ import re
 from collections.abc import Callable
 from fnmatch import fnmatch
 from typing import Any
+from urllib.parse import urlparse
 
 from aiops_platform.core.config import Settings, settings
 from aiops_platform.infraops.clients import (
@@ -716,31 +717,43 @@ def parse_observability_source_urls(
 ) -> ObservabilitySourceUrls:
     entries = tuple(item.strip() for item in value.split(",") if item.strip())
     if not entries:
+        validate_observability_source_url(default_url)
         return ((default_name, default_url),)
 
     sources: list[tuple[str, str]] = []
     seen_names: set[str] = set()
     for index, entry in enumerate(entries, start=1):
-        if "=" in entry:
-            source_name, source_url = (part.strip() for part in entry.split("=", 1))
-        else:
-            source_name = f"source-{index}"
-            source_url = entry
+        source_name, source_url = split_observability_source_entry(entry, index=index)
 
         validate_observability_source_name(source_name)
-        if not source_url:
-            raise InfraOpsValidationError("Observability source URL must not be empty.")
-        if source_name in seen_names:
+        validate_observability_source_url(source_url)
+        source_key = source_name.lower()
+        if source_key in seen_names:
             raise InfraOpsValidationError("Observability source names must be unique.")
-        seen_names.add(source_name)
+        seen_names.add(source_key)
         sources.append((source_name, source_url))
     return tuple(sources)
+
+
+def split_observability_source_entry(entry: str, *, index: int) -> tuple[str, str]:
+    if "=" in entry:
+        source_name, source_url = (part.strip() for part in entry.split("=", 1))
+        if OBSERVABILITY_SOURCE_NAME_PATTERN.fullmatch(source_name):
+            return source_name, source_url
+    return f"source-{index}", entry
 
 
 def validate_observability_source_name(source_name: str) -> None:
     if OBSERVABILITY_SOURCE_NAME_PATTERN.fullmatch(source_name):
         return
     raise InfraOpsValidationError("Observability source name is invalid.")
+
+
+def validate_observability_source_url(source_url: str) -> None:
+    parsed_url = urlparse(source_url)
+    if parsed_url.scheme in {"http", "https"} and parsed_url.netloc:
+        return
+    raise InfraOpsValidationError("Observability source URL must be http or https.")
 
 
 def capture_observability_source(
