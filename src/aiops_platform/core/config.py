@@ -62,6 +62,10 @@ class Settings(BaseSettings):
         ge=1,
         alias="PREDICTION_SCALING_MAX_SEARCH_LIMIT",
     )
+    llm_provider: str = Field(default="fake", alias="LLM_PROVIDER")
+    llm_model: str = Field(default="fake-agentic-planner", alias="LLM_MODEL")
+    llm_timeout_seconds: float = Field(default=60.0, gt=0, alias="LLM_TIMEOUT_SECONDS")
+    llm_temperature: float = Field(default=0.1, ge=0, le=2, alias="LLM_TEMPERATURE")
 
     prometheus_base_url: str = Field(default="http://localhost:9090", alias="PROMETHEUS_BASE_URL")
     prometheus_source_urls: str = Field(default="", alias="PROMETHEUS_SOURCE_URLS")
