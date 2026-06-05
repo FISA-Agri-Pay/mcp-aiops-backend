@@ -4,7 +4,8 @@ from typing import Any, get_args
 from uuid import UUID
 
 from aiops_platform.agent.schemas import AgentToolExecutionResult
-from aiops_platform.llmops.client import FakeLlmClient, LlmClient, LlmCompletionRequest
+from aiops_platform.core.config import settings
+from aiops_platform.llmops.client import LlmClient, LlmCompletionRequest, create_llm_client
 from aiops_platform.llmops.repository import LlmOpsRepository, SqlLlmOpsRepository
 from aiops_platform.llmops.schemas import (
     AgentSnapshotListResult,
@@ -73,7 +74,7 @@ class LlmOpsService:
         llm_client: LlmClient | None = None,
     ) -> None:
         self._repository = repository or SqlLlmOpsRepository()
-        self._llm_client = llm_client or FakeLlmClient()
+        self._llm_client = llm_client or create_llm_client(settings)
 
     def ensure_prompt_version(
         self,

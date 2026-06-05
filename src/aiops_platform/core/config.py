@@ -64,6 +64,10 @@ class Settings(BaseSettings):
     )
     llm_provider: str = Field(default="fake", alias="LLM_PROVIDER")
     llm_model: str = Field(default="fake-agentic-planner", alias="LLM_MODEL")
+    llm_api_key: str = Field(default="", alias="LLM_API_KEY")
+    llm_api_base_url: str = Field(default="https://api.openai.com/v1", alias="LLM_API_BASE_URL")
+    llm_require_api_key: bool = Field(default=True, alias="LLM_REQUIRE_API_KEY")
+    llm_max_tokens: int = Field(default=800, ge=1, le=8192, alias="LLM_MAX_TOKENS")
     llm_timeout_seconds: float = Field(default=60.0, gt=0, alias="LLM_TIMEOUT_SECONDS")
     llm_temperature: float = Field(default=0.1, ge=0, le=2, alias="LLM_TEMPERATURE")
 
