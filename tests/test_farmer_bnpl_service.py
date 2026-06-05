@@ -1,5 +1,7 @@
 import pytest
+from sqlalchemy import text
 
+from aiops_platform.core.database import SessionLocal
 from aiops_platform.farmer_bnpl.service import (
     FarmerBnplService,
     FarmerBnplValidationError,
@@ -38,6 +40,108 @@ def test_farmer_credit_and_repayment_reads_return_skeleton_values() -> None:
     assert credit_limit.available_limit == 2_550_000
     assert repayment.schedule[0].status == "UPCOMING"
     assert overdue.is_overdue is False
+
+
+def test_repayment_schedule_status_uses_business_priority() -> None:
+    order_id = "90000000-0000-0000-0000-000000000001"
+    principal_id = "91000000-0000-0000-0000-000000000001"
+    with SessionLocal() as session:
+        session.execute(
+            text(
+                """
+                insert into core.orders (
+                    public_id,
+                    user_public_id,
+                    payment_request_public_id,
+                    total_amount,
+                    order_status,
+                    delivery_status,
+                    recipient_name,
+                    recipient_phone,
+                    delivery_address,
+                    delivery_zip_code,
+                    ordered_at,
+                    created_at,
+                    updated_at
+                ) values (
+                    cast(:order_id as uuid),
+                    cast(:user_id as uuid),
+                    '92000000-0000-0000-0000-000000000001',
+                    1000.00,
+                    'CONFIRMED',
+                    'PREPARING',
+                    'Sample farmer',
+                    '010-1111-2222',
+                    'jeonbuk',
+                    '55000',
+                    timestamp '2026-06-05 00:00:00',
+                    timestamp '2026-06-05 00:00:00',
+                    timestamp '2026-06-05 00:00:00'
+                )
+                on conflict (public_id) do nothing
+                """
+            ),
+            {"order_id": order_id, "user_id": FARMER_1_ID},
+        )
+        session.execute(
+            text(
+                """
+                insert into core.principal_repayment_ledger (
+                    public_id,
+                    credit_limit_public_id,
+                    order_public_id,
+                    due_date,
+                    principal_amount,
+                    amount_paid,
+                    status,
+                    created_at,
+                    updated_at
+                ) values (
+                    cast(:principal_id as uuid),
+                    'c0000001-0000-0000-0000-000000000001',
+                    cast(:order_id as uuid),
+                    date '2026-06-15',
+                    1000.00,
+                    0.00,
+                    'OVERDUE',
+                    timestamp '2026-06-05 00:00:00',
+                    timestamp '2026-06-05 00:00:00'
+                )
+                on conflict (public_id) do update set
+                    status = excluded.status,
+                    due_date = excluded.due_date,
+                    updated_at = excluded.updated_at
+                """
+            ),
+            {"principal_id": principal_id, "order_id": order_id},
+        )
+        session.commit()
+    try:
+        repayment = FarmerBnplService().get_repayment_schedule(user_id=FARMER_1_ID)
+
+        assert repayment.schedule[0].due_date == "2026-06-15"
+        assert repayment.schedule[0].status == "OVERDUE"
+    finally:
+        with SessionLocal() as session:
+            session.execute(
+                text(
+                    """
+                    delete from core.principal_repayment_ledger
+                    where public_id = cast(:principal_id as uuid)
+                    """
+                ),
+                {"principal_id": principal_id},
+            )
+            session.execute(
+                text(
+                    """
+                    delete from core.orders
+                    where public_id = cast(:order_id as uuid)
+                    """
+                ),
+                {"order_id": order_id},
+            )
+            session.commit()
 
 
 def test_product_search_and_lowest_fertilizer_are_deterministic() -> None:

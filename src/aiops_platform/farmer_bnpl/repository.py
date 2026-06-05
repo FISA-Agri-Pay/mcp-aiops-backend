@@ -133,7 +133,12 @@ class SqlFarmerBnplRepository:
                     due_date,
                     principal_amount - amount_paid as principal_due,
                     0::numeric as interest_due,
-                    status
+                    case
+                        when status = 'OVERDUE' then 4
+                        when status in ('PARTIAL', 'DUE', 'UPCOMING') then 2
+                        when status = 'PAID' then 1
+                        else 0
+                    end as status_priority
                 from core.principal_repayment_ledger
                 where credit_limit_public_id in (select public_id from limits)
             ),
@@ -142,7 +147,12 @@ class SqlFarmerBnplRepository:
                     due_date,
                     0::numeric as principal_due,
                     interest_amount - amount_paid as interest_due,
-                    status
+                    case
+                        when status = 'OVERDUE' then 4
+                        when status in ('PARTIAL', 'DUE', 'UPCOMING') then 2
+                        when status = 'PAID' then 1
+                        else 0
+                    end as status_priority
                 from core.interest_ledger
                 where credit_limit_public_id in (select public_id from limits)
             )
@@ -150,7 +160,11 @@ class SqlFarmerBnplRepository:
                 due_date::text as due_date,
                 sum(principal_due) as principal_due,
                 sum(interest_due) as interest_due,
-                max(status) as status
+                case max(status_priority)
+                    when 4 then 'OVERDUE'
+                    when 1 then 'PAID'
+                    else 'UPCOMING'
+                end as status
             from (
                 select * from principal
                 union all

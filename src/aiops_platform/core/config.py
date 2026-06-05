@@ -1,4 +1,5 @@
 from functools import lru_cache
+from uuid import UUID
 
 from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -42,7 +43,7 @@ class Settings(BaseSettings):
         ge=1,
         alias="FARMER_BNPL_MAX_SEARCH_LIMIT",
     )
-    farmer_bnpl_default_checkout_product_id: str = Field(
+    farmer_bnpl_default_checkout_product_id: UUID = Field(
         default="10000000-0000-0000-0000-000000000002",
         alias="FARMER_BNPL_DEFAULT_CHECKOUT_PRODUCT_ID",
     )

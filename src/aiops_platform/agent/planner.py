@@ -88,7 +88,7 @@ def plan_farmer_bnpl_tools(*, message: str, user_id: str) -> list[AgentToolPlan]
     if any(keyword in message for keyword in purchase_keywords):
         default_cart_items = [
             {
-                "product_id": settings.farmer_bnpl_default_checkout_product_id,
+                "product_id": str(settings.farmer_bnpl_default_checkout_product_id),
                 "quantity": settings.farmer_bnpl_default_checkout_quantity,
             }
         ]
