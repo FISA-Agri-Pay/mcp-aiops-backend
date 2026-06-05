@@ -31,6 +31,33 @@ class KubernetesResourceResult(BaseModel):
     raw: dict[str, Any]
 
 
+class ScaleDeploymentPreviewRequest(BaseModel):
+    namespace: str | None = None
+    deployment_name: str = Field(min_length=1, max_length=253)
+    replicas: int = Field(ge=0, le=100)
+
+
+class PodOperationPreviewRequest(BaseModel):
+    namespace: str | None = None
+    pod_name: str = Field(min_length=1, max_length=253)
+
+
+class KubectlExecPreviewRequest(BaseModel):
+    namespace: str | None = None
+    pod_name: str = Field(min_length=1, max_length=253)
+    command: list[str] = Field(min_length=1, max_length=20)
+
+
+class InfraOpsChangePreviewResult(BaseModel):
+    action: str
+    namespace: str
+    target_kind: str
+    target_name: str
+    request_payload: dict[str, Any]
+    dry_run: bool = True
+    safety_notes: list[str]
+
+
 class KafkaConsumerLagResult(BaseModel):
     consumer_group: str
     topic: str | None = None

@@ -17,6 +17,8 @@ from aiops_platform.infraops.service import (
     clamp_kibana_per_page,
     parse_allowlist,
     validate_index_pattern,
+    validate_kubectl_exec_command,
+    validate_kubernetes_resource_name,
     validate_namespace,
 )
 
@@ -249,6 +251,73 @@ def test_infraops_service_rejects_index_pattern_path_separators() -> None:
 def test_infraops_service_rejects_non_allowlisted_namespace() -> None:
     with pytest.raises(InfraOpsValidationError):
         validate_namespace("prod", allowlist=("default", "kube-system"))
+
+
+def test_infraops_service_rejects_invalid_kubernetes_resource_name() -> None:
+    invalid_names = [
+        "../api",
+        "a..b",
+        "a.-b",
+        "a" * 64,
+    ]
+
+    for name in invalid_names:
+        with pytest.raises(InfraOpsValidationError):
+            validate_kubernetes_resource_name(name, resource="pod")
+
+
+def test_infraops_service_rejects_invalid_kubectl_exec_command() -> None:
+    with pytest.raises(InfraOpsValidationError):
+        validate_kubectl_exec_command(["sh", ""])
+
+
+def test_infraops_service_previews_ops_write_requests_without_execution() -> None:
+    service = make_infraops_service()
+
+    scale_preview = service.preview_scale_deployment(
+        deployment_name="api",
+        replicas=3,
+        namespace="default",
+    )
+    restart_preview = service.preview_restart_pod(
+        pod_name="api-123",
+        namespace="default",
+    )
+
+    assert scale_preview.model_dump(mode="json") == {
+        "action": "scale_deployment",
+        "namespace": "default",
+        "target_kind": "deployment",
+        "target_name": "api",
+        "request_payload": {
+            "namespace": "default",
+            "deployment_name": "api",
+            "replicas": 3,
+        },
+        "dry_run": True,
+        "safety_notes": [
+            "Execution is blocked until administrator approval is implemented.",
+            "No Kubernetes scale request was sent.",
+        ],
+    }
+    assert restart_preview.dry_run is True
+    assert restart_preview.action == "restart_pod"
+
+
+def test_infraops_service_previews_destructive_requests_without_execution() -> None:
+    service = make_infraops_service()
+
+    delete_preview = service.preview_delete_pod(pod_name="api-123", namespace="default")
+    exec_preview = service.preview_kubectl_exec(
+        pod_name="api-123",
+        command=["sh", "-c", "date"],
+        namespace="default",
+    )
+
+    assert delete_preview.action == "delete_pod"
+    assert delete_preview.dry_run is True
+    assert exec_preview.request_payload["command"] == ["sh", "-c", "date"]
+    assert exec_preview.safety_notes[0] == "Destructive exec tool execution is blocked by policy."
 
 
 def test_infraops_service_maps_loki_query() -> None:
