@@ -3,6 +3,7 @@ from typing import Any, Literal
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from aiops_platform.agent.schemas import AgentToolExecutionResult
+from aiops_platform.llmops.schemas import LlmRunResult
 from aiops_platform.mcp.schemas import (
     McpConfirmationPolicy,
     McpExecutionPolicy,
@@ -67,6 +68,7 @@ class ChatAskResult(BaseModel):
     user_message: ChatMessageResult
     assistant_message: ChatMessageResult
     job: "JobResult"
+    llm_run: LlmRunResult | None = None
     planned_tools: list[PlannedToolResult]
     tool_results: list["AgentToolExecutionResult"] = Field(default_factory=list)
 

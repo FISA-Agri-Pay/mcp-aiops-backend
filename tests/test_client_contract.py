@@ -58,6 +58,10 @@ def test_client_contract_openapi_includes_chat_history_and_mcp_paths() -> None:
         "/mcp/servers",
         "/mcp/tools",
         "/mcp/tool-calls",
+        "/llm-runs",
+        "/approvals",
+        "/notifications",
+        "/agent-snapshots",
     ]:
         assert path in paths
 
@@ -80,6 +84,8 @@ def test_client_contract_farmer_agent_response_is_renderable() -> None:
     assert body["assistant_message"]["content"]
     assert body["job"]["job_type"] == "farmer_chat"
     assert body["job"]["status"] == "SUCCEEDED"
+    assert body["llm_run"]["provider"] == "fake"
+    assert body["llm_run"]["run_status"] == "SUCCESS"
     assert len(body["planned_tools"]) == len(body["tool_results"])
     assert all("server_name" in tool for tool in body["planned_tools"])
     assert all("tool_name" in result for result in body["tool_results"])

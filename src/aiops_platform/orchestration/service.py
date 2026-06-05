@@ -7,6 +7,8 @@ from uuid import uuid4
 
 from aiops_platform.agent.orchestrator import AgentOrchestrator
 from aiops_platform.agent.schemas import AgentToolExecutionResult
+from aiops_platform.llmops.schemas import LlmRunResult
+from aiops_platform.llmops.service import LlmOpsService
 from aiops_platform.mcp.policy import resolve_tool_policy
 from aiops_platform.mcp.registry import list_mcp_tools
 from aiops_platform.mcp.schemas import McpToolCallStatus, McpToolPermission
@@ -49,9 +51,11 @@ class OrchestrationService:
         *,
         agent_orchestrator: AgentOrchestrator | None = None,
         repository: OrchestrationRepository | None = None,
+        llmops_service: LlmOpsService | None = None,
     ) -> None:
         self._agent_orchestrator = agent_orchestrator or AgentOrchestrator()
         self._repository = repository or SqlOrchestrationRepository()
+        self._llmops_service = llmops_service or LlmOpsService()
 
     def create_chat_session(
         self,
@@ -256,12 +260,35 @@ class OrchestrationService:
                 )
                 for tool_result in agent_run.tool_results
             ]
+            llm_run = self._record_llm_run(
+                chat_type=session.chat_type,
+                message=message,
+                user_id=user_id,
+                tool_results=tool_results,
+                job_id=job.job_id,
+                session_id=session.session_id,
+            )
+            self._create_agent_snapshot(
+                chat_type=session.chat_type,
+                job_id=job.job_id,
+                session_id=session.session_id,
+                llm_run=llm_run,
+                tool_results=tool_results,
+            )
+            self._create_approval_requests(
+                user_id=user_id,
+                tool_results=tool_results,
+            )
             job = self._finish_job(job.job_id, tool_results)
-            assistant_content = agent_run.answer
+            assistant_content = resolve_assistant_content(
+                llm_run.masked_output,
+                agent_run.answer,
+            )
         except Exception as exc:
             logger.exception("Agent orchestration failed for job %s.", job.job_id)
             planned_tool_results = []
             tool_results = []
+            llm_run = None
             job = self._finish_job(
                 job.job_id,
                 tool_results,
@@ -285,6 +312,7 @@ class OrchestrationService:
             user_message=user_message,
             assistant_message=assistant_message,
             job=job,
+            llm_run=llm_run,
             planned_tools=planned_tool_results,
             tool_results=tool_results,
         )
@@ -303,6 +331,72 @@ class OrchestrationService:
             content=content,
             mcp_tool_call_ids=mcp_tool_call_ids or [],
         )
+
+    def _record_llm_run(
+        self,
+        *,
+        chat_type: ChatType,
+        message: str,
+        user_id: str,
+        tool_results: list[AgentToolExecutionResult],
+        job_id: str,
+        session_id: str,
+    ) -> LlmRunResult:
+        return self._llmops_service.run_agent_completion(
+            chat_type=chat_type,
+            message=message,
+            user_id=user_id,
+            tool_results=tool_results,
+            job_id=job_id,
+            session_id=session_id,
+        )
+
+    def _create_approval_requests(
+        self,
+        *,
+        user_id: str,
+        tool_results: list[AgentToolExecutionResult],
+    ) -> None:
+        for tool_result in tool_results:
+            if not tool_result.requires_approval:
+                continue
+            try:
+                self._llmops_service.create_approval_for_tool_result(
+                    tool_result=tool_result,
+                    requester_id=user_id,
+                )
+            except Exception:
+                logger.exception(
+                    "Failed to create approval request for %s.",
+                    tool_result.tool_name,
+                )
+
+    def _create_agent_snapshot(
+        self,
+        *,
+        chat_type: ChatType,
+        job_id: str,
+        session_id: str,
+        llm_run: LlmRunResult,
+        tool_results: list[AgentToolExecutionResult],
+    ) -> None:
+        try:
+            self._llmops_service.create_agent_snapshot(
+                snapshot_type=chat_type,
+                job_id=job_id,
+                session_id=session_id,
+                llm_run_id=llm_run.llm_run_id,
+                payload={
+                    "llm_run_id": llm_run.llm_run_id,
+                    "tool_call_ids": [
+                        tool_result.tool_call_id
+                        for tool_result in tool_results
+                        if tool_result.tool_call_id is not None
+                    ],
+                },
+            )
+        except Exception:
+            logger.exception("Failed to create agent snapshot for job %s.", job_id)
 
     def _create_job(
         self,
@@ -437,6 +531,15 @@ def normalize_optional_job_status(value: str | None) -> JobStatus | None:
     if normalized not in get_args(JobStatus):
         raise OrchestrationValidationError("job status is invalid.")
     return normalized
+
+
+def resolve_assistant_content(
+    masked_output: dict[str, object],
+    fallback_answer: str,
+) -> str:
+    if "answer" in masked_output:
+        return str(masked_output["answer"])
+    return fallback_answer
 
 
 def current_timestamp() -> str:
