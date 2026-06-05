@@ -19,10 +19,14 @@ from aiops_platform.infraops.schemas import (
     KibanaSavedObjectsResult,
     KubernetesResourceResult,
     LokiQueryResult,
+    MultiClusterLokiQueryResult,
+    MultiClusterPrometheusQueryResult,
+    MultiClusterQuerySourceResult,
     PrometheusQueryResult,
     RcaSnapshotResult,
 )
 from aiops_platform.main import create_app
+from aiops_platform.mcp.registry import list_mcp_tools
 from aiops_platform.mcp.server import MCP_TRANSPORT_MOUNT_PATH, create_mcp_server
 
 
@@ -98,6 +102,8 @@ def test_fastmcp_server_exposes_registry_tools() -> None:
             "create_scaling_analysis_snapshot",
             "query_prometheus",
             "query_loki",
+            "query_multi_cluster_prometheus",
+            "query_multi_cluster_loki",
             "get_k8s_pods",
             "get_k8s_events",
             "get_k8s_deployments",
@@ -119,6 +125,23 @@ def test_fastmcp_server_exposes_registry_tools() -> None:
             "search_incidents",
             "search_rca_history",
         }
+
+    asyncio.run(run())
+
+
+def test_fastmcp_server_exposes_all_registry_tools() -> None:
+    async def run() -> None:
+        async with Client(create_mcp_server()) as client:
+            system_tools = {
+                "list_mcp_servers",
+                "list_mcp_tools",
+                "get_mcp_tool_policy",
+                "preview_mcp_tool_execution",
+            }
+            exposed_tools = {tool.name for tool in await client.list_tools()} - system_tools
+
+        registry_tools = {tool.tool_name for tool in list_mcp_tools()}
+        assert exposed_tools == registry_tools
 
     asyncio.run(run())
 
@@ -481,6 +504,78 @@ def test_fastmcp_loki_tool_returns_results() -> None:
             )
 
         assert result.data == {"status": "success", "data": {"result": []}}
+
+    asyncio.run(run())
+
+
+def test_fastmcp_multi_cluster_observability_tools_return_results() -> None:
+    class FakeInfraOpsService:
+        def query_multi_cluster_prometheus(self, query: str, time: str | None = None):
+            assert query == "up"
+            assert time is None
+            return MultiClusterPrometheusQueryResult(
+                query=query,
+                time=time,
+                partial=True,
+                sources=[
+                    MultiClusterQuerySourceResult(
+                        source="onprem",
+                        status="SUCCESS",
+                        data={"status": "success", "data": {"result": []}},
+                    ),
+                    MultiClusterQuerySourceResult(
+                        source="aws",
+                        status="FAILED",
+                        error="source unavailable",
+                    ),
+                ],
+            )
+
+        def query_multi_cluster_loki(
+            self,
+            query: str,
+            start: str | None = None,
+            end: str | None = None,
+            limit: int = 100,
+        ):
+            assert query == '{app="api"}'
+            assert start == "1"
+            assert end == "2"
+            assert limit == 50
+            return MultiClusterLokiQueryResult(
+                query=query,
+                start=start,
+                end=end,
+                limit=limit,
+                partial=False,
+                sources=[
+                    MultiClusterQuerySourceResult(
+                        source="onprem",
+                        status="SUCCESS",
+                        data={"status": "success", "data": {"result": []}},
+                    )
+                ],
+            )
+
+    async def run() -> None:
+        async with Client(create_mcp_server(infraops_service=FakeInfraOpsService())) as client:
+            prometheus = await client.call_tool(
+                "query_multi_cluster_prometheus",
+                {"query": "up"},
+            )
+            loki = await client.call_tool(
+                "query_multi_cluster_loki",
+                {"query": '{app="api"}', "start": "1", "end": "2", "limit": 50},
+            )
+
+        assert prometheus.data["partial"] is True
+        assert [source["source"] for source in prometheus.data["sources"]] == [
+            "onprem",
+            "aws",
+        ]
+        assert prometheus.data["sources"][1]["status"] == "FAILED"
+        assert loki.data["partial"] is False
+        assert loki.data["sources"][0]["source"] == "onprem"
 
     asyncio.run(run())
 

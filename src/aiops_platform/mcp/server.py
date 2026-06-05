@@ -1444,6 +1444,92 @@ def create_mcp_server(
         return result
 
     @mcp.tool(
+        name="query_multi_cluster_prometheus",
+        description="Run an instant PromQL query against each configured Prometheus source.",
+        tags={"infraops", "prometheus", "multi-cluster", "read"},
+        annotations={"readOnlyHint": True, "openWorldHint": False},
+    )
+    def query_multi_cluster_prometheus_tool(
+        query: str,
+        time: str | None = None,
+    ) -> dict[str, Any]:
+        started_at = perf_counter()
+        tool = _resolve_registered_tool("infraops-mcp", "query_multi_cluster_prometheus")
+        request_payload = {"query": query, "time": time}
+
+        try:
+            result = infraops.query_multi_cluster_prometheus(
+                query=query,
+                time=time,
+            ).model_dump(mode="json")
+        except Exception as exc:
+            _record_tool_audit(
+                audit_service=audit_service,
+                tool=tool,
+                request_payload=request_payload,
+                response_payload=None,
+                call_status=McpToolCallStatus.FAILED,
+                started_at=started_at,
+                last_error=str(exc),
+            )
+            raise
+
+        _record_tool_audit(
+            audit_service=audit_service,
+            tool=tool,
+            request_payload=request_payload,
+            response_payload=result,
+            call_status=McpToolCallStatus.SUCCESS,
+            started_at=started_at,
+        )
+        return result
+
+    @mcp.tool(
+        name="query_multi_cluster_loki",
+        description="Run a Loki query_range log query against each configured Loki source.",
+        tags={"infraops", "loki", "logs", "multi-cluster", "read"},
+        annotations={"readOnlyHint": True, "openWorldHint": False},
+    )
+    def query_multi_cluster_loki_tool(
+        query: str,
+        start: str | None = None,
+        end: str | None = None,
+        limit: int = 100,
+    ) -> dict[str, Any]:
+        started_at = perf_counter()
+        tool = _resolve_registered_tool("infraops-mcp", "query_multi_cluster_loki")
+        request_payload = {"query": query, "start": start, "end": end, "limit": limit}
+
+        try:
+            result = infraops.query_multi_cluster_loki(
+                query=query,
+                start=start,
+                end=end,
+                limit=limit,
+            ).model_dump(mode="json")
+        except Exception as exc:
+            _record_tool_audit(
+                audit_service=audit_service,
+                tool=tool,
+                request_payload=request_payload,
+                response_payload=None,
+                call_status=McpToolCallStatus.FAILED,
+                started_at=started_at,
+                last_error=str(exc),
+            )
+            raise
+
+        _record_tool_audit(
+            audit_service=audit_service,
+            tool=tool,
+            request_payload=request_payload,
+            response_payload=result,
+            call_status=McpToolCallStatus.SUCCESS,
+            started_at=started_at,
+        )
+        return result
+
+    @mcp.tool(
         name="get_k8s_pods",
         description="Read Kubernetes pods from an allowlisted namespace through infraops-mcp.",
         tags={"infraops", "kubernetes", "read"},
