@@ -19,6 +19,7 @@ from aiops_platform.mcp.schemas import (
     McpToolMetadata,
     McpToolPermission,
 )
+from aiops_platform.prediction_scaling.service import PredictionScalingService
 
 MCP_TRANSPORT_MOUNT_PATH = "/mcp-server"
 MCP_TRANSPORT_PATH = "/mcp"
@@ -113,10 +114,12 @@ def create_mcp_server(
     farmer_bnpl_service: FarmerBnplService | None = None,
     farm_advisory_service: FarmAdvisoryService | None = None,
     admin_riskops_service: AdminRiskOpsService | None = None,
+    prediction_scaling_service: PredictionScalingService | None = None,
 ) -> FastMCP:
     farmer_bnpl = farmer_bnpl_service or FarmerBnplService()
     farm_advisory = farm_advisory_service or FarmAdvisoryService()
     admin_riskops = admin_riskops_service or AdminRiskOpsService()
+    prediction_scaling = prediction_scaling_service or PredictionScalingService()
     infraops = infraops_service or InfraOpsService.from_settings()
     mcp = FastMCP(
         name="aiops-platform-mcp",
@@ -1115,6 +1118,249 @@ def create_mcp_server(
             tool_name="send_overdue_alerts",
             request_payload=request_payload,
             operation=lambda: admin_riskops.send_overdue_alerts(**request_payload),
+        )
+
+    def call_prediction_scaling_tool(
+        *,
+        tool_name: str,
+        request_payload: dict[str, Any],
+        operation: Callable[[], Any],
+    ) -> dict[str, Any]:
+        started_at = perf_counter()
+        tool = _resolve_registered_tool("prediction-scaling-mcp", tool_name)
+
+        try:
+            result = operation().model_dump(mode="json")
+        except Exception as exc:
+            _record_tool_audit(
+                audit_service=audit_service,
+                tool=tool,
+                request_payload=request_payload,
+                response_payload=None,
+                call_status=McpToolCallStatus.FAILED,
+                started_at=started_at,
+                last_error=str(exc),
+            )
+            raise
+
+        _record_tool_audit(
+            audit_service=audit_service,
+            tool=tool,
+            request_payload=request_payload,
+            response_payload=result,
+            call_status=McpToolCallStatus.SUCCESS,
+            started_at=started_at,
+        )
+        return result
+
+    @mcp.tool(
+        name="get_model_versions",
+        description="Read prediction model versions available for autoscaling analysis.",
+        tags={"prediction-scaling", "model", "read"},
+        annotations={"readOnlyHint": True, "openWorldHint": False},
+    )
+    def get_model_versions_tool(
+        service_name: str | None = None,
+        limit: int = 20,
+    ) -> dict[str, Any]:
+        request_payload = {"service_name": service_name, "limit": limit}
+        return call_prediction_scaling_tool(
+            tool_name="get_model_versions",
+            request_payload=request_payload,
+            operation=lambda: prediction_scaling.get_model_versions(**request_payload),
+        )
+
+    @mcp.tool(
+        name="get_prediction_runs",
+        description="Read prediction execution runs for a model version or status.",
+        tags={"prediction-scaling", "prediction", "run", "read"},
+        annotations={"readOnlyHint": True, "openWorldHint": False},
+    )
+    def get_prediction_runs_tool(
+        model_version_id: str | None = None,
+        status: str | None = None,
+        limit: int = 20,
+    ) -> dict[str, Any]:
+        request_payload = {
+            "model_version_id": model_version_id,
+            "status": status,
+            "limit": limit,
+        }
+        return call_prediction_scaling_tool(
+            tool_name="get_prediction_runs",
+            request_payload=request_payload,
+            operation=lambda: prediction_scaling.get_prediction_runs(**request_payload),
+        )
+
+    @mcp.tool(
+        name="get_prediction_metrics",
+        description="Read predicted metric points for a prediction run.",
+        tags={"prediction-scaling", "prediction", "metrics", "read"},
+        annotations={"readOnlyHint": True, "openWorldHint": False},
+    )
+    def get_prediction_metrics_tool(
+        prediction_run_id: str,
+        metric_name: str | None = None,
+    ) -> dict[str, Any]:
+        request_payload = {
+            "prediction_run_id": prediction_run_id,
+            "metric_name": metric_name,
+        }
+        return call_prediction_scaling_tool(
+            tool_name="get_prediction_metrics",
+            request_payload=request_payload,
+            operation=lambda: prediction_scaling.get_prediction_metrics(
+                **request_payload,
+            ),
+        )
+
+    @mcp.tool(
+        name="get_latest_prediction",
+        description="Read the latest prediction for a metric, namespace, and workload.",
+        tags={"prediction-scaling", "prediction", "latest", "read"},
+        annotations={"readOnlyHint": True, "openWorldHint": False},
+    )
+    def get_latest_prediction_tool(
+        metric_name: str,
+        namespace: str | None = None,
+        workload: str | None = None,
+    ) -> dict[str, Any]:
+        request_payload = {
+            "metric_name": metric_name,
+            "namespace": namespace,
+            "workload": workload,
+        }
+        return call_prediction_scaling_tool(
+            tool_name="get_latest_prediction",
+            request_payload=request_payload,
+            operation=lambda: prediction_scaling.get_latest_prediction(**request_payload),
+        )
+
+    @mcp.tool(
+        name="get_actual_metrics",
+        description="Read actual observed metrics for prediction comparison.",
+        tags={"prediction-scaling", "actual", "metrics", "read"},
+        annotations={"readOnlyHint": True, "openWorldHint": False},
+    )
+    def get_actual_metrics_tool(
+        metric_name: str,
+        namespace: str | None = None,
+        workload: str | None = None,
+        limit: int = 20,
+    ) -> dict[str, Any]:
+        request_payload = {
+            "metric_name": metric_name,
+            "namespace": namespace,
+            "workload": workload,
+            "limit": limit,
+        }
+        return call_prediction_scaling_tool(
+            tool_name="get_actual_metrics",
+            request_payload=request_payload,
+            operation=lambda: prediction_scaling.get_actual_metrics(**request_payload),
+        )
+
+    @mcp.tool(
+        name="get_prediction_errors",
+        description="Read prediction error points by comparing predicted and actual metrics.",
+        tags={"prediction-scaling", "prediction", "error", "read"},
+        annotations={"readOnlyHint": True, "openWorldHint": False},
+    )
+    def get_prediction_errors_tool(
+        prediction_run_id: str,
+        limit: int = 20,
+    ) -> dict[str, Any]:
+        request_payload = {"prediction_run_id": prediction_run_id, "limit": limit}
+        return call_prediction_scaling_tool(
+            tool_name="get_prediction_errors",
+            request_payload=request_payload,
+            operation=lambda: prediction_scaling.get_prediction_errors(**request_payload),
+        )
+
+    @mcp.tool(
+        name="get_prediction_error_metrics",
+        description="Read aggregate prediction error metrics for a prediction run.",
+        tags={"prediction-scaling", "prediction", "error", "metrics", "read"},
+        annotations={"readOnlyHint": True, "openWorldHint": False},
+    )
+    def get_prediction_error_metrics_tool(prediction_run_id: str) -> dict[str, Any]:
+        request_payload = {"prediction_run_id": prediction_run_id}
+        return call_prediction_scaling_tool(
+            tool_name="get_prediction_error_metrics",
+            request_payload=request_payload,
+            operation=lambda: prediction_scaling.get_prediction_error_metrics(
+                **request_payload,
+            ),
+        )
+
+    @mcp.tool(
+        name="get_scaling_events",
+        description="Read autoscaling events for prediction and HPA/KEDA analysis.",
+        tags={"prediction-scaling", "scaling", "events", "read"},
+        annotations={"readOnlyHint": True, "openWorldHint": False},
+    )
+    def get_scaling_events_tool(
+        namespace: str | None = None,
+        workload: str | None = None,
+        limit: int = 20,
+    ) -> dict[str, Any]:
+        request_payload = {"namespace": namespace, "workload": workload, "limit": limit}
+        return call_prediction_scaling_tool(
+            tool_name="get_scaling_events",
+            request_payload=request_payload,
+            operation=lambda: prediction_scaling.get_scaling_events(**request_payload),
+        )
+
+    @mcp.tool(
+        name="get_scaling_summary",
+        description="Summarize autoscaling event evidence for a namespace and workload.",
+        tags={"prediction-scaling", "scaling", "summary", "read"},
+        annotations={"readOnlyHint": True, "openWorldHint": False},
+    )
+    def get_scaling_summary_tool(
+        namespace: str | None = None,
+        workload: str | None = None,
+    ) -> dict[str, Any]:
+        request_payload = {"namespace": namespace, "workload": workload}
+        return call_prediction_scaling_tool(
+            tool_name="get_scaling_summary",
+            request_payload=request_payload,
+            operation=lambda: prediction_scaling.get_scaling_summary(**request_payload),
+        )
+
+    @mcp.tool(
+        name="create_prediction_snapshot",
+        description="Create a read-only prediction evidence snapshot.",
+        tags={"prediction-scaling", "prediction", "snapshot", "read"},
+        annotations={"readOnlyHint": True, "openWorldHint": False},
+    )
+    def create_prediction_snapshot_tool(prediction_run_id: str) -> dict[str, Any]:
+        request_payload = {"prediction_run_id": prediction_run_id}
+        return call_prediction_scaling_tool(
+            tool_name="create_prediction_snapshot",
+            request_payload=request_payload,
+            operation=lambda: prediction_scaling.create_prediction_snapshot(
+                **request_payload,
+            ),
+        )
+
+    @mcp.tool(
+        name="create_scaling_analysis_snapshot",
+        description="Create a read-only autoscaling analysis snapshot.",
+        tags={"prediction-scaling", "scaling", "snapshot", "read"},
+        annotations={"readOnlyHint": True, "openWorldHint": False},
+    )
+    def create_scaling_analysis_snapshot_tool(
+        namespace: str | None = None,
+        workload: str | None = None,
+    ) -> dict[str, Any]:
+        request_payload = {"namespace": namespace, "workload": workload}
+        return call_prediction_scaling_tool(
+            tool_name="create_scaling_analysis_snapshot",
+            request_payload=request_payload,
+            operation=lambda: prediction_scaling.create_scaling_analysis_snapshot(
+                **request_payload,
+            ),
         )
 
     @mcp.tool(
