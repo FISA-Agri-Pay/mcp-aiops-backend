@@ -73,6 +73,18 @@ def test_fastmcp_server_exposes_registry_tools() -> None:
             "simulate_crop_income",
             "simulate_season_cashflow",
             "translate_finance_terms_for_farmer",
+            "get_credit_review_queue",
+            "get_credit_review_detail",
+            "summarize_credit_risk",
+            "get_bnpl_summary",
+            "search_bnpl_users",
+            "get_overdue_summary",
+            "search_overdue_users",
+            "get_bss_score_history",
+            "simulate_disaster_credit_risk",
+            "create_risk_analysis_snapshot",
+            "send_repayment_alert",
+            "send_overdue_alerts",
             "query_prometheus",
             "query_loki",
             "get_k8s_pods",
@@ -96,6 +108,63 @@ def test_fastmcp_server_exposes_registry_tools() -> None:
             "search_incidents",
             "search_rca_history",
         }
+
+    asyncio.run(run())
+
+
+def test_fastmcp_admin_riskops_read_tools_return_results() -> None:
+    async def run() -> None:
+        async with Client(create_mcp_server()) as client:
+            queue = await client.call_tool("get_credit_review_queue", {"limit": 10})
+            detail = await client.call_tool(
+                "get_credit_review_detail",
+                {"application_id": "credit-app-farmer-2"},
+            )
+            summary = await client.call_tool("get_bnpl_summary", {})
+            disaster = await client.call_tool(
+                "simulate_disaster_credit_risk",
+                {
+                    "region": "gangwon",
+                    "disaster_type": "flood",
+                    "affected_crop": "cabbage",
+                },
+            )
+            snapshot = await client.call_tool(
+                "create_risk_analysis_snapshot",
+                {"target_type": "USER", "target_id": "farmer-3"},
+            )
+
+        assert [item["application_id"] for item in queue.data["items"]] == [
+            "credit-app-farmer-2",
+            "credit-app-farmer-3",
+        ]
+        assert detail.data["recommended_action"] == "REQUEST_DOCUMENTS"
+        assert summary.data["overdue_amount"] == 670_000
+        assert disaster.data["risk_level"] == "HIGH"
+        assert snapshot.data["summary"]["risk_level"] == "HIGH"
+
+    asyncio.run(run())
+
+
+def test_fastmcp_admin_riskops_write_tools_return_confirmation_preview() -> None:
+    async def run() -> None:
+        async with Client(create_mcp_server()) as client:
+            repayment = await client.call_tool(
+                "send_repayment_alert",
+                {"user_id": "farmer-1", "channel": "KAKAO"},
+            )
+            overdue = await client.call_tool(
+                "send_overdue_alerts",
+                {"min_days_overdue": 1, "channel": "SMS"},
+            )
+
+        assert repayment.data["tool_permission"] == "WRITE"
+        assert repayment.data["call_status"] == "APPROVAL_REQUIRED"
+        assert repayment.data["confirmation_policy"] == "USER_CONFIRMATION"
+        assert repayment.data["will_execute"] is False
+        assert repayment.data["preview"]["dry_run"] is True
+        assert repayment.data["preview"]["target_user_ids"] == ["farmer-1"]
+        assert overdue.data["preview"]["target_user_ids"] == ["farmer-2", "farmer-3"]
 
     asyncio.run(run())
 
