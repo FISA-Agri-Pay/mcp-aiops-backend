@@ -1,6 +1,12 @@
 from fastapi.testclient import TestClient
 
 from aiops_platform.main import create_app
+from aiops_platform.orchestration.service import OrchestrationService
+
+
+class FailingAgentOrchestrator:
+    def run(self, **kwargs):
+        raise RuntimeError("planner unavailable")
 
 
 def test_farmer_chat_api_creates_session_and_records_masked_tool_calls() -> None:
@@ -26,6 +32,7 @@ def test_farmer_chat_api_creates_session_and_records_masked_tool_calls() -> None
     answer = ask_response.json()
     assert answer["session"]["session_id"] == session["session_id"]
     assert answer["job"]["job_type"] == "farmer_chat"
+    assert answer["job"]["status"] == "SUCCEEDED"
     assert [tool["tool_name"] for tool in answer["planned_tools"]] == [
         "get_user_credit_limit",
         "get_farmer_profile",
@@ -33,6 +40,15 @@ def test_farmer_chat_api_creates_session_and_records_masked_tool_calls() -> None
         "search_lowest_price_fertilizer",
         "prepare_bnpl_checkout_payload",
     ]
+    assert [result["tool_name"] for result in answer["tool_results"]] == [
+        "get_user_credit_limit",
+        "get_farmer_profile",
+        "recommend_fertilizer_requirements",
+        "search_lowest_price_fertilizer",
+        "prepare_bnpl_checkout_payload",
+    ]
+    assert {result["call_status"] for result in answer["tool_results"]} == {"SUCCESS"}
+    assert answer["tool_results"][0]["response_payload"]["available_limit"] == 2550000
 
     messages = client.get(f"/farmer/chat/sessions/{session['session_id']}/messages")
     assert messages.status_code == 200
@@ -47,10 +63,16 @@ def test_farmer_chat_api_creates_session_and_records_masked_tool_calls() -> None
     )
     assert tool_calls.status_code == 200
     tool_call_items = tool_calls.json()["items"]
-    assert len(tool_call_items) == 4
-    assert {
-        item["masked_request_payload"]["access_token"] for item in tool_call_items
-    } == {"***MASKED***"}
+    expected_farmer_tool_names = {
+        "get_user_credit_limit",
+        "get_farmer_profile",
+        "search_lowest_price_fertilizer",
+        "prepare_bnpl_checkout_payload",
+    }
+    assert expected_farmer_tool_names.issubset(
+        {item["tool_name"] for item in tool_call_items}
+    )
+    assert all("access_token" not in item["masked_request_payload"] for item in tool_call_items)
 
     detail = client.get(f"/mcp/tool-calls/{tool_call_items[0]['tool_call_id']}")
     assert detail.status_code == 200
@@ -69,8 +91,17 @@ def test_admin_copilot_api_creates_job_and_planned_tools() -> None:
     answer = ask_response.json()
     assert answer["session"]["chat_type"] == "admin_copilot"
     assert answer["job"]["job_type"] == "admin_copilot"
+    assert answer["job"]["status"] == "SUCCEEDED"
     assert {
         tool["server_name"] for tool in answer["planned_tools"]
+    } == {
+        "admin-riskops-mcp",
+        "infraops-mcp",
+        "prediction-scaling-mcp",
+    }
+    assert {result["call_status"] for result in answer["tool_results"]} == {"SUCCESS"}
+    assert {
+        result["server_name"] for result in answer["tool_results"]
     } == {
         "admin-riskops-mcp",
         "infraops-mcp",
@@ -80,7 +111,7 @@ def test_admin_copilot_api_creates_job_and_planned_tools() -> None:
     jobs = client.get("/jobs", params={"job_type": "admin_copilot"})
     assert jobs.status_code == 200
     job_items = jobs.json()["items"]
-    assert [job["job_id"] for job in job_items] == [answer["job"]["job_id"]]
+    assert answer["job"]["job_id"] in {job["job_id"] for job in job_items}
 
     retry = client.post(f"/jobs/{answer['job']['job_id']}/retry")
     cancel = client.post(f"/jobs/{answer['job']['job_id']}/cancel")
@@ -125,6 +156,29 @@ def test_farmer_chat_blank_session_id_creates_new_session() -> None:
     assert ask_response.json()["session"]["status"] == "OPEN"
 
 
+def test_farmer_chat_checkout_confirmation_requires_approval() -> None:
+    client = TestClient(create_app())
+
+    ask_response = client.post(
+        "/farmer/chat/ask",
+        json={
+            "user_id": "farmer-1",
+            "message": "confirm checkout 생성",
+        },
+    )
+
+    assert ask_response.status_code == 200
+    checkout_results = [
+        result
+        for result in ask_response.json()["tool_results"]
+        if result["tool_name"] == "create_bnpl_checkout"
+    ]
+    assert len(checkout_results) == 1
+    assert checkout_results[0]["call_status"] == "APPROVAL_REQUIRED"
+    assert checkout_results[0]["will_execute"] is False
+    assert checkout_results[0]["requires_approval"] is True
+
+
 def test_jobs_reject_invalid_status_filter() -> None:
     client = TestClient(create_app())
 
@@ -132,6 +186,26 @@ def test_jobs_reject_invalid_status_filter() -> None:
 
     assert response.status_code == 400
     assert response.json()["detail"] == "job status is invalid."
+
+
+def test_agent_failure_finishes_job() -> None:
+    app = create_app()
+    app.state.orchestration_service = OrchestrationService(
+        agent_orchestrator=FailingAgentOrchestrator()
+    )
+    client = TestClient(app)
+
+    response = client.post(
+        "/farmer/chat/ask",
+        json={"user_id": "farmer-1", "message": "비료 추천해줘"},
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["job"]["status"] == "FAILED"
+    assert body["job"]["error_message"] == "Agent execution failed: RuntimeError"
+    assert body["planned_tools"] == []
+    assert body["tool_results"] == []
 
 
 def test_missing_orchestration_resources_return_404() -> None:

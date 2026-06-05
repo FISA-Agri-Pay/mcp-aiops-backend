@@ -1,0 +1,186 @@
+from __future__ import annotations
+
+from typing import Protocol
+
+from aiops_platform.agent.schemas import AgentPlanResult, AgentToolPlan
+from aiops_platform.orchestration.schemas import ChatType
+
+
+class AgentPlanner(Protocol):
+    provider_name: str
+
+    def plan(self, *, chat_type: ChatType, message: str, user_id: str) -> AgentPlanResult:
+        pass
+
+
+class RuleBasedAgentPlanner:
+    provider_name = "rule_based"
+
+    def plan(self, *, chat_type: ChatType, message: str, user_id: str) -> AgentPlanResult:
+        normalized_message = message.lower()
+        if chat_type == "farmer_bnpl":
+            tool_plans = plan_farmer_bnpl_tools(
+                message=normalized_message,
+                user_id=user_id,
+            )
+        else:
+            tool_plans = plan_admin_copilot_tools(message=normalized_message)
+        return AgentPlanResult(
+            provider_name="rule_based",
+            chat_type=chat_type,
+            tool_plans=deduplicate_tool_plans(tool_plans),
+        )
+
+
+def plan_farmer_bnpl_tools(*, message: str, user_id: str) -> list[AgentToolPlan]:
+    plans = [
+        AgentToolPlan(
+            server_name="farmer-bnpl-mcp",
+            tool_name="get_user_credit_limit",
+            request_payload={"user_id": user_id},
+            reason="Check available BNPL limit before recommending purchase actions.",
+        ),
+        AgentToolPlan(
+            server_name="farmer-bnpl-mcp",
+            tool_name="get_farmer_profile",
+            request_payload={"user_id": user_id},
+            reason="Use farmer profile context for personalized guidance.",
+        ),
+    ]
+
+    if any(keyword in message for keyword in ("document", "서류", "신청", "심사")):
+        plans.append(
+            AgentToolPlan(
+                server_name="farmer-bnpl-mcp",
+                tool_name="get_required_documents",
+                request_payload={"user_id": user_id},
+                reason="Show required documents for the BNPL application flow.",
+            )
+        )
+
+    repayment_keywords = ("repayment", "상환", "interest", "이자", "overdue", "연체")
+    if any(keyword in message for keyword in repayment_keywords):
+        plans.extend(
+            [
+                AgentToolPlan(
+                    server_name="farmer-bnpl-mcp",
+                    tool_name="get_repayment_schedule",
+                    request_payload={"user_id": user_id},
+                    reason="Read upcoming repayment schedule.",
+                ),
+                AgentToolPlan(
+                    server_name="farmer-bnpl-mcp",
+                    tool_name="get_interest_due",
+                    request_payload={"user_id": user_id},
+                    reason="Read next interest due amount.",
+                ),
+                AgentToolPlan(
+                    server_name="farmer-bnpl-mcp",
+                    tool_name="get_overdue_status",
+                    request_payload={"user_id": user_id},
+                    reason="Check whether the user has overdue BNPL balance.",
+                ),
+            ]
+        )
+
+    purchase_keywords = ("fertilizer", "비료", "product", "농자재", "checkout", "결제", "한도")
+    if any(keyword in message for keyword in purchase_keywords):
+        default_cart_items = [{"product_id": "fertilizer-organic-20kg", "quantity": 2}]
+        plans.extend(
+            [
+                AgentToolPlan(
+                    server_name="farm-advisory-mcp",
+                    tool_name="recommend_fertilizer_requirements",
+                    request_payload={"crop_type": "rice", "area_hectare": 1.2},
+                    reason="Estimate fertilizer requirement from crop and area defaults.",
+                ),
+                AgentToolPlan(
+                    server_name="farmer-bnpl-mcp",
+                    tool_name="search_lowest_price_fertilizer",
+                    request_payload={"limit": 3},
+                    reason="Find low-price fertilizer candidates.",
+                ),
+                AgentToolPlan(
+                    server_name="farmer-bnpl-mcp",
+                    tool_name="prepare_bnpl_checkout_payload",
+                    request_payload={"user_id": user_id, "items": default_cart_items},
+                    reason="Prepare a dry-run BNPL checkout eligibility payload.",
+                ),
+            ]
+        )
+
+    if any(keyword in message for keyword in ("confirm checkout", "checkout 생성", "구매 확정")):
+        plans.append(
+            AgentToolPlan(
+                server_name="farmer-bnpl-mcp",
+                tool_name="create_bnpl_checkout",
+                request_payload={
+                    "user_id": user_id,
+                    "checkout_intent_id": "checkout-intent-preview",
+                },
+                reason="Create checkout requires explicit user confirmation.",
+            )
+        )
+
+    return plans
+
+
+def plan_admin_copilot_tools(*, message: str) -> list[AgentToolPlan]:
+    plans = [
+        AgentToolPlan(
+            server_name="admin-riskops-mcp",
+            tool_name="get_bnpl_summary",
+            request_payload={},
+            reason="Summarize portfolio-level BNPL exposure.",
+        ),
+        AgentToolPlan(
+            server_name="admin-riskops-mcp",
+            tool_name="get_credit_review_queue",
+            request_payload={"limit": 10},
+            reason="Read pending credit review workload.",
+        ),
+        AgentToolPlan(
+            server_name="infraops-mcp",
+            tool_name="query_multi_cluster_prometheus",
+            request_payload={"query": "up"},
+            reason="Attach safe multi-cluster observability context.",
+        ),
+        AgentToolPlan(
+            server_name="prediction-scaling-mcp",
+            tool_name="get_scaling_summary",
+            request_payload={},
+            reason="Summarize prediction-aware scaling evidence.",
+        ),
+    ]
+
+    if any(keyword in message for keyword in ("overdue", "연체")):
+        plans.extend(
+            [
+                AgentToolPlan(
+                    server_name="admin-riskops-mcp",
+                    tool_name="get_overdue_summary",
+                    request_payload={},
+                    reason="Summarize overdue BNPL exposure.",
+                ),
+                AgentToolPlan(
+                    server_name="admin-riskops-mcp",
+                    tool_name="search_overdue_users",
+                    request_payload={"min_days_overdue": 1, "limit": 10},
+                    reason="List overdue users for admin triage.",
+                ),
+            ]
+        )
+
+    return plans
+
+
+def deduplicate_tool_plans(tool_plans: list[AgentToolPlan]) -> list[AgentToolPlan]:
+    seen = set()
+    deduplicated = []
+    for plan in tool_plans:
+        key = (plan.server_name, plan.tool_name)
+        if key in seen:
+            continue
+        seen.add(key)
+        deduplicated.append(plan)
+    return deduplicated

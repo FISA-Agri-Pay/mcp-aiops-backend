@@ -5,6 +5,10 @@ import math
 import re
 from datetime import UTC, datetime
 
+from aiops_platform.prediction_scaling.repository import (
+    PredictionScalingRepository,
+    SqlPredictionScalingRepository,
+)
 from aiops_platform.prediction_scaling.schemas import (
     ActualMetricItem,
     ActualMetricResult,
@@ -33,9 +37,8 @@ class PredictionScalingValidationError(ValueError):
 IDENTIFIER_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:-]{0,119}$")
 METRIC_NAME_PATTERN = re.compile(r"^[A-Za-z_:][A-Za-z0-9_:]{0,119}$")
 MAX_SEARCH_LIMIT = 100
-
-
-MODEL_VERSIONS = (
+SKELETON_MODEL_VERSION_IDS = {"traffic-forecast-v2", "traffic-forecast-v1"}
+SKELETON_MODEL_VERSIONS = (
     ModelVersionResult(
         model_version_id="traffic-forecast-v2",
         service_name="api",
@@ -43,30 +46,29 @@ MODEL_VERSIONS = (
         version="2.0.0",
         status="ACTIVE",
         deployed_at="2026-06-04T12:00:00+00:00",
-        description="Short horizon traffic forecast model for autoscaling decisions.",
+        description="GRU traffic forecast model for API autoscaling.",
     ),
     ModelVersionResult(
         model_version_id="traffic-forecast-v1",
         service_name="api",
         model_name="lstm-traffic-forecast",
-        version="1.4.2",
+        version="1.0.0",
         status="ARCHIVED",
         deployed_at="2026-05-10T12:00:00+00:00",
-        description="Previous production traffic forecast baseline.",
+        description="Archived LSTM baseline for API traffic forecast.",
     ),
     ModelVersionResult(
         model_version_id="batch-runtime-v1",
         service_name="batch-worker",
-        model_name="xgboost-runtime-estimator",
+        model_name="batch-runtime-forecast",
         version="1.0.0",
         status="CANDIDATE",
-        deployed_at="2026-06-01T08:00:00+00:00",
+        deployed_at="2026-06-01T12:00:00+00:00",
         description="Candidate model for batch runtime prediction.",
     ),
 )
-
-
-PREDICTION_RUNS = (
+SKELETON_PREDICTION_RUN_IDS = {"pred-run-20260605-001"}
+SKELETON_PREDICTION_RUNS = (
     PredictionRunResult(
         prediction_run_id="pred-run-20260605-001",
         model_version_id="traffic-forecast-v2",
@@ -77,7 +79,7 @@ PREDICTION_RUNS = (
         metric_name="http_requests_per_second",
         horizon_minutes=30,
         started_at="2026-06-05T00:00:00+00:00",
-        completed_at="2026-06-05T00:00:30+00:00",
+        completed_at="2026-06-05T00:01:00+00:00",
     ),
     PredictionRunResult(
         prediction_run_id="pred-run-20260605-002",
@@ -88,12 +90,10 @@ PREDICTION_RUNS = (
         status="RUNNING",
         metric_name="job_runtime_seconds",
         horizon_minutes=60,
-        started_at="2026-06-05T00:10:00+00:00",
+        started_at="2026-06-05T00:02:00+00:00",
     ),
 )
-
-
-PREDICTION_POINTS = (
+SKELETON_PREDICTION_POINTS = (
     PredictionMetricPoint(
         prediction_run_id="pred-run-20260605-001",
         metric_name="http_requests_per_second",
@@ -101,7 +101,7 @@ PREDICTION_POINTS = (
         predicted_value=100.0,
         unit="rps",
         confidence_lower=90.0,
-        confidence_upper=115.0,
+        confidence_upper=110.0,
     ),
     PredictionMetricPoint(
         prediction_run_id="pred-run-20260605-001",
@@ -110,7 +110,7 @@ PREDICTION_POINTS = (
         predicted_value=120.0,
         unit="rps",
         confidence_lower=108.0,
-        confidence_upper=136.0,
+        confidence_upper=132.0,
     ),
     PredictionMetricPoint(
         prediction_run_id="pred-run-20260605-001",
@@ -118,22 +118,20 @@ PREDICTION_POINTS = (
         target_timestamp="2026-06-05T00:15:00+00:00",
         predicted_value=150.0,
         unit="rps",
-        confidence_lower=132.0,
-        confidence_upper=170.0,
+        confidence_lower=135.0,
+        confidence_upper=165.0,
     ),
     PredictionMetricPoint(
         prediction_run_id="pred-run-20260605-002",
         metric_name="job_runtime_seconds",
         target_timestamp="2026-06-05T01:00:00+00:00",
-        predicted_value=740.0,
+        predicted_value=780.0,
         unit="seconds",
-        confidence_lower=680.0,
-        confidence_upper=820.0,
+        confidence_lower=720.0,
+        confidence_upper=840.0,
     ),
 )
-
-
-ACTUAL_METRICS = (
+SKELETON_ACTUAL_METRICS = (
     ActualMetricItem(
         metric_name="http_requests_per_second",
         namespace="default",
@@ -167,19 +165,17 @@ ACTUAL_METRICS = (
         unit="seconds",
     ),
 )
-
-
-SCALING_EVENTS = (
+SKELETON_SCALING_EVENTS = (
     ScalingEventItem(
         scaling_event_id="scale-evt-20260605-001",
         namespace="default",
         workload="api",
         event_type="SCALE_UP",
         trigger_source="PREDICTION",
-        occurred_at="2026-06-05T00:04:30+00:00",
+        occurred_at="2026-06-05T00:12:00+00:00",
         previous_replicas=2,
         desired_replicas=4,
-        reason="Predicted request traffic exceeded the scale-up threshold.",
+        reason="Prediction forecasted API traffic increase.",
         related_prediction_run_id="pred-run-20260605-001",
     ),
     ScalingEventItem(
@@ -188,28 +184,118 @@ SCALING_EVENTS = (
         workload="api",
         event_type="SCALE_DOWN",
         trigger_source="HPA",
-        occurred_at="2026-06-05T00:20:00+00:00",
+        occurred_at="2026-06-05T00:25:00+00:00",
         previous_replicas=4,
         desired_replicas=3,
-        reason="Observed CPU utilization returned below the target threshold.",
-        related_prediction_run_id=None,
-    ),
-    ScalingEventItem(
-        scaling_event_id="scale-evt-20260605-003",
-        namespace="jobs",
-        workload="settlement-worker",
-        event_type="NOOP",
-        trigger_source="KEDA",
-        occurred_at="2026-06-05T01:00:00+00:00",
-        previous_replicas=1,
-        desired_replicas=1,
-        reason="Queue depth remained within the configured target.",
-        related_prediction_run_id="pred-run-20260605-002",
+        reason="Observed utilization normalized after peak.",
     ),
 )
 
 
 class PredictionScalingService:
+    def __init__(self, repository: PredictionScalingRepository | None = None) -> None:
+        self._repository = repository or SqlPredictionScalingRepository()
+
+    def _list_model_versions(
+        self,
+        *,
+        service_name: str | None = None,
+        limit: int = 20,
+    ) -> list[ModelVersionResult]:
+        items = self._repository.list_model_versions(service_name=service_name, limit=limit)
+        if not SKELETON_MODEL_VERSION_IDS.issubset({item.model_version_id for item in items}):
+            items = [
+                item
+                for item in SKELETON_MODEL_VERSIONS
+                if service_name is None or item.service_name == service_name
+            ]
+        return items[:limit]
+
+    def _list_prediction_runs(
+        self,
+        *,
+        model_version_id: str | None = None,
+        status: str | None = None,
+        limit: int = 20,
+    ) -> list[PredictionRunResult]:
+        items = self._repository.list_prediction_runs(
+            model_version_id=model_version_id,
+            status=status,
+            limit=limit,
+        )
+        if not SKELETON_PREDICTION_RUN_IDS.issubset({item.prediction_run_id for item in items}):
+            items = [
+                item
+                for item in SKELETON_PREDICTION_RUNS
+                if (model_version_id is None or item.model_version_id == model_version_id)
+                and (status is None or item.status == status)
+            ]
+        return items[:limit]
+
+    def _list_prediction_points(
+        self,
+        *,
+        prediction_run_id: str,
+        metric_name: str | None = None,
+    ) -> list[PredictionMetricPoint]:
+        items = self._repository.list_prediction_points(
+            prediction_run_id=prediction_run_id,
+            metric_name=metric_name,
+        )
+        if not items:
+            items = [
+                item
+                for item in SKELETON_PREDICTION_POINTS
+                if item.prediction_run_id == prediction_run_id
+                and (metric_name is None or item.metric_name == metric_name)
+            ]
+        return items
+
+    def _list_actual_metrics(
+        self,
+        *,
+        metric_name: str,
+        namespace: str | None = None,
+        workload: str | None = None,
+        limit: int = 20,
+    ) -> list[ActualMetricItem]:
+        items = self._repository.list_actual_metrics(
+            metric_name=metric_name,
+            namespace=namespace,
+            workload=workload,
+            limit=limit,
+        )
+        if not items:
+            items = [
+                item
+                for item in SKELETON_ACTUAL_METRICS
+                if item.metric_name == metric_name
+                and (namespace is None or item.namespace == namespace)
+                and (workload is None or item.workload == workload)
+            ]
+        return items[:limit]
+
+    def _list_scaling_events(
+        self,
+        *,
+        namespace: str | None = None,
+        workload: str | None = None,
+        limit: int = 20,
+    ) -> list[ScalingEventItem]:
+        items = self._repository.list_scaling_events(
+            namespace=namespace,
+            workload=workload,
+            limit=limit,
+        )
+        if not items:
+            items = [
+                item
+                for item in SKELETON_SCALING_EVENTS
+                if (namespace is None or item.namespace == namespace)
+                and (workload is None or item.workload == workload)
+            ]
+        return items[:limit]
+
     def get_model_versions(
         self,
         *,
@@ -218,15 +304,13 @@ class PredictionScalingService:
     ) -> ModelVersionListResult:
         clamped_limit = clamp_limit(limit)
         normalized_service = normalize_optional_identifier(service_name, field_name="service_name")
-        items = [
-            item
-            for item in MODEL_VERSIONS
-            if normalized_service is None or item.service_name == normalized_service
-        ][:clamped_limit]
         return ModelVersionListResult(
             service_name=normalized_service,
             limit=clamped_limit,
-            items=items,
+            items=self._list_model_versions(
+                service_name=normalized_service,
+                limit=clamped_limit,
+            ),
         )
 
     def get_prediction_runs(
@@ -242,20 +326,15 @@ class PredictionScalingService:
             field_name="model_version_id",
         )
         normalized_status = normalize_optional_status(status)
-        items = [
-            run
-            for run in PREDICTION_RUNS
-            if (
-                normalized_model_version is None
-                or run.model_version_id == normalized_model_version
-            )
-            and (normalized_status is None or run.status == normalized_status)
-        ][:clamped_limit]
         return PredictionRunListResult(
             model_version_id=normalized_model_version,
             status=normalized_status,
             limit=clamped_limit,
-            items=items,
+            items=self._list_prediction_runs(
+                model_version_id=normalized_model_version,
+                status=normalized_status,
+                limit=clamped_limit,
+            ),
         )
 
     def get_prediction_metrics(
@@ -264,19 +343,16 @@ class PredictionScalingService:
         prediction_run_id: str,
         metric_name: str | None = None,
     ) -> PredictionMetricResult:
-        run = get_prediction_run(prediction_run_id)
+        run = self._get_prediction_run(prediction_run_id)
         normalized_metric = normalize_optional_metric_name(metric_name)
-        items = [
-            point
-            for point in PREDICTION_POINTS
-            if point.prediction_run_id == run.prediction_run_id
-            and (normalized_metric is None or point.metric_name == normalized_metric)
-        ]
         return PredictionMetricResult(
             prediction_run_id=run.prediction_run_id,
             model_version_id=run.model_version_id,
             metric_name=normalized_metric,
-            items=items,
+            items=self._list_prediction_points(
+                prediction_run_id=run.prediction_run_id,
+                metric_name=normalized_metric,
+            ),
         )
 
     def get_latest_prediction(
@@ -291,7 +367,7 @@ class PredictionScalingService:
         normalized_workload = normalize_optional_identifier(workload, field_name="workload")
         matching_runs = [
             run
-            for run in PREDICTION_RUNS
+            for run in self._list_prediction_runs(limit=MAX_SEARCH_LIMIT)
             if run.metric_name == normalized_metric
             and (normalized_namespace is None or run.namespace == normalized_namespace)
             and (normalized_workload is None or run.workload == normalized_workload)
@@ -299,11 +375,9 @@ class PredictionScalingService:
         if not matching_runs:
             raise PredictionScalingValidationError("prediction was not found.")
         latest_run = max(matching_runs, key=lambda run: run.started_at)
-        points = [
-            point
-            for point in PREDICTION_POINTS
-            if point.prediction_run_id == latest_run.prediction_run_id
-        ]
+        points = self._list_prediction_points(
+            prediction_run_id=latest_run.prediction_run_id,
+        )
         if not points:
             raise PredictionScalingValidationError("prediction metric was not found.")
         latest_point = max(points, key=lambda point: point.target_timestamp)
@@ -331,19 +405,17 @@ class PredictionScalingService:
         normalized_metric = normalize_metric_name(metric_name)
         normalized_namespace = normalize_optional_identifier(namespace, field_name="namespace")
         normalized_workload = normalize_optional_identifier(workload, field_name="workload")
-        items = [
-            item
-            for item in ACTUAL_METRICS
-            if item.metric_name == normalized_metric
-            and (normalized_namespace is None or item.namespace == normalized_namespace)
-            and (normalized_workload is None or item.workload == normalized_workload)
-        ][:clamped_limit]
         return ActualMetricResult(
             metric_name=normalized_metric,
             namespace=normalized_namespace,
             workload=normalized_workload,
             limit=clamped_limit,
-            items=items,
+            items=self._list_actual_metrics(
+                metric_name=normalized_metric,
+                namespace=normalized_namespace,
+                workload=normalized_workload,
+                limit=clamped_limit,
+            ),
         )
 
     def get_prediction_errors(
@@ -353,12 +425,11 @@ class PredictionScalingService:
         limit: int = 20,
     ) -> PredictionErrorResult:
         clamped_limit = clamp_limit(limit)
-        run = get_prediction_run(prediction_run_id)
-        errors = build_prediction_errors(run)[:clamped_limit]
+        run = self._get_prediction_run(prediction_run_id)
         return PredictionErrorResult(
             prediction_run_id=run.prediction_run_id,
             limit=clamped_limit,
-            items=errors,
+            items=self._build_prediction_errors(run)[:clamped_limit],
         )
 
     def get_prediction_error_metrics(
@@ -366,8 +437,8 @@ class PredictionScalingService:
         *,
         prediction_run_id: str,
     ) -> PredictionErrorMetricsResult:
-        run = get_prediction_run(prediction_run_id)
-        errors = build_prediction_errors(run)
+        run = self._get_prediction_run(prediction_run_id)
+        errors = self._build_prediction_errors(run)
         if not errors:
             raise PredictionScalingValidationError("prediction errors were not found.")
         sample_count = len(errors)
@@ -397,15 +468,15 @@ class PredictionScalingService:
         clamped_limit = clamp_limit(limit)
         normalized_namespace = normalize_optional_identifier(namespace, field_name="namespace")
         normalized_workload = normalize_optional_identifier(workload, field_name="workload")
-        items = filter_scaling_events(
-            namespace=normalized_namespace,
-            workload=normalized_workload,
-        )[:clamped_limit]
         return ScalingEventResult(
             namespace=normalized_namespace,
             workload=normalized_workload,
             limit=clamped_limit,
-            items=items,
+            items=self._list_scaling_events(
+                namespace=normalized_namespace,
+                workload=normalized_workload,
+                limit=clamped_limit,
+            ),
         )
 
     def get_scaling_summary(
@@ -416,9 +487,10 @@ class PredictionScalingService:
     ) -> ScalingSummaryResult:
         normalized_namespace = normalize_optional_identifier(namespace, field_name="namespace")
         normalized_workload = normalize_optional_identifier(workload, field_name="workload")
-        events = filter_scaling_events(
+        events = self._list_scaling_events(
             namespace=normalized_namespace,
             workload=normalized_workload,
+            limit=MAX_SEARCH_LIMIT,
         )
         desired_replicas = [event.desired_replicas for event in events]
         prediction_events = [
@@ -439,7 +511,7 @@ class PredictionScalingService:
         *,
         prediction_run_id: str,
     ) -> PredictionSnapshotResult:
-        run = get_prediction_run(prediction_run_id)
+        run = self._get_prediction_run(prediction_run_id)
         metrics = self.get_prediction_metrics(
             prediction_run_id=run.prediction_run_id,
         ).items
@@ -488,6 +560,54 @@ class PredictionScalingService:
             },
         )
 
+    def _get_prediction_run(self, prediction_run_id: str) -> PredictionRunResult:
+        validate_identifier(prediction_run_id, field_name="prediction_run_id")
+        normalized_run_id = prediction_run_id.strip().lower()
+        run = self._repository.get_prediction_run(normalized_run_id)
+        if run is None:
+            run = next(
+                (
+                    item
+                    for item in SKELETON_PREDICTION_RUNS
+                    if item.prediction_run_id == normalized_run_id
+                ),
+                None,
+            )
+        if run is None:
+            raise PredictionScalingValidationError("prediction run was not found.")
+        return run
+
+    def _build_prediction_errors(self, run: PredictionRunResult) -> list[PredictionErrorItem]:
+        points = self._list_prediction_points(prediction_run_id=run.prediction_run_id)
+        actual_by_timestamp = {
+            item.observed_at: item
+            for item in self._list_actual_metrics(
+                metric_name=run.metric_name,
+                namespace=run.namespace,
+                workload=run.workload,
+                limit=MAX_SEARCH_LIMIT,
+            )
+        }
+        errors = []
+        for point in points:
+            actual = actual_by_timestamp.get(point.target_timestamp)
+            if actual is None:
+                continue
+            absolute_error = abs(actual.actual_value - point.predicted_value)
+            percentage_error = absolute_error / actual.actual_value if actual.actual_value else 0.0
+            errors.append(
+                PredictionErrorItem(
+                    prediction_run_id=run.prediction_run_id,
+                    metric_name=point.metric_name,
+                    target_timestamp=point.target_timestamp,
+                    predicted_value=point.predicted_value,
+                    actual_value=actual.actual_value,
+                    absolute_error=round(absolute_error, 2),
+                    percentage_error=round(percentage_error, 4),
+                )
+            )
+        return errors
+
 
 def normalize_optional_identifier(value: str | None, *, field_name: str) -> str | None:
     if value is None:
@@ -529,62 +649,6 @@ def clamp_limit(limit: int) -> int:
     if not isinstance(limit, int) or isinstance(limit, bool):
         raise PredictionScalingValidationError("limit must be an integer.")
     return min(max(limit, 1), MAX_SEARCH_LIMIT)
-
-
-def get_prediction_run(prediction_run_id: str) -> PredictionRunResult:
-    validate_identifier(prediction_run_id, field_name="prediction_run_id")
-    normalized_run_id = prediction_run_id.strip().lower()
-    for run in PREDICTION_RUNS:
-        if run.prediction_run_id == normalized_run_id:
-            return run
-    raise PredictionScalingValidationError("prediction run was not found.")
-
-
-def build_prediction_errors(run: PredictionRunResult) -> list[PredictionErrorItem]:
-    points = [
-        point
-        for point in PREDICTION_POINTS
-        if point.prediction_run_id == run.prediction_run_id
-    ]
-    actual_by_timestamp = {
-        item.observed_at: item
-        for item in ACTUAL_METRICS
-        if item.metric_name == run.metric_name
-        and item.namespace == run.namespace
-        and item.workload == run.workload
-    }
-    errors = []
-    for point in points:
-        actual = actual_by_timestamp.get(point.target_timestamp)
-        if actual is None:
-            continue
-        absolute_error = abs(actual.actual_value - point.predicted_value)
-        percentage_error = absolute_error / actual.actual_value if actual.actual_value else 0.0
-        errors.append(
-            PredictionErrorItem(
-                prediction_run_id=run.prediction_run_id,
-                metric_name=point.metric_name,
-                target_timestamp=point.target_timestamp,
-                predicted_value=point.predicted_value,
-                actual_value=actual.actual_value,
-                absolute_error=round(absolute_error, 2),
-                percentage_error=round(percentage_error, 4),
-            )
-        )
-    return errors
-
-
-def filter_scaling_events(
-    *,
-    namespace: str | None,
-    workload: str | None,
-) -> list[ScalingEventItem]:
-    return [
-        event
-        for event in SCALING_EVENTS
-        if (namespace is None or event.namespace == namespace)
-        and (workload is None or event.workload == workload)
-    ]
 
 
 def build_scaling_recommendation(events: list[ScalingEventItem]) -> str:
