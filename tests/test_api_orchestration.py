@@ -54,6 +54,11 @@ def test_farmer_chat_api_creates_session_and_records_masked_tool_calls() -> None
     assert {result["call_status"] for result in answer["tool_results"]} == {"SUCCESS"}
     assert answer["tool_results"][0]["response_payload"]["available_limit"] == 2550000
 
+    for result in answer["tool_results"]:
+        detail_response = client.get(f"/mcp/tool-calls/{result['tool_call_id']}")
+        assert detail_response.status_code == 200
+        assert detail_response.json()["llm_run_id"] == answer["llm_run"]["llm_run_id"]
+
     messages = client.get(f"/farmer/chat/sessions/{session['session_id']}/messages")
     assert messages.status_code == 200
     assert [message["role"] for message in messages.json()["items"]] == [

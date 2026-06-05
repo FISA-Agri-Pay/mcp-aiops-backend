@@ -268,6 +268,11 @@ class OrchestrationService:
                 job_id=job.job_id,
                 session_id=session.session_id,
             )
+            self._attach_llm_run_to_tool_calls(
+                job_id=job.job_id,
+                session_id=session.session_id,
+                llm_run_id=llm_run.llm_run_id,
+            )
             self._create_agent_snapshot(
                 chat_type=session.chat_type,
                 job_id=job.job_id,
@@ -349,6 +354,19 @@ class OrchestrationService:
             tool_results=tool_results,
             job_id=job_id,
             session_id=session_id,
+        )
+
+    def _attach_llm_run_to_tool_calls(
+        self,
+        *,
+        job_id: str,
+        session_id: str,
+        llm_run_id: str,
+    ) -> None:
+        self._repository.attach_llm_run_to_tool_calls(
+            job_id=job_id,
+            session_id=session_id,
+            llm_run_id=llm_run_id,
         )
 
     def _create_approval_requests(

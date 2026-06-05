@@ -98,6 +98,7 @@ def test_llm_client_factory_falls_back_to_fake_without_api_key() -> None:
             LLM_PROVIDER="openai",
             LLM_MODEL="gpt-test",
             LLM_API_KEY="",
+            LLM_REQUIRE_API_KEY=True,
         )
     )
 

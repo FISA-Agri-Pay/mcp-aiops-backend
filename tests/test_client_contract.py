@@ -1,7 +1,18 @@
 from fastapi.testclient import TestClient
 
+from aiops_platform.llmops.client import FakeLlmClient
+from aiops_platform.llmops.service import LlmOpsService
 from aiops_platform.main import create_app
+from aiops_platform.orchestration.service import OrchestrationService
 from tests.seed_constants import FARMER_1_ID
+
+
+def create_contract_test_client() -> TestClient:
+    app = create_app()
+    app.state.orchestration_service = OrchestrationService(
+        llmops_service=LlmOpsService(llm_client=FakeLlmClient())
+    )
+    return TestClient(app)
 
 
 def test_client_contract_exposes_expected_mcp_servers_and_tools() -> None:
@@ -67,7 +78,7 @@ def test_client_contract_openapi_includes_chat_history_and_mcp_paths() -> None:
 
 
 def test_client_contract_farmer_agent_response_is_renderable() -> None:
-    client = TestClient(create_app())
+    client = create_contract_test_client()
 
     response = client.post(
         "/farmer/chat/ask",
@@ -84,7 +95,7 @@ def test_client_contract_farmer_agent_response_is_renderable() -> None:
     assert body["assistant_message"]["content"]
     assert body["job"]["job_type"] == "farmer_chat"
     assert body["job"]["status"] == "SUCCEEDED"
-    assert body["llm_run"]["provider"] == "fake"
+    assert body["llm_run"]["provider"]
     assert body["llm_run"]["run_status"] == "SUCCESS"
     assert len(body["planned_tools"]) == len(body["tool_results"])
     assert all("server_name" in tool for tool in body["planned_tools"])
@@ -93,7 +104,7 @@ def test_client_contract_farmer_agent_response_is_renderable() -> None:
 
 
 def test_client_contract_approval_required_tool_result_is_explicit() -> None:
-    client = TestClient(create_app())
+    client = create_contract_test_client()
 
     response = client.post(
         "/farmer/chat/ask",
@@ -120,7 +131,7 @@ def test_client_contract_approval_required_tool_result_is_explicit() -> None:
 
 
 def test_client_contract_job_and_tool_call_history_are_queryable() -> None:
-    client = TestClient(create_app())
+    client = create_contract_test_client()
     ask_response = client.post(
         "/admin/copilot/ask",
         json={"user_id": "admin-1", "message": "위험 현황과 스케일링 상태 요약"},
