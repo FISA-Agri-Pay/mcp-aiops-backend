@@ -26,6 +26,7 @@ def test_farmer_chat_api_creates_session_and_records_masked_tool_calls() -> None
     answer = ask_response.json()
     assert answer["session"]["session_id"] == session["session_id"]
     assert answer["job"]["job_type"] == "farmer_chat"
+    assert answer["job"]["status"] == "SUCCEEDED"
     assert [tool["tool_name"] for tool in answer["planned_tools"]] == [
         "get_user_credit_limit",
         "get_farmer_profile",
@@ -33,6 +34,15 @@ def test_farmer_chat_api_creates_session_and_records_masked_tool_calls() -> None
         "search_lowest_price_fertilizer",
         "prepare_bnpl_checkout_payload",
     ]
+    assert [result["tool_name"] for result in answer["tool_results"]] == [
+        "get_user_credit_limit",
+        "get_farmer_profile",
+        "recommend_fertilizer_requirements",
+        "search_lowest_price_fertilizer",
+        "prepare_bnpl_checkout_payload",
+    ]
+    assert {result["call_status"] for result in answer["tool_results"]} == {"SUCCESS"}
+    assert answer["tool_results"][0]["response_payload"]["available_limit"] == 2550000
 
     messages = client.get(f"/farmer/chat/sessions/{session['session_id']}/messages")
     assert messages.status_code == 200
@@ -69,8 +79,17 @@ def test_admin_copilot_api_creates_job_and_planned_tools() -> None:
     answer = ask_response.json()
     assert answer["session"]["chat_type"] == "admin_copilot"
     assert answer["job"]["job_type"] == "admin_copilot"
+    assert answer["job"]["status"] == "SUCCEEDED"
     assert {
         tool["server_name"] for tool in answer["planned_tools"]
+    } == {
+        "admin-riskops-mcp",
+        "infraops-mcp",
+        "prediction-scaling-mcp",
+    }
+    assert {result["call_status"] for result in answer["tool_results"]} == {"SUCCESS"}
+    assert {
+        result["server_name"] for result in answer["tool_results"]
     } == {
         "admin-riskops-mcp",
         "infraops-mcp",
@@ -123,6 +142,29 @@ def test_farmer_chat_blank_session_id_creates_new_session() -> None:
 
     assert ask_response.status_code == 200
     assert ask_response.json()["session"]["status"] == "OPEN"
+
+
+def test_farmer_chat_checkout_confirmation_requires_approval() -> None:
+    client = TestClient(create_app())
+
+    ask_response = client.post(
+        "/farmer/chat/ask",
+        json={
+            "user_id": "farmer-1",
+            "message": "confirm checkout 생성",
+        },
+    )
+
+    assert ask_response.status_code == 200
+    checkout_results = [
+        result
+        for result in ask_response.json()["tool_results"]
+        if result["tool_name"] == "create_bnpl_checkout"
+    ]
+    assert len(checkout_results) == 1
+    assert checkout_results[0]["call_status"] == "APPROVAL_REQUIRED"
+    assert checkout_results[0]["will_execute"] is False
+    assert checkout_results[0]["requires_approval"] is True
 
 
 def test_jobs_reject_invalid_status_filter() -> None:
