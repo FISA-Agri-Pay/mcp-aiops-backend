@@ -109,6 +109,31 @@ def test_chat_session_close_blocks_follow_up_questions() -> None:
     assert follow_up.status_code == 400
 
 
+def test_farmer_chat_blank_session_id_creates_new_session() -> None:
+    client = TestClient(create_app())
+
+    ask_response = client.post(
+        "/farmer/chat/ask",
+        json={
+            "session_id": "   ",
+            "user_id": "farmer-1",
+            "message": "Start a new BNPL chat.",
+        },
+    )
+
+    assert ask_response.status_code == 200
+    assert ask_response.json()["session"]["status"] == "OPEN"
+
+
+def test_jobs_reject_invalid_status_filter() -> None:
+    client = TestClient(create_app())
+
+    response = client.get("/jobs", params={"status": "not-a-status"})
+
+    assert response.status_code == 400
+    assert response.json()["detail"] == "job status is invalid."
+
+
 def test_missing_orchestration_resources_return_404() -> None:
     client = TestClient(create_app())
 

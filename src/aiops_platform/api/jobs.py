@@ -4,7 +4,10 @@ from fastapi import APIRouter, HTTPException, Query
 
 from aiops_platform.api.dependencies import OrchestrationServiceDep
 from aiops_platform.orchestration.schemas import JobActionPreviewResult, JobListResult, JobResult
-from aiops_platform.orchestration.service import OrchestrationNotFoundError
+from aiops_platform.orchestration.service import (
+    OrchestrationNotFoundError,
+    OrchestrationValidationError,
+)
 
 router = APIRouter(prefix="/jobs", tags=["jobs"])
 
@@ -16,7 +19,10 @@ def list_jobs(
     job_type: Annotated[str | None, Query()] = None,
     limit: Annotated[int, Query(ge=1, le=100)] = 20,
 ) -> JobListResult:
-    return service.list_jobs(status=status, job_type=job_type, limit=limit)
+    try:
+        return service.list_jobs(status=status, job_type=job_type, limit=limit)
+    except OrchestrationValidationError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 @router.get("/{job_id}", response_model=JobResult)

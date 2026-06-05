@@ -1,6 +1,6 @@
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from aiops_platform.mcp.schemas import (
     McpConfirmationPolicy,
@@ -24,6 +24,14 @@ class ChatAskRequest(BaseModel):
     message: str = Field(min_length=1, max_length=4000)
     session_id: str | None = Field(default=None, max_length=120)
     user_id: str = Field(default="anonymous", min_length=1, max_length=120)
+
+    @field_validator("session_id")
+    @classmethod
+    def normalize_session_id(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        normalized = value.strip()
+        return normalized or None
 
 
 class ChatSessionResult(BaseModel):
@@ -73,7 +81,7 @@ class JobResult(BaseModel):
 
 
 class JobListResult(BaseModel):
-    status: str | None = None
+    status: JobStatus | None = None
     job_type: str | None = None
     limit: int
     items: list[JobResult]

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
-from typing import Any
+from typing import Any, get_args
 from uuid import uuid4
 
 from aiops_platform.mcp.masking import mask_payload
@@ -17,6 +17,7 @@ from aiops_platform.orchestration.schemas import (
     JobActionPreviewResult,
     JobListResult,
     JobResult,
+    JobStatus,
     McpToolCallListResult,
     McpToolCallResult,
     MessageRole,
@@ -151,7 +152,7 @@ class OrchestrationService:
         limit: int = 20,
     ) -> JobListResult:
         clamped_limit = clamp_limit(limit)
-        normalized_status = normalize_optional_upper(status)
+        normalized_status = normalize_optional_job_status(status)
         normalized_job_type = normalize_optional_lower(job_type)
         jobs = [
             job
@@ -405,11 +406,15 @@ def normalize_optional_lower(value: str | None) -> str | None:
     return normalized or None
 
 
-def normalize_optional_upper(value: str | None) -> str | None:
+def normalize_optional_job_status(value: str | None) -> JobStatus | None:
     if value is None:
         return None
     normalized = value.strip().upper()
-    return normalized or None
+    if not normalized:
+        return None
+    if normalized not in get_args(JobStatus):
+        raise OrchestrationValidationError("job status is invalid.")
+    return normalized
 
 
 def current_timestamp() -> str:
