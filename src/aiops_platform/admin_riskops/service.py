@@ -41,6 +41,7 @@ BNPL_USERS = (
         used_amount=450_000,
         risk_level="LOW",
         overdue_amount=0,
+        days_overdue=0,
     ),
     BnplUserResult(
         user_id="farmer-2",
@@ -51,6 +52,7 @@ BNPL_USERS = (
         used_amount=3_200_000,
         risk_level="MEDIUM",
         overdue_amount=120_000,
+        days_overdue=7,
     ),
     BnplUserResult(
         user_id="farmer-3",
@@ -61,6 +63,7 @@ BNPL_USERS = (
         used_amount=3_700_000,
         risk_level="HIGH",
         overdue_amount=550_000,
+        days_overdue=21,
     ),
 )
 
@@ -190,6 +193,7 @@ class AdminRiskOpsService:
             user
             for user in BNPL_USERS
             if user.overdue_amount > 0
+            and user.days_overdue >= min_days_overdue
             and (normalized_query is None or user_matches(user, normalized_query))
         ][:clamped_limit]
         return OverdueUserSearchResult(
@@ -300,7 +304,11 @@ class AdminRiskOpsService:
     ) -> AlertPreviewResult:
         validate_non_negative_int(min_days_overdue, field_name="min_days_overdue")
         normalized_channel = normalize_channel(channel)
-        overdue_users = [user for user in BNPL_USERS if user.overdue_amount > 0]
+        overdue_users = [
+            user
+            for user in BNPL_USERS
+            if user.overdue_amount > 0 and user.days_overdue >= min_days_overdue
+        ]
         if len(overdue_users) > MAX_ALERT_RECIPIENTS:
             raise AdminRiskOpsValidationError("too many alert recipients.")
         return AlertPreviewResult(

@@ -62,6 +62,7 @@ class BnplUserResult(BaseModel):
     used_amount: int
     risk_level: Literal["LOW", "MEDIUM", "HIGH"]
     overdue_amount: int
+    days_overdue: int
 
 
 class BnplUserSearchResult(BaseModel):
@@ -123,4 +124,3 @@ class AlertPreviewResult(BaseModel):
     message_template: str
     estimated_recipient_count: int
     safety_notes: list[str] = Field(default_factory=list)
-

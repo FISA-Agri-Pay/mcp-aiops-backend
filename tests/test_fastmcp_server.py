@@ -142,6 +142,7 @@ def test_fastmcp_admin_riskops_read_tools_return_results() -> None:
         assert summary.data["overdue_amount"] == 670_000
         assert disaster.data["risk_level"] == "HIGH"
         assert snapshot.data["summary"]["risk_level"] == "HIGH"
+        assert detail.data["risk_factors"] == ["overdue_balance"]
 
     asyncio.run(run())
 

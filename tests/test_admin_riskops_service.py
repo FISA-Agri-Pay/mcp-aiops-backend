@@ -50,7 +50,7 @@ def test_user_search_risk_summary_and_bss_history() -> None:
 def test_overdue_disaster_and_snapshot_results() -> None:
     service = AdminRiskOpsService()
 
-    overdue_users = service.search_overdue_users(query="cabbage", min_days_overdue=1)
+    overdue_users = service.search_overdue_users(query="cabbage", min_days_overdue=10)
     disaster = service.simulate_disaster_credit_risk(
         region="gangwon",
         disaster_type="flood",
@@ -62,6 +62,7 @@ def test_overdue_disaster_and_snapshot_results() -> None:
     )
 
     assert [user.user_id for user in overdue_users.items] == ["farmer-3"]
+    assert overdue_users.items[0].days_overdue == 21
     assert disaster.affected_users == 1
     assert disaster.risk_level == "HIGH"
     assert snapshot.target_type == "USER"
@@ -79,6 +80,16 @@ def test_admin_alert_tools_return_dry_run_preview_only() -> None:
     assert repayment.target_user_ids == ["farmer-1"]
     assert overdue.target_user_ids == ["farmer-2", "farmer-3"]
     assert overdue.estimated_recipient_count == 2
+
+
+def test_overdue_filters_apply_min_days_overdue_threshold() -> None:
+    service = AdminRiskOpsService()
+
+    overdue_users = service.search_overdue_users(min_days_overdue=10)
+    overdue_alert = service.send_overdue_alerts(min_days_overdue=10)
+
+    assert [user.user_id for user in overdue_users.items] == ["farmer-3"]
+    assert overdue_alert.target_user_ids == ["farmer-3"]
 
 
 def test_invalid_admin_riskops_inputs_raise_domain_errors() -> None:
