@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass
+from math import ceil
 
 from aiops_platform.farm_advisory.schemas import (
     CashflowMonth,
@@ -193,8 +195,7 @@ class FarmAdvisoryService:
     ) -> RankedMaterialOptionsResult:
         profile = resolve_crop_profile(crop_type)
         resolved_material_type = normalize_required_text(material_type, field_name="material_type")
-        if budget is not None and budget < 0:
-            raise FarmAdvisoryValidationError("budget must be greater than or equal to 0.")
+        validate_optional_non_negative_int(budget, field_name="budget")
         products = [
             product
             for product in PRODUCT_CATALOG
@@ -232,8 +233,7 @@ class FarmAdvisoryService:
     ) -> ProductBundleResult:
         profile = resolve_crop_profile(crop_type)
         validate_area(area_hectare)
-        if budget is not None and budget < 0:
-            raise FarmAdvisoryValidationError("budget must be greater than or equal to 0.")
+        validate_optional_non_negative_int(budget, field_name="budget")
 
         bundle_items = []
         for recommendation in build_material_recommendations(profile, area_hectare):
@@ -307,11 +307,10 @@ class FarmAdvisoryService:
         severity: str = "medium",
     ) -> DiseaseTriageResult:
         profile = resolve_crop_profile(crop_type)
+        validate_symptoms(symptoms)
         normalized_symptoms = [
             normalize_required_text(item, field_name="symptom") for item in symptoms
         ]
-        if not normalized_symptoms:
-            raise FarmAdvisoryValidationError("symptoms must not be empty.")
         normalized_severity = normalize_required_text(severity, field_name="severity")
         urgency = {"low": "LOW", "medium": "MEDIUM", "high": "HIGH"}.get(
             normalized_severity,
@@ -341,10 +340,18 @@ class FarmAdvisoryService:
     ) -> CropIncomeSimulationResult:
         profile = resolve_crop_profile(crop_type)
         validate_area(area_hectare)
-        yield_per_hectare = expected_yield_kg_per_hectare or profile.yield_kg_per_hectare
-        price_per_kg = expected_price_per_kg or profile.price_per_kg
-        if yield_per_hectare <= 0 or price_per_kg < 0:
-            raise FarmAdvisoryValidationError("income simulation inputs are invalid.")
+        yield_per_hectare = (
+            expected_yield_kg_per_hectare
+            if expected_yield_kg_per_hectare is not None
+            else profile.yield_kg_per_hectare
+        )
+        price_per_kg = (
+            expected_price_per_kg
+            if expected_price_per_kg is not None
+            else profile.price_per_kg
+        )
+        validate_positive_int(yield_per_hectare, field_name="expected_yield_kg_per_hectare")
+        validate_non_negative_int(price_per_kg, field_name="expected_price_per_kg")
         expected_yield_kg = int(yield_per_hectare * area_hectare)
         expected_revenue = expected_yield_kg * price_per_kg
         input_cost = estimated_input_cost
@@ -353,10 +360,7 @@ class FarmAdvisoryService:
                 crop_type=profile.crop_type,
                 area_hectare=area_hectare,
             ).estimated_budget
-        if input_cost < 0:
-            raise FarmAdvisoryValidationError(
-                "estimated_input_cost must be greater than or equal to 0."
-            )
+        validate_non_negative_int(input_cost, field_name="estimated_input_cost")
         return CropIncomeSimulationResult(
             crop_type=profile.crop_type,
             area_hectare=area_hectare,
@@ -376,8 +380,8 @@ class FarmAdvisoryService:
     ) -> SeasonCashflowResult:
         profile = resolve_crop_profile(crop_type)
         validate_area(area_hectare)
-        if starting_cash < 0 or bnpl_limit < 0:
-            raise FarmAdvisoryValidationError("cashflow inputs must be greater than or equal to 0.")
+        validate_non_negative_int(starting_cash, field_name="starting_cash")
+        validate_non_negative_int(bnpl_limit, field_name="bnpl_limit")
         bundle = self.recommend_product_bundle(
             crop_type=profile.crop_type,
             area_hectare=area_hectare,
@@ -446,6 +450,30 @@ def validate_area(area_hectare: float) -> None:
     raise FarmAdvisoryValidationError("area_hectare is invalid.")
 
 
+def validate_non_negative_int(value: int, *, field_name: str) -> None:
+    if isinstance(value, int) and not isinstance(value, bool) and value >= 0:
+        return
+    raise FarmAdvisoryValidationError(f"{field_name} must be greater than or equal to 0.")
+
+
+def validate_optional_non_negative_int(value: int | None, *, field_name: str) -> None:
+    if value is None:
+        return
+    validate_non_negative_int(value, field_name=field_name)
+
+
+def validate_positive_int(value: int, *, field_name: str) -> None:
+    if isinstance(value, int) and not isinstance(value, bool) and value > 0:
+        return
+    raise FarmAdvisoryValidationError(f"{field_name} must be greater than 0.")
+
+
+def validate_symptoms(symptoms: list[str]) -> None:
+    if isinstance(symptoms, Sequence) and not isinstance(symptoms, str) and symptoms:
+        return
+    raise FarmAdvisoryValidationError("symptoms must not be empty.")
+
+
 def normalize_required_text(value: str, *, field_name: str) -> str:
     if not isinstance(value, str):
         raise FarmAdvisoryValidationError(f"{field_name} is invalid.")
@@ -462,7 +490,7 @@ def normalize_optional_text(value: str | None) -> str | None:
 
 
 def quantity_for_area(rate_per_hectare: int, area_hectare: float) -> int:
-    return max(1, int(rate_per_hectare * area_hectare))
+    return max(1, ceil(rate_per_hectare * area_hectare))
 
 
 def get_catalog_product(product_id: str) -> ProductResult:

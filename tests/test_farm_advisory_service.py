@@ -77,3 +77,36 @@ def test_unsupported_crop_is_rejected() -> None:
 
     with pytest.raises(FarmAdvisoryValidationError, match="crop_type is not supported"):
         service.get_crop_calendar(crop_type="unknown")
+
+
+def test_fractional_area_recommendations_round_quantities_up() -> None:
+    service = FarmAdvisoryService()
+
+    result = service.recommend_product_bundle(crop_type="rice", area_hectare=1.1)
+
+    assert result.cart_items == [
+        {"product_id": "fertilizer-organic-20kg", "quantity": 14},
+        {"product_id": "seed-rice-10kg", "quantity": 4},
+        {"product_id": "pesticide-safe-1l", "quantity": 3},
+    ]
+
+
+def test_invalid_advisory_inputs_raise_domain_validation_errors() -> None:
+    service = FarmAdvisoryService()
+
+    with pytest.raises(FarmAdvisoryValidationError, match="symptoms must not be empty"):
+        service.triage_crop_disease(crop_type="rice", symptoms="yellow leaves")
+
+    with pytest.raises(FarmAdvisoryValidationError, match="starting_cash"):
+        service.simulate_season_cashflow(
+            crop_type="rice",
+            area_hectare=1.0,
+            starting_cash=True,
+        )
+
+    with pytest.raises(FarmAdvisoryValidationError, match="expected_yield"):
+        service.simulate_crop_income(
+            crop_type="rice",
+            area_hectare=1.0,
+            expected_yield_kg_per_hectare=0,
+        )
