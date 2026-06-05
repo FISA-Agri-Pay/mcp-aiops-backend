@@ -4,20 +4,30 @@ from aiops_platform.prediction_scaling.service import (
     PredictionScalingService,
     PredictionScalingValidationError,
 )
+from tests.seed_constants import (
+    MODEL_TRAFFIC_V1_ID,
+    MODEL_TRAFFIC_V2_ID,
+    PREDICTION_RUN_API_ID,
+    SCALING_EVENT_DOWN_ID,
+    SCALING_EVENT_UP_ID,
+)
 
 
 def test_model_versions_and_prediction_runs_can_be_filtered() -> None:
     service = PredictionScalingService()
 
     models = service.get_model_versions(service_name="api", limit=10)
-    runs = service.get_prediction_runs(model_version_id="traffic-forecast-v2", status="succeeded")
+    runs = service.get_prediction_runs(model_version_id="not-a-uuid-model", status="succeeded")
 
     assert [item.model_version_id for item in models.items] == [
-        "traffic-forecast-v2",
-        "traffic-forecast-v1",
+        MODEL_TRAFFIC_V2_ID,
+        MODEL_TRAFFIC_V1_ID,
     ]
     assert runs.status == "SUCCEEDED"
-    assert [run.prediction_run_id for run in runs.items] == ["pred-run-20260605-001"]
+    assert [run.prediction_run_id for run in runs.items] == []
+
+    runs = service.get_prediction_runs(model_version_id=MODEL_TRAFFIC_V2_ID, status="succeeded")
+    assert [run.prediction_run_id for run in runs.items] == [PREDICTION_RUN_API_ID]
     assert runs.items[0].status == "SUCCEEDED"
 
 
@@ -25,7 +35,7 @@ def test_prediction_metrics_actuals_and_errors_are_deterministic() -> None:
     service = PredictionScalingService()
 
     predictions = service.get_prediction_metrics(
-        prediction_run_id="pred-run-20260605-001",
+        prediction_run_id=PREDICTION_RUN_API_ID,
     )
     actuals = service.get_actual_metrics(
         metric_name="http_requests_per_second",
@@ -34,16 +44,16 @@ def test_prediction_metrics_actuals_and_errors_are_deterministic() -> None:
         limit=10,
     )
     errors = service.get_prediction_errors(
-        prediction_run_id=" PRED-RUN-20260605-001 ",
+        prediction_run_id=f" {PREDICTION_RUN_API_ID.upper()} ",
         limit=10,
     )
     error_metrics = service.get_prediction_error_metrics(
-        prediction_run_id="pred-run-20260605-001",
+        prediction_run_id=PREDICTION_RUN_API_ID,
     )
 
     assert [point.predicted_value for point in predictions.items] == [100.0, 120.0, 150.0]
     assert [item.actual_value for item in actuals.items] == [96.0, 130.0, 144.0]
-    assert errors.prediction_run_id == "pred-run-20260605-001"
+    assert errors.prediction_run_id == PREDICTION_RUN_API_ID
     assert [item.absolute_error for item in errors.items] == [4.0, 10.0, 6.0]
     assert error_metrics.sample_count == 3
     assert error_metrics.mean_absolute_error == 6.67
@@ -63,8 +73,8 @@ def test_latest_prediction_and_scaling_summary_match_filtered_workload() -> None
 
     assert latest.predicted_value == 150.0
     assert [event.scaling_event_id for event in events.items] == [
-        "scale-evt-20260605-001",
-        "scale-evt-20260605-002",
+        SCALING_EVENT_UP_ID,
+        SCALING_EVENT_DOWN_ID,
     ]
     assert summary.total_events == 2
     assert summary.prediction_driven_events == 1
@@ -76,7 +86,7 @@ def test_prediction_and_scaling_snapshots_include_evidence() -> None:
     service = PredictionScalingService()
 
     prediction_snapshot = service.create_prediction_snapshot(
-        prediction_run_id="pred-run-20260605-001",
+        prediction_run_id=PREDICTION_RUN_API_ID,
     )
     scaling_snapshot = service.create_scaling_analysis_snapshot(
         namespace="default",
@@ -84,14 +94,14 @@ def test_prediction_and_scaling_snapshots_include_evidence() -> None:
     )
 
     assert prediction_snapshot.snapshot_id.startswith(
-        "prediction-snapshot-pred-run-20260605-001-"
+        f"prediction-snapshot-{PREDICTION_RUN_API_ID}-"
     )
     assert len(prediction_snapshot.metrics) == 3
     assert prediction_snapshot.error_metrics.mean_absolute_percentage_error == 0.0534
     assert scaling_snapshot.snapshot_id.startswith("scaling-snapshot-default-api-")
     assert scaling_snapshot.evidence["event_ids"] == [
-        "scale-evt-20260605-001",
-        "scale-evt-20260605-002",
+        SCALING_EVENT_UP_ID,
+        SCALING_EVENT_DOWN_ID,
     ]
 
 

@@ -2,6 +2,7 @@ from fastapi.testclient import TestClient
 
 from aiops_platform.main import create_app
 from aiops_platform.orchestration.service import OrchestrationService
+from tests.seed_constants import FARMER_1_ID
 
 
 class FailingAgentOrchestrator:
@@ -14,7 +15,7 @@ def test_farmer_chat_api_creates_session_and_records_masked_tool_calls() -> None
 
     session_response = client.post(
         "/farmer/chat/sessions",
-        json={"user_id": "farmer-1", "title": "fertilizer help"},
+        json={"user_id": FARMER_1_ID, "title": "fertilizer help"},
     )
     assert session_response.status_code == 200
     session = session_response.json()
@@ -23,7 +24,7 @@ def test_farmer_chat_api_creates_session_and_records_masked_tool_calls() -> None
         "/farmer/chat/ask",
         json={
             "session_id": session["session_id"],
-            "user_id": "farmer-1",
+            "user_id": FARMER_1_ID,
             "message": "Find fertilizer within my BNPL limit.",
         },
     )
@@ -124,13 +125,13 @@ def test_admin_copilot_api_creates_job_and_planned_tools() -> None:
 def test_chat_session_close_blocks_follow_up_questions() -> None:
     client = TestClient(create_app())
 
-    session = client.post("/farmer/chat/sessions", json={"user_id": "farmer-1"}).json()
+    session = client.post("/farmer/chat/sessions", json={"user_id": FARMER_1_ID}).json()
     close_response = client.post(f"/farmer/chat/sessions/{session['session_id']}/close")
     follow_up = client.post(
         "/farmer/chat/ask",
         json={
             "session_id": session["session_id"],
-            "user_id": "farmer-1",
+            "user_id": FARMER_1_ID,
             "message": "Can I still use this session?",
         },
     )
@@ -147,7 +148,7 @@ def test_farmer_chat_blank_session_id_creates_new_session() -> None:
         "/farmer/chat/ask",
         json={
             "session_id": "   ",
-            "user_id": "farmer-1",
+            "user_id": FARMER_1_ID,
             "message": "Start a new BNPL chat.",
         },
     )
@@ -162,7 +163,7 @@ def test_farmer_chat_checkout_confirmation_requires_approval() -> None:
     ask_response = client.post(
         "/farmer/chat/ask",
         json={
-            "user_id": "farmer-1",
+            "user_id": FARMER_1_ID,
             "message": "confirm checkout 생성",
         },
     )
@@ -197,7 +198,7 @@ def test_agent_failure_finishes_job() -> None:
 
     response = client.post(
         "/farmer/chat/ask",
-        json={"user_id": "farmer-1", "message": "비료 추천해줘"},
+        json={"user_id": FARMER_1_ID, "message": "비료 추천해줘"},
     )
 
     assert response.status_code == 200

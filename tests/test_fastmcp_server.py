@@ -28,6 +28,19 @@ from aiops_platform.infraops.schemas import (
 from aiops_platform.main import create_app
 from aiops_platform.mcp.registry import list_mcp_tools
 from aiops_platform.mcp.server import MCP_TRANSPORT_MOUNT_PATH, create_mcp_server
+from tests.seed_constants import (
+    CREDIT_APP_2_ID,
+    CREDIT_APP_3_ID,
+    FARMER_1_ID,
+    FARMER_2_ID,
+    FARMER_3_ID,
+    FERTILIZER_ORGANIC_ID,
+    MODEL_TRAFFIC_V1_ID,
+    MODEL_TRAFFIC_V2_ID,
+    PESTICIDE_SAFE_ID,
+    PREDICTION_RUN_API_ID,
+    SEED_RICE_ID,
+)
 
 
 def test_fastapi_app_mounts_fastmcp_transport() -> None:
@@ -152,25 +165,25 @@ def test_fastmcp_admin_riskops_read_tools_return_results() -> None:
             queue = await client.call_tool("get_credit_review_queue", {"limit": 10})
             detail = await client.call_tool(
                 "get_credit_review_detail",
-                {"application_id": "credit-app-farmer-2"},
+                {"application_id": CREDIT_APP_2_ID},
             )
             summary = await client.call_tool("get_bnpl_summary", {})
             disaster = await client.call_tool(
                 "simulate_disaster_credit_risk",
                 {
-                    "region": "gangwon",
-                    "disaster_type": "flood",
-                    "affected_crop": "cabbage",
-                },
+                        "region": "gangwon",
+                        "disaster_type": "flood",
+                        "affected_crop": "custom",
+                    },
             )
             snapshot = await client.call_tool(
                 "create_risk_analysis_snapshot",
-                {"target_type": "USER", "target_id": "farmer-3"},
+                {"target_type": "USER", "target_id": FARMER_3_ID},
             )
 
         assert [item["application_id"] for item in queue.data["items"]] == [
-            "credit-app-farmer-2",
-            "credit-app-farmer-3",
+            CREDIT_APP_2_ID,
+            CREDIT_APP_3_ID,
         ]
         assert detail.data["recommended_action"] == "REQUEST_DOCUMENTS"
         assert summary.data["overdue_amount"] == 670_000
@@ -186,7 +199,7 @@ def test_fastmcp_admin_riskops_write_tools_return_confirmation_preview() -> None
         async with Client(create_mcp_server()) as client:
             repayment = await client.call_tool(
                 "send_repayment_alert",
-                {"user_id": "farmer-1", "channel": "KAKAO"},
+                {"user_id": FARMER_1_ID, "channel": "KAKAO"},
             )
             overdue = await client.call_tool(
                 "send_overdue_alerts",
@@ -198,8 +211,8 @@ def test_fastmcp_admin_riskops_write_tools_return_confirmation_preview() -> None
         assert repayment.data["confirmation_policy"] == "USER_CONFIRMATION"
         assert repayment.data["will_execute"] is False
         assert repayment.data["preview"]["dry_run"] is True
-        assert repayment.data["preview"]["target_user_ids"] == ["farmer-1"]
-        assert overdue.data["preview"]["target_user_ids"] == ["farmer-2", "farmer-3"]
+        assert repayment.data["preview"]["target_user_ids"] == [FARMER_1_ID]
+        assert overdue.data["preview"]["target_user_ids"] == [FARMER_2_ID, FARMER_3_ID]
 
     asyncio.run(run())
 
@@ -221,7 +234,7 @@ def test_fastmcp_prediction_scaling_tools_return_results() -> None:
             )
             errors = await client.call_tool(
                 "get_prediction_error_metrics",
-                {"prediction_run_id": "pred-run-20260605-001"},
+                {"prediction_run_id": PREDICTION_RUN_API_ID},
             )
             snapshot = await client.call_tool(
                 "create_scaling_analysis_snapshot",
@@ -229,16 +242,16 @@ def test_fastmcp_prediction_scaling_tools_return_results() -> None:
             )
 
         assert [item["model_version_id"] for item in models.data["items"]] == [
-            "traffic-forecast-v2",
-            "traffic-forecast-v1",
+            MODEL_TRAFFIC_V2_ID,
+            MODEL_TRAFFIC_V1_ID,
         ]
-        assert latest.data["prediction_run_id"] == "pred-run-20260605-001"
+        assert latest.data["prediction_run_id"] == PREDICTION_RUN_API_ID
         assert latest.data["predicted_value"] == 150.0
         assert errors.data["sample_count"] == 3
         assert errors.data["mean_absolute_error"] == 6.67
         assert snapshot.data["summary"]["prediction_driven_events"] == 1
         assert snapshot.data["evidence"]["related_prediction_run_ids"] == [
-            "pred-run-20260605-001"
+            PREDICTION_RUN_API_ID
         ]
 
     asyncio.run(run())
@@ -271,9 +284,9 @@ def test_fastmcp_farm_advisory_tools_return_bnpl_ready_results() -> None:
 
         assert calendar.data["stages"][0]["stage"] == "planning"
         assert bundle.data["cart_items"] == [
-            {"product_id": "fertilizer-organic-20kg", "quantity": 12},
-            {"product_id": "seed-rice-10kg", "quantity": 3},
-            {"product_id": "pesticide-safe-1l", "quantity": 2},
+            {"product_id": FERTILIZER_ORGANIC_ID, "quantity": 12},
+            {"product_id": SEED_RICE_ID, "quantity": 3},
+            {"product_id": PESTICIDE_SAFE_ID, "quantity": 2},
         ]
         assert bundle.data["estimated_budget"] == 432_000
         assert cashflow.data["recommended_bnpl_amount"] == 332_000
@@ -293,16 +306,16 @@ def test_fastmcp_farmer_bnpl_read_tools_return_results() -> None:
                 "calculate_cart_total",
                 {
                     "items": [
-                        {"product_id": "fertilizer-organic-20kg", "quantity": 2},
-                        {"product_id": "seed-rice-10kg", "quantity": 1},
+                        {"product_id": FERTILIZER_ORGANIC_ID, "quantity": 2},
+                        {"product_id": SEED_RICE_ID, "quantity": 1},
                     ]
                 },
             )
             payload = await client.call_tool(
                 "prepare_bnpl_checkout_payload",
                 {
-                    "user_id": "farmer-1",
-                    "items": [{"product_id": "fertilizer-organic-20kg", "quantity": 2}],
+                    "user_id": FARMER_1_ID,
+                    "items": [{"product_id": FERTILIZER_ORGANIC_ID, "quantity": 2}],
                 },
             )
 
@@ -321,7 +334,7 @@ def test_fastmcp_farmer_bnpl_write_tools_return_user_confirmation_preview() -> N
             application = await client.call_tool(
                 "start_credit_application",
                 {
-                    "user_id": "farmer-1",
+                    "user_id": FARMER_1_ID,
                     "requested_amount": 1_500_000,
                     "crop_type": "rice",
                 },
@@ -329,8 +342,8 @@ def test_fastmcp_farmer_bnpl_write_tools_return_user_confirmation_preview() -> N
             checkout = await client.call_tool(
                 "create_bnpl_checkout",
                 {
-                    "user_id": "farmer-1",
-                    "checkout_intent_id": "checkout-intent-farmer-1",
+                    "user_id": FARMER_1_ID,
+                    "checkout_intent_id": "checkout-intent-preview",
                     "confirmation_token": "confirm-1",
                 },
             )
@@ -341,7 +354,7 @@ def test_fastmcp_farmer_bnpl_write_tools_return_user_confirmation_preview() -> N
         assert application.data["will_execute"] is False
         assert application.data["preview"]["application_id"] == build_public_id(
             "credit-app",
-            "farmer-1",
+            FARMER_1_ID,
         )
         assert checkout.data["tool_permission"] == "USER_CONFIRMED_WRITE"
         assert checkout.data["call_status"] == "APPROVAL_REQUIRED"
