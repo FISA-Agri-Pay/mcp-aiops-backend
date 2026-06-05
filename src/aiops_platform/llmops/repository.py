@@ -879,7 +879,7 @@ def db_prompt_scope(scope: PromptScope) -> str:
         "admin_copilot": "RISKOPS",
         "rca": "INFRAOPS",
         "ops_report": "REPORT",
-        "common": "INFRAOPS",
+        "common": "COMMON",
     }[scope]
 
 
@@ -889,6 +889,7 @@ def api_prompt_scope(domain: str) -> PromptScope:
         "RISKOPS": "admin_copilot",
         "INFRAOPS": "rca",
         "REPORT": "ops_report",
+        "COMMON": "common",
     }.get(domain, "common")
 
 

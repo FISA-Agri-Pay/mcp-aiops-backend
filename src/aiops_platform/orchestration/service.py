@@ -280,7 +280,10 @@ class OrchestrationService:
                 tool_results=tool_results,
             )
             job = self._finish_job(job.job_id, tool_results)
-            assistant_content = llm_run.masked_output.get("answer") or agent_run.answer
+            assistant_content = resolve_assistant_content(
+                llm_run.masked_output,
+                agent_run.answer,
+            )
         except Exception as exc:
             logger.exception("Agent orchestration failed for job %s.", job.job_id)
             planned_tool_results = []
@@ -528,6 +531,15 @@ def normalize_optional_job_status(value: str | None) -> JobStatus | None:
     if normalized not in get_args(JobStatus):
         raise OrchestrationValidationError("job status is invalid.")
     return normalized
+
+
+def resolve_assistant_content(
+    masked_output: dict[str, object],
+    fallback_answer: str,
+) -> str:
+    if "answer" in masked_output:
+        return str(masked_output["answer"])
+    return fallback_answer
 
 
 def current_timestamp() -> str:

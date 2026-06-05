@@ -2,6 +2,7 @@ from aiops_platform.agent.dispatcher import McpToolDispatcher
 from aiops_platform.agent.planner import RuleBasedAgentPlanner
 from aiops_platform.agent.schemas import AgentToolPlan
 from aiops_platform.mcp.schemas import McpToolCallStatus
+from aiops_platform.orchestration.service import resolve_assistant_content
 from tests.seed_constants import FARMER_1_ID
 
 
@@ -61,3 +62,7 @@ def test_dispatcher_blocks_user_confirmed_write_tool() -> None:
     assert result.will_execute is False
     assert result.requires_approval is True
     assert result.response_payload["dry_run"] is True
+
+
+def test_assistant_content_preserves_empty_llm_answer() -> None:
+    assert resolve_assistant_content({"answer": ""}, "fallback answer") == ""

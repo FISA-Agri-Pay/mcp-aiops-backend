@@ -1,6 +1,10 @@
 import pytest
 
-from aiops_platform.llmops.repository import SqlLlmOpsRepository
+from aiops_platform.llmops.repository import (
+    SqlLlmOpsRepository,
+    api_prompt_scope,
+    db_prompt_scope,
+)
 
 
 class FakeSession:
@@ -25,3 +29,7 @@ def test_session_scope_rolls_back_injected_session_on_error() -> None:
 
     assert session.rollbacks == 1
     assert session.commits == 0
+
+
+def test_common_prompt_scope_round_trips() -> None:
+    assert api_prompt_scope(db_prompt_scope("common")) == "common"
