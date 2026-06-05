@@ -5,6 +5,7 @@ from typing import Any
 
 from fastmcp import FastMCP
 
+from aiops_platform.admin_riskops.service import AdminRiskOpsService
 from aiops_platform.farm_advisory.service import FarmAdvisoryService
 from aiops_platform.farmer_bnpl.service import FarmerBnplService
 from aiops_platform.infraops.service import InfraOpsService
@@ -111,9 +112,11 @@ def create_mcp_server(
     infraops_service: InfraOpsService | None = None,
     farmer_bnpl_service: FarmerBnplService | None = None,
     farm_advisory_service: FarmAdvisoryService | None = None,
+    admin_riskops_service: AdminRiskOpsService | None = None,
 ) -> FastMCP:
     farmer_bnpl = farmer_bnpl_service or FarmerBnplService()
     farm_advisory = farm_advisory_service or FarmAdvisoryService()
+    admin_riskops = admin_riskops_service or AdminRiskOpsService()
     infraops = infraops_service or InfraOpsService.from_settings()
     mcp = FastMCP(
         name="aiops-platform-mcp",
@@ -872,6 +875,246 @@ def create_mcp_server(
             operation=lambda: farm_advisory.translate_finance_terms_for_farmer(
                 **request_payload,
             ),
+        )
+
+    def call_admin_riskops_tool(
+        *,
+        tool_name: str,
+        request_payload: dict[str, Any],
+        operation: Callable[[], Any],
+    ) -> dict[str, Any]:
+        started_at = perf_counter()
+        tool = _resolve_registered_tool("admin-riskops-mcp", tool_name)
+        permission = McpToolPermission(tool.tool_permission)
+        policy = resolve_tool_policy(permission)
+
+        try:
+            result_payload = operation().model_dump(mode="json")
+            if McpExecutionPolicy(policy.execution_policy) == McpExecutionPolicy.ALLOWED:
+                response = result_payload
+            else:
+                response = _policy_preview_response(tool, result_payload)
+        except Exception as exc:
+            _record_tool_audit(
+                audit_service=audit_service,
+                tool=tool,
+                request_payload=request_payload,
+                response_payload=None,
+                call_status=McpToolCallStatus.FAILED,
+                started_at=started_at,
+                last_error=str(exc),
+            )
+            raise
+
+        _record_tool_audit(
+            audit_service=audit_service,
+            tool=tool,
+            request_payload=request_payload,
+            response_payload=response,
+            call_status=McpToolCallStatus(policy.call_status),
+            started_at=started_at,
+        )
+        return response
+
+    @mcp.tool(
+        name="get_credit_review_queue",
+        description="Read the admin credit review queue.",
+        tags={"admin-riskops", "credit-review", "read"},
+        annotations={"readOnlyHint": True, "openWorldHint": False},
+    )
+    def get_credit_review_queue_tool(
+        status_filter: str | None = None,
+        limit: int = 20,
+    ) -> dict[str, Any]:
+        request_payload = {"status_filter": status_filter, "limit": limit}
+        return call_admin_riskops_tool(
+            tool_name="get_credit_review_queue",
+            request_payload=request_payload,
+            operation=lambda: admin_riskops.get_credit_review_queue(**request_payload),
+        )
+
+    @mcp.tool(
+        name="get_credit_review_detail",
+        description="Read a credit review detail for admin RiskOps.",
+        tags={"admin-riskops", "credit-review", "read"},
+        annotations={"readOnlyHint": True, "openWorldHint": False},
+    )
+    def get_credit_review_detail_tool(application_id: str) -> dict[str, Any]:
+        request_payload = {"application_id": application_id}
+        return call_admin_riskops_tool(
+            tool_name="get_credit_review_detail",
+            request_payload=request_payload,
+            operation=lambda: admin_riskops.get_credit_review_detail(**request_payload),
+        )
+
+    @mcp.tool(
+        name="summarize_credit_risk",
+        description="Summarize credit risk for a BNPL user.",
+        tags={"admin-riskops", "credit-risk", "read"},
+        annotations={"readOnlyHint": True, "openWorldHint": False},
+    )
+    def summarize_credit_risk_tool(user_id: str) -> dict[str, Any]:
+        request_payload = {"user_id": user_id}
+        return call_admin_riskops_tool(
+            tool_name="summarize_credit_risk",
+            request_payload=request_payload,
+            operation=lambda: admin_riskops.summarize_credit_risk(**request_payload),
+        )
+
+    @mcp.tool(
+        name="get_bnpl_summary",
+        description="Read the admin BNPL portfolio summary.",
+        tags={"admin-riskops", "bnpl", "summary", "read"},
+        annotations={"readOnlyHint": True, "openWorldHint": False},
+    )
+    def get_bnpl_summary_tool() -> dict[str, Any]:
+        return call_admin_riskops_tool(
+            tool_name="get_bnpl_summary",
+            request_payload={},
+            operation=admin_riskops.get_bnpl_summary,
+        )
+
+    @mcp.tool(
+        name="search_bnpl_users",
+        description="Search BNPL users for admin RiskOps.",
+        tags={"admin-riskops", "bnpl", "users", "read"},
+        annotations={"readOnlyHint": True, "openWorldHint": False},
+    )
+    def search_bnpl_users_tool(
+        query: str | None = None,
+        limit: int = 20,
+    ) -> dict[str, Any]:
+        request_payload = {"query": query, "limit": limit}
+        return call_admin_riskops_tool(
+            tool_name="search_bnpl_users",
+            request_payload=request_payload,
+            operation=lambda: admin_riskops.search_bnpl_users(**request_payload),
+        )
+
+    @mcp.tool(
+        name="get_overdue_summary",
+        description="Read an overdue BNPL portfolio summary.",
+        tags={"admin-riskops", "overdue", "summary", "read"},
+        annotations={"readOnlyHint": True, "openWorldHint": False},
+    )
+    def get_overdue_summary_tool() -> dict[str, Any]:
+        return call_admin_riskops_tool(
+            tool_name="get_overdue_summary",
+            request_payload={},
+            operation=admin_riskops.get_overdue_summary,
+        )
+
+    @mcp.tool(
+        name="search_overdue_users",
+        description="Search overdue BNPL users.",
+        tags={"admin-riskops", "overdue", "users", "read"},
+        annotations={"readOnlyHint": True, "openWorldHint": False},
+    )
+    def search_overdue_users_tool(
+        query: str | None = None,
+        min_days_overdue: int = 1,
+        limit: int = 20,
+    ) -> dict[str, Any]:
+        request_payload = {
+            "query": query,
+            "min_days_overdue": min_days_overdue,
+            "limit": limit,
+        }
+        return call_admin_riskops_tool(
+            tool_name="search_overdue_users",
+            request_payload=request_payload,
+            operation=lambda: admin_riskops.search_overdue_users(**request_payload),
+        )
+
+    @mcp.tool(
+        name="get_bss_score_history",
+        description="Read BSS score history for a BNPL user.",
+        tags={"admin-riskops", "bss", "read"},
+        annotations={"readOnlyHint": True, "openWorldHint": False},
+    )
+    def get_bss_score_history_tool(user_id: str) -> dict[str, Any]:
+        request_payload = {"user_id": user_id}
+        return call_admin_riskops_tool(
+            tool_name="get_bss_score_history",
+            request_payload=request_payload,
+            operation=lambda: admin_riskops.get_bss_score_history(**request_payload),
+        )
+
+    @mcp.tool(
+        name="simulate_disaster_credit_risk",
+        description="Simulate disaster impact on BNPL credit risk.",
+        tags={"admin-riskops", "disaster", "simulation", "read"},
+        annotations={"readOnlyHint": True, "openWorldHint": False},
+    )
+    def simulate_disaster_credit_risk_tool(
+        region: str,
+        disaster_type: str,
+        affected_crop: str | None = None,
+    ) -> dict[str, Any]:
+        request_payload = {
+            "region": region,
+            "disaster_type": disaster_type,
+            "affected_crop": affected_crop,
+        }
+        return call_admin_riskops_tool(
+            tool_name="simulate_disaster_credit_risk",
+            request_payload=request_payload,
+            operation=lambda: admin_riskops.simulate_disaster_credit_risk(
+                **request_payload,
+            ),
+        )
+
+    @mcp.tool(
+        name="create_risk_analysis_snapshot",
+        description="Create a read-only admin RiskOps analysis snapshot.",
+        tags={"admin-riskops", "snapshot", "read"},
+        annotations={"readOnlyHint": True, "openWorldHint": False},
+    )
+    def create_risk_analysis_snapshot_tool(
+        target_type: str,
+        target_id: str,
+    ) -> dict[str, Any]:
+        request_payload = {"target_type": target_type, "target_id": target_id}
+        return call_admin_riskops_tool(
+            tool_name="create_risk_analysis_snapshot",
+            request_payload=request_payload,
+            operation=lambda: admin_riskops.create_risk_analysis_snapshot(
+                **request_payload,
+            ),
+        )
+
+    @mcp.tool(
+        name="send_repayment_alert",
+        description="Preview a repayment alert without sending it.",
+        tags={"admin-riskops", "alert", "write", "preview"},
+        annotations={"readOnlyHint": True, "openWorldHint": False},
+    )
+    def send_repayment_alert_tool(
+        user_id: str,
+        channel: str = "SMS",
+    ) -> dict[str, Any]:
+        request_payload = {"user_id": user_id, "channel": channel}
+        return call_admin_riskops_tool(
+            tool_name="send_repayment_alert",
+            request_payload=request_payload,
+            operation=lambda: admin_riskops.send_repayment_alert(**request_payload),
+        )
+
+    @mcp.tool(
+        name="send_overdue_alerts",
+        description="Preview bulk overdue alerts without sending them.",
+        tags={"admin-riskops", "alert", "overdue", "write", "preview"},
+        annotations={"readOnlyHint": True, "openWorldHint": False},
+    )
+    def send_overdue_alerts_tool(
+        min_days_overdue: int = 1,
+        channel: str = "SMS",
+    ) -> dict[str, Any]:
+        request_payload = {"min_days_overdue": min_days_overdue, "channel": channel}
+        return call_admin_riskops_tool(
+            tool_name="send_overdue_alerts",
+            request_payload=request_payload,
+            operation=lambda: admin_riskops.send_overdue_alerts(**request_payload),
         )
 
     @mcp.tool(
