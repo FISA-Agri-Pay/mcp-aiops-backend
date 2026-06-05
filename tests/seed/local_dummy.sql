@@ -3,6 +3,35 @@
 
 begin;
 
+truncate table
+    core.loan_overdue_ledger,
+    core.principal_repayment_ledger,
+    core.credit_usage_ledger,
+    core.orders,
+    core.interest_ledger,
+    core.bss_scores,
+    core.farmer_documents,
+    core.ass_scores,
+    core.credit_limits,
+    core.credit_limit_applications,
+    core.farmer_profiles,
+    core.users,
+    catalog.products,
+    catalog.categories,
+    ai.mcp_tool_calls,
+    ai.chat_messages,
+    ai.job_runs,
+    ai.chat_sessions,
+    ai.mcp_tools,
+    ai.mcp_servers,
+    ai.scaling_events,
+    ai.prediction_error_metrics,
+    ai.prediction_metrics,
+    ai.actual_metrics,
+    ai.prediction_runs,
+    ai.model_versions
+restart identity cascade;
+
 insert into core.users (
     public_id,
     name,
@@ -280,7 +309,6 @@ insert into catalog.categories (public_id, name, status, created_at, updated_at)
     ('20000000-0000-0000-0000-000000000002', 'seed', 'ACTIVE', timestamp '2026-06-05 00:00:00', timestamp '2026-06-05 00:00:00'),
     ('20000000-0000-0000-0000-000000000003', 'pesticide', 'ACTIVE', timestamp '2026-06-05 00:00:00', timestamp '2026-06-05 00:00:00')
 on conflict (name) do update set
-    public_id = excluded.public_id,
     status = excluded.status,
     updated_at = excluded.updated_at;
 
@@ -296,11 +324,39 @@ insert into catalog.products (
     status,
     created_at,
     updated_at
-) values
-    ('10000000-0000-0000-0000-000000000001', '20000000-0000-0000-0000-000000000001', 'NPK 20kg fertilizer', 'Balanced NPK fertilizer for base application.', 28000.00, 100, 'bag', null, 'ON_SALE', timestamp '2026-06-05 00:00:00', timestamp '2026-06-05 00:00:00'),
-    ('10000000-0000-0000-0000-000000000002', '20000000-0000-0000-0000-000000000001', 'Organic 20kg fertilizer', 'Organic fertilizer for soil preparation.', 24000.00, 100, 'bag', null, 'ON_SALE', timestamp '2026-06-05 00:00:00', timestamp '2026-06-05 00:00:00'),
-    ('10000000-0000-0000-0000-000000000003', '20000000-0000-0000-0000-000000000002', 'Rice seed 10kg', 'Rice seed pack for spring planting.', 36000.00, 8, 'pack', null, 'ON_SALE', timestamp '2026-06-05 00:00:00', timestamp '2026-06-05 00:00:00'),
-    ('10000000-0000-0000-0000-000000000004', '20000000-0000-0000-0000-000000000003', 'Low-toxicity pesticide 1L', 'Crop care pesticide bottle.', 18000.00, 100, 'bottle', null, 'ON_SALE', timestamp '2026-06-05 00:00:00', timestamp '2026-06-05 00:00:00')
+)
+select
+    seed.public_id,
+    c.public_id as category_public_id,
+    seed.name,
+    seed.description,
+    seed.price,
+    seed.stock_quantity,
+    seed.unit,
+    seed.image_url,
+    seed.status,
+    seed.created_at,
+    seed.updated_at
+from (
+    values
+        ('10000000-0000-0000-0000-000000000001'::uuid, 'fertilizer', 'NPK 20kg fertilizer', 'Balanced NPK fertilizer for base application.', 28000.00, 100, 'bag', null, 'ON_SALE', timestamp '2026-06-05 00:00:00', timestamp '2026-06-05 00:00:00'),
+        ('10000000-0000-0000-0000-000000000002'::uuid, 'fertilizer', 'Organic 20kg fertilizer', 'Organic fertilizer for soil preparation.', 24000.00, 100, 'bag', null, 'ON_SALE', timestamp '2026-06-05 00:00:00', timestamp '2026-06-05 00:00:00'),
+        ('10000000-0000-0000-0000-000000000003'::uuid, 'seed', 'Rice seed 10kg', 'Rice seed pack for spring planting.', 36000.00, 8, 'pack', null, 'ON_SALE', timestamp '2026-06-05 00:00:00', timestamp '2026-06-05 00:00:00'),
+        ('10000000-0000-0000-0000-000000000004'::uuid, 'pesticide', 'Low-toxicity pesticide 1L', 'Crop care pesticide bottle.', 18000.00, 100, 'bottle', null, 'ON_SALE', timestamp '2026-06-05 00:00:00', timestamp '2026-06-05 00:00:00')
+) as seed(
+    public_id,
+    category_name,
+    name,
+    description,
+    price,
+    stock_quantity,
+    unit,
+    image_url,
+    status,
+    created_at,
+    updated_at
+)
+join catalog.categories c on c.name = seed.category_name
 on conflict (public_id) do update set
     category_public_id = excluded.category_public_id,
     name = excluded.name,

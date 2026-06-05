@@ -1,3 +1,5 @@
+from uuid import uuid4
+
 import pytest
 from sqlalchemy import text
 
@@ -46,7 +48,7 @@ def test_bnpl_and_overdue_summaries_are_deterministic() -> None:
 
 
 def test_bnpl_summary_counts_user_once_with_multiple_applications() -> None:
-    extra_application_id = "a0000001-0000-0000-0000-000000000099"
+    extra_application_id = str(uuid4())
     with SessionLocal() as session:
         session.execute(
             text(
