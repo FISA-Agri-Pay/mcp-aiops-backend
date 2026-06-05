@@ -4,6 +4,7 @@ from fastmcp.client import Client
 
 from aiops_platform.infraops.schemas import (
     BatchRunStatusResult,
+    DailyOpsMetricsResult,
     ElasticsearchClusterHealthResult,
     ElasticsearchIndexHealthItem,
     ElasticsearchIndexHealthResult,
@@ -11,11 +12,14 @@ from aiops_platform.infraops.schemas import (
     ElasticsearchQueryResult,
     ElkSnapshotResult,
     InfraOpsChangePreviewResult,
+    InfraOpsSearchResult,
+    InfraOpsSourceResult,
     KafkaConsumerLagResult,
     KibanaSavedObjectsResult,
     KubernetesResourceResult,
     LokiQueryResult,
     PrometheusQueryResult,
+    RcaSnapshotResult,
 )
 from aiops_platform.main import create_app
 from aiops_platform.mcp.server import MCP_TRANSPORT_MOUNT_PATH, create_mcp_server
@@ -55,6 +59,10 @@ def test_fastmcp_server_exposes_registry_tools() -> None:
             "get_elasticsearch_index_health",
             "get_kibana_saved_objects",
             "create_elk_snapshot",
+            "create_rca_snapshot",
+            "aggregate_daily_ops_metrics",
+            "search_incidents",
+            "search_rca_history",
         }
 
     asyncio.run(run())
@@ -562,5 +570,142 @@ def test_fastmcp_kibana_and_snapshot_tools_return_results() -> None:
         assert saved_objects.data["response"] == {"saved_objects": []}
         assert snapshot.data["cluster_health"]["status"] == "green"
         assert snapshot.data["index_health"]["indices"][0]["index"] == "logs-api-2026.06.04"
+
+    asyncio.run(run())
+
+
+def test_fastmcp_rca_and_daily_report_tools_return_results() -> None:
+    class FakeInfraOpsService:
+        def create_rca_snapshot(
+            self,
+            incident_key: str | None = None,
+            namespace: str | None = None,
+            index_pattern: str | None = None,
+            prometheus_query: str = "up",
+            loki_query: str = '{job=~".+"}',
+            loki_limit: int = 100,
+            kafka_consumer_group: str | None = None,
+            kafka_topic: str | None = None,
+            batch_job_name: str | None = None,
+        ):
+            assert incident_key == "INC-1"
+            assert namespace == "default"
+            assert index_pattern == "logs-*"
+            assert prometheus_query == "up"
+            assert loki_query == '{app="api"}'
+            assert loki_limit == 50
+            assert kafka_consumer_group == "payments"
+            assert kafka_topic == "orders"
+            assert batch_job_name == "daily-close"
+            return RcaSnapshotResult(
+                incident_key=incident_key,
+                partial=True,
+                sources=[
+                    InfraOpsSourceResult(
+                        source="prometheus",
+                        status="SUCCESS",
+                        data={"status": "success"},
+                    ),
+                    InfraOpsSourceResult(
+                        source="kafka",
+                        status="FAILED",
+                        error="source unavailable",
+                    ),
+                ],
+            )
+
+        def aggregate_daily_ops_metrics(
+            self,
+            report_date: str | None = None,
+            namespace: str | None = None,
+            index_pattern: str | None = None,
+            prometheus_query: str = "up",
+            kafka_consumer_group: str | None = None,
+            kafka_topic: str | None = None,
+            batch_job_name: str | None = None,
+        ):
+            assert report_date == "2026-06-05"
+            assert namespace == "default"
+            return DailyOpsMetricsResult(
+                report_date=report_date,
+                partial=False,
+                metrics={"successful_sources": 6, "failed_sources": 0},
+                sources=[
+                    InfraOpsSourceResult(
+                        source="prometheus",
+                        status="SUCCESS",
+                        data={"status": "success"},
+                    )
+                ],
+            )
+
+    async def run() -> None:
+        async with Client(create_mcp_server(infraops_service=FakeInfraOpsService())) as client:
+            snapshot = await client.call_tool(
+                "create_rca_snapshot",
+                {
+                    "incident_key": "INC-1",
+                    "namespace": "default",
+                    "index_pattern": "logs-*",
+                    "prometheus_query": "up",
+                    "loki_query": '{app="api"}',
+                    "loki_limit": 50,
+                    "kafka_consumer_group": "payments",
+                    "kafka_topic": "orders",
+                    "batch_job_name": "daily-close",
+                },
+            )
+            daily = await client.call_tool(
+                "aggregate_daily_ops_metrics",
+                {"report_date": "2026-06-05", "namespace": "default"},
+            )
+
+        assert snapshot.data["incident_key"] == "INC-1"
+        assert snapshot.data["partial"] is True
+        assert snapshot.data["sources"][1]["status"] == "FAILED"
+        assert daily.data["metrics"]["successful_sources"] == 6
+
+    asyncio.run(run())
+
+
+def test_fastmcp_incident_and_rca_history_search_tools_return_results() -> None:
+    class FakeInfraOpsService:
+        def search_incidents(self, query: str | None = None, limit: int = 20):
+            assert query == "payment"
+            assert limit == 10
+            return InfraOpsSearchResult(
+                query=query,
+                limit=limit,
+                items=[],
+                source="incidents",
+                note="not connected",
+            )
+
+        def search_rca_history(self, query: str | None = None, limit: int = 20):
+            assert query == "latency"
+            assert limit == 5
+            return InfraOpsSearchResult(
+                query=query,
+                limit=limit,
+                items=[],
+                source="rca_history",
+                note="not connected",
+            )
+
+    async def run() -> None:
+        async with Client(create_mcp_server(infraops_service=FakeInfraOpsService())) as client:
+            incidents = await client.call_tool(
+                "search_incidents",
+                {"query": "payment", "limit": 10},
+            )
+            history = await client.call_tool(
+                "search_rca_history",
+                {"query": "latency", "limit": 5},
+            )
+
+        assert incidents.data["source"] == "incidents"
+        assert incidents.data["items"] == []
+        assert history.data["source"] == "rca_history"
+        assert history.data["items"] == []
 
     asyncio.run(run())
