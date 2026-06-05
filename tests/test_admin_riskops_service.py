@@ -1,9 +1,13 @@
 import pytest
+from sqlalchemy import text
 
+from aiops_platform.admin_riskops.repository import RiskOpsUserRecord
 from aiops_platform.admin_riskops.service import (
     AdminRiskOpsService,
     AdminRiskOpsValidationError,
+    build_risk_factors,
 )
+from aiops_platform.core.database import SessionLocal
 from tests.seed_constants import (
     CREDIT_APP_2_ID,
     CREDIT_APP_3_ID,
@@ -39,6 +43,57 @@ def test_bnpl_and_overdue_summaries_are_deterministic() -> None:
     assert bnpl_summary.available_amount == 4_650_000
     assert overdue_summary.overdue_users == 2
     assert overdue_summary.overdue_amount == 670_000
+
+
+def test_bnpl_summary_counts_user_once_with_multiple_applications() -> None:
+    extra_application_id = "a0000001-0000-0000-0000-000000000099"
+    with SessionLocal() as session:
+        session.execute(
+            text(
+                """
+                insert into core.credit_limit_applications (
+                    public_id,
+                    user_id,
+                    status,
+                    applied_at,
+                    created_at,
+                    updated_at
+                )
+                select
+                    cast(:application_id as uuid),
+                    id,
+                    'APPROVED',
+                    timestamp '2026-06-06 09:00:00',
+                    timestamp '2026-06-06 09:00:00',
+                    timestamp '2026-06-06 09:00:00'
+                from core.users
+                where public_id = cast(:user_id as uuid)
+                on conflict (public_id) do update set
+                    status = excluded.status,
+                    applied_at = excluded.applied_at,
+                    updated_at = excluded.updated_at
+                """
+            ),
+            {"application_id": extra_application_id, "user_id": FARMER_1_ID},
+        )
+        session.commit()
+    try:
+        summary = AdminRiskOpsService().get_bnpl_summary()
+
+        assert summary.active_users == 3
+        assert summary.used_amount == 7_350_000
+    finally:
+        with SessionLocal() as session:
+            session.execute(
+                text(
+                    """
+                    delete from core.credit_limit_applications
+                    where public_id = cast(:application_id as uuid)
+                    """
+                ),
+                {"application_id": extra_application_id},
+            )
+            session.commit()
 
 
 def test_user_search_risk_summary_and_bss_history() -> None:
@@ -110,3 +165,21 @@ def test_invalid_admin_riskops_inputs_raise_domain_errors() -> None:
 
     with pytest.raises(AdminRiskOpsValidationError, match="BNPL user was not found"):
         service.summarize_credit_risk(user_id="missing-user")
+
+
+def test_zero_credit_limit_does_not_raise_when_building_risk_factors() -> None:
+    factors = build_risk_factors(
+        RiskOpsUserRecord(
+            user_id="zero-limit-user",
+            farmer_name="Zero limit",
+            region="unknown",
+            main_crop="rice",
+            credit_limit=0,
+            used_amount=100,
+            risk_level="LOW",
+            overdue_amount=0,
+            days_overdue=0,
+        )
+    )
+
+    assert factors == ["stable_repayment_profile"]

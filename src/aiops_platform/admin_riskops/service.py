@@ -410,7 +410,7 @@ def user_matches(user: RiskOpsUserRecord, query: str) -> bool:
 
 def build_risk_factors(user: RiskOpsUserRecord) -> list[str]:
     factors = []
-    if user.used_amount / user.credit_limit > 0.7:
+    if user.credit_limit > 0 and user.used_amount / user.credit_limit > 0.7:
         factors.append("high_limit_utilization")
     if user.overdue_amount > 0:
         factors.append("overdue_balance")

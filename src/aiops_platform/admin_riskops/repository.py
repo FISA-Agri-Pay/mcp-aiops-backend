@@ -50,7 +50,70 @@ class SqlAdminRiskOpsRepository:
         return self._fetch_users(include_all_applications=False)
 
     def _fetch_users(self, *, include_all_applications: bool) -> list[RiskOpsUserRecord]:
-        status_filter = "" if include_all_applications else "where cla.status = 'PENDING'"
+        if include_all_applications:
+            applications_cte = """
+                applications as (
+                    select distinct on (u.public_id)
+                        cla.id as application_pk,
+                        cla.public_id as application_public_id,
+                        cla.status as application_status,
+                        cla.applied_at,
+                        cla.created_at as application_created_at,
+                        u.id as user_pk,
+                        u.public_id as user_public_id,
+                        u.name as farmer_name,
+                        u.address as user_address
+                    from core.credit_limit_applications cla
+                    join core.users u on u.id = cla.user_id
+                    order by u.public_id, cla.applied_at desc nulls last, cla.created_at desc
+                )
+            """
+            credit_limits_cte = """
+                credit_limits as (
+                    select distinct on (user_public_id)
+                        user_public_id,
+                        application_public_id,
+                        crop_type_snapshot,
+                        total_limit,
+                        used_amount,
+                        created_at
+                    from core.credit_limits
+                    order by user_public_id, created_at desc
+                )
+            """
+            credit_limit_join = "cl.user_public_id = app.user_public_id"
+        else:
+            applications_cte = """
+                applications as (
+                    select
+                        cla.id as application_pk,
+                        cla.public_id as application_public_id,
+                        cla.status as application_status,
+                        cla.applied_at,
+                        cla.created_at as application_created_at,
+                        u.id as user_pk,
+                        u.public_id as user_public_id,
+                        u.name as farmer_name,
+                        u.address as user_address
+                    from core.credit_limit_applications cla
+                    join core.users u on u.id = cla.user_id
+                    where cla.status = 'PENDING'
+                )
+            """
+            credit_limits_cte = """
+                credit_limits as (
+                    select distinct on (application_public_id)
+                        user_public_id,
+                        application_public_id,
+                        crop_type_snapshot,
+                        total_limit,
+                        used_amount,
+                        created_at
+                    from core.credit_limits
+                    order by application_public_id, created_at desc
+                )
+            """
+            credit_limit_join = "cl.application_public_id = app.application_public_id"
         query = text(
             f"""
             with latest_bss as (
@@ -68,37 +131,41 @@ class SqlAdminRiskOpsRepository:
                 from core.loan_overdue_ledger
                 group by user_public_id
             ),
+            {credit_limits_cte},
             documents as (
                 select
                     application_id,
                     array_agg(document_type order by document_type) as submitted_documents
                 from core.farmer_documents
                 group by application_id
-            )
+            ),
+            {applications_cte}
             select
-                u.public_id::text as user_id,
-                u.name as farmer_name,
-                coalesce(nullif(fp.farm_address, ''), nullif(u.address, ''), 'UNKNOWN') as region,
+                app.user_public_id::text as user_id,
+                app.farmer_name,
+                coalesce(
+                    nullif(fp.farm_address, ''),
+                    nullif(app.user_address, ''),
+                    'UNKNOWN'
+                ) as region,
                 coalesce(fp.main_crop, cl.crop_type_snapshot, 'UNKNOWN') as main_crop,
                 coalesce(cl.total_limit, 0) as credit_limit,
                 coalesce(cl.used_amount, 0) as used_amount,
                 coalesce(o.overdue_amount, 0) as overdue_amount,
                 coalesce(o.days_overdue, 0) as days_overdue,
-                cla.public_id::text as application_id,
-                cla.status as application_status,
-                cla.applied_at::text as application_submitted_at,
+                app.application_public_id::text as application_id,
+                app.application_status,
+                app.applied_at::text as application_submitted_at,
                 lb.score as bss_score,
                 fp.field_aream2 as field_aream2,
                 coalesce(documents.submitted_documents, array[]::varchar[]) as submitted_documents
-            from core.credit_limit_applications cla
-            join core.users u on u.id = cla.user_id
-            left join core.credit_limits cl on cl.application_public_id = cla.public_id
-            left join core.farmer_profiles fp on fp.user_id = u.id
-            left join overdue o on o.user_public_id = u.public_id
-            left join latest_bss lb on lb.user_public_id = u.public_id
-            left join documents on documents.application_id = cla.id
-            {status_filter}
-            order by cla.applied_at desc nulls last, cla.created_at desc
+            from applications app
+            left join credit_limits cl on {credit_limit_join}
+            left join core.farmer_profiles fp on fp.user_id = app.user_pk
+            left join overdue o on o.user_public_id = app.user_public_id
+            left join latest_bss lb on lb.user_public_id = app.user_public_id
+            left join documents on documents.application_id = app.application_pk
+            order by app.applied_at desc nulls last, app.application_created_at desc
             """
         )
         with self._session_scope() as session:
