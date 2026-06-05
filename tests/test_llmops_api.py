@@ -48,7 +48,14 @@ def test_farmer_agent_records_llm_run_and_prompt_version() -> None:
 
     snapshots = client.get("/agent-snapshots", params={"snapshot_type": "farmer_bnpl"})
     assert snapshots.status_code == 200
-    assert any(item["job_id"] == answer["job"]["job_id"] for item in snapshots.json()["items"])
+    matched_snapshot = next(
+        item
+        for item in snapshots.json()["items"]
+        if item["job_id"] == answer["job"]["job_id"]
+    )
+    assert matched_snapshot["session_id"] == answer["session"]["session_id"]
+    assert matched_snapshot["llm_run_id"] == answer["llm_run"]["llm_run_id"]
+    assert matched_snapshot["payload"]["llm_run_id"] == answer["llm_run"]["llm_run_id"]
 
 
 def test_llm_runs_can_be_filtered_for_client_history() -> None:

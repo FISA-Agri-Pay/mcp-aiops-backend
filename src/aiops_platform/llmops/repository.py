@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-from collections.abc import Iterator
+from collections.abc import Iterator, Mapping
 from contextlib import contextmanager
 from typing import Any, Protocol
 
@@ -528,54 +528,32 @@ class SqlLlmOpsRepository:
         llm_run_id: str | None,
         payload: dict[str, Any],
     ) -> AgentSnapshotResult:
-        query = text(
-            """
-            insert into ai.observability_snapshots (
-                snapshot_type,
-                time_start,
-                time_end,
-                snapshot_status,
-                masked,
-                summary,
-                created_by_job_public_id
-            )
-            values (
-                :snapshot_type,
-                current_timestamp,
-                current_timestamp,
-                'COMPLETED',
-                true,
-                :summary,
-                cast(:job_id as uuid)
-            )
-            returning
-                public_id::text as snapshot_id,
-                snapshot_type,
-                snapshot_status,
-                created_by_job_public_id::text as job_id,
-                created_at::text as created_at
-            """
-        )
         summary = f"Agent snapshot for {snapshot_type}: {len(payload)} payload fields."
+        legacy_summary = {
+            "summary": summary,
+            "session_id": session_id,
+            "llm_run_id": llm_run_id,
+            "payload": payload,
+        }
         with self._session_scope(commit=True) as session:
+            has_tracking_columns = self._has_agent_snapshot_tracking_columns(session)
+            query = (
+                agent_snapshot_insert_query()
+                if has_tracking_columns
+                else legacy_agent_snapshot_insert_query()
+            )
             row = session.execute(
                 query,
                 {
                     "snapshot_type": db_snapshot_type(snapshot_type),
-                    "summary": summary,
+                    "summary": summary if has_tracking_columns else to_json(legacy_summary),
                     "job_id": job_id,
+                    "session_id": session_id,
+                    "llm_run_id": llm_run_id,
+                    "payload": to_json(payload),
                 },
             ).mappings().one()
-        return AgentSnapshotResult(
-            snapshot_id=row["snapshot_id"],
-            snapshot_type=api_snapshot_type(row["snapshot_type"]),
-            job_id=row["job_id"],
-            session_id=session_id,
-            llm_run_id=llm_run_id,
-            snapshot_status=row["snapshot_status"],
-            payload=payload,
-            created_at=row["created_at"],
-        )
+        return build_agent_snapshot(row)
 
     def list_agent_snapshots(
         self,
@@ -583,25 +561,12 @@ class SqlLlmOpsRepository:
         snapshot_type: str | None = None,
         limit: int = 20,
     ) -> list[AgentSnapshotResult]:
-        query = text(
-            """
-            select
-                public_id::text as snapshot_id,
-                snapshot_type,
-                snapshot_status,
-                created_by_job_public_id::text as job_id,
-                summary,
-                created_at::text as created_at
-            from ai.observability_snapshots
-            where (
-                cast(:snapshot_type as text) is null
-                or snapshot_type = cast(:snapshot_type as text)
-            )
-            order by created_at desc
-            limit :limit
-            """
-        )
         with self._session_scope() as session:
+            query = (
+                agent_snapshot_list_query()
+                if self._has_agent_snapshot_tracking_columns(session)
+                else legacy_agent_snapshot_list_query()
+            )
             rows = session.execute(
                 query,
                 {
@@ -609,19 +574,23 @@ class SqlLlmOpsRepository:
                     "limit": limit,
                 },
             ).mappings().all()
-        return [
-            AgentSnapshotResult(
-                snapshot_id=row["snapshot_id"],
-                snapshot_type=api_snapshot_type(row["snapshot_type"]),
-                job_id=row["job_id"],
-                session_id=None,
-                llm_run_id=None,
-                snapshot_status=row["snapshot_status"],
-                payload={"summary": row["summary"]},
-                created_at=row["created_at"],
-            )
-            for row in rows
-        ]
+        return [build_agent_snapshot(row) for row in rows]
+
+    def _has_agent_snapshot_tracking_columns(self, session: Session) -> bool:
+        query = text(
+            """
+            select count(*) = 3
+            from information_schema.columns
+            where table_schema = 'ai'
+              and table_name = 'observability_snapshots'
+              and column_name in (
+                  'session_public_id',
+                  'llm_run_public_id',
+                  'snapshot_payload'
+              )
+            """
+        )
+        return bool(session.execute(query).scalar_one())
 
     @contextmanager
     def _session_scope(self, *, commit: bool = False) -> Iterator[Session]:
@@ -694,6 +663,180 @@ def build_notification(row) -> NotificationOutboxResult:
         attempts=row["retry_count"] or 0,
         created_at=row["created_at"],
         last_error=row["last_error"],
+    )
+
+
+def build_agent_snapshot(row: Mapping[str, Any]) -> AgentSnapshotResult:
+    snapshot_summary = parse_snapshot_summary(row["summary"])
+    stored_payload = normalize_snapshot_payload(
+        row["snapshot_payload"] if "snapshot_payload" in row else None,
+        snapshot_summary["payload"],
+    )
+    return AgentSnapshotResult(
+        snapshot_id=row["snapshot_id"],
+        snapshot_type=api_snapshot_type(row["snapshot_type"]),
+        job_id=row["job_id"],
+        session_id=(row["session_id"] if "session_id" in row else None)
+        or snapshot_summary.get("session_id"),
+        llm_run_id=(row["llm_run_id"] if "llm_run_id" in row else None)
+        or snapshot_summary.get("llm_run_id"),
+        snapshot_status=row["snapshot_status"],
+        payload=stored_payload,
+        created_at=row["created_at"],
+    )
+
+
+def normalize_snapshot_payload(value: Any, fallback: dict[str, Any]) -> dict[str, Any]:
+    if isinstance(value, dict):
+        return value
+    if isinstance(value, str):
+        try:
+            parsed = json.loads(value)
+        except json.JSONDecodeError:
+            return fallback
+        if isinstance(parsed, dict):
+            return parsed
+    return fallback
+
+
+def parse_snapshot_summary(summary: str | None) -> dict[str, Any]:
+    if summary is None:
+        return {"session_id": None, "llm_run_id": None, "payload": {}}
+    try:
+        parsed = json.loads(summary)
+    except json.JSONDecodeError:
+        return {
+            "session_id": None,
+            "llm_run_id": None,
+            "payload": {"summary": summary},
+        }
+    if not isinstance(parsed, dict):
+        return {"session_id": None, "llm_run_id": None, "payload": {"summary": summary}}
+    payload = parsed.get("payload")
+    if not isinstance(payload, dict):
+        payload = {"summary": parsed.get("summary", "")}
+    return {
+        "session_id": parsed.get("session_id"),
+        "llm_run_id": parsed.get("llm_run_id"),
+        "payload": payload,
+    }
+
+
+def agent_snapshot_insert_query():
+    return text(
+        """
+        insert into ai.observability_snapshots (
+            snapshot_type,
+            time_start,
+            time_end,
+            snapshot_status,
+            masked,
+            summary,
+            created_by_job_public_id,
+            session_public_id,
+            llm_run_public_id,
+            snapshot_payload
+        )
+        values (
+            :snapshot_type,
+            current_timestamp,
+            current_timestamp,
+            'COMPLETED',
+            true,
+            :summary,
+            cast(:job_id as uuid),
+            cast(:session_id as uuid),
+            cast(:llm_run_id as uuid),
+            cast(:payload as jsonb)
+        )
+        returning
+            public_id::text as snapshot_id,
+            snapshot_type,
+            snapshot_status,
+            created_by_job_public_id::text as job_id,
+            session_public_id::text as session_id,
+            llm_run_public_id::text as llm_run_id,
+            summary,
+            snapshot_payload,
+            created_at::text as created_at
+        """
+    )
+
+
+def legacy_agent_snapshot_insert_query():
+    return text(
+        """
+        insert into ai.observability_snapshots (
+            snapshot_type,
+            time_start,
+            time_end,
+            snapshot_status,
+            masked,
+            summary,
+            created_by_job_public_id
+        )
+        values (
+            :snapshot_type,
+            current_timestamp,
+            current_timestamp,
+            'COMPLETED',
+            true,
+            :summary,
+            cast(:job_id as uuid)
+        )
+        returning
+            public_id::text as snapshot_id,
+            snapshot_type,
+            snapshot_status,
+            created_by_job_public_id::text as job_id,
+            summary,
+            created_at::text as created_at
+        """
+    )
+
+
+def agent_snapshot_list_query():
+    return text(
+        """
+        select
+            public_id::text as snapshot_id,
+            snapshot_type,
+            snapshot_status,
+            created_by_job_public_id::text as job_id,
+            session_public_id::text as session_id,
+            llm_run_public_id::text as llm_run_id,
+            summary,
+            snapshot_payload,
+            created_at::text as created_at
+        from ai.observability_snapshots
+        where (
+            cast(:snapshot_type as text) is null
+            or snapshot_type = cast(:snapshot_type as text)
+        )
+        order by created_at desc
+        limit :limit
+        """
+    )
+
+
+def legacy_agent_snapshot_list_query():
+    return text(
+        """
+        select
+            public_id::text as snapshot_id,
+            snapshot_type,
+            snapshot_status,
+            created_by_job_public_id::text as job_id,
+            summary,
+            created_at::text as created_at
+        from ai.observability_snapshots
+        where (
+            cast(:snapshot_type as text) is null
+            or snapshot_type = cast(:snapshot_type as text)
+        )
+        order by created_at desc
+        limit :limit
+        """
     )
 
 
