@@ -1,4 +1,4 @@
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
@@ -125,3 +125,53 @@ class KibanaSavedObjectsResult(BaseModel):
 class ElkSnapshotResult(BaseModel):
     cluster_health: ElasticsearchClusterHealthResult
     index_health: ElasticsearchIndexHealthResult
+
+
+class InfraOpsSourceResult(BaseModel):
+    source: str
+    status: Literal["SUCCESS", "FAILED", "SKIPPED"]
+    data: Any | None = None
+    error: str | None = None
+
+
+class RcaSnapshotRequest(BaseModel):
+    incident_key: str | None = Field(default=None, max_length=120)
+    namespace: str | None = None
+    index_pattern: str | None = None
+    prometheus_query: str = Field(default="up", min_length=1)
+    loki_query: str = Field(default='{job=~".+"}', min_length=1)
+    loki_limit: int = Field(default=100, ge=1, le=1000)
+    kafka_consumer_group: str | None = Field(default=None, max_length=253)
+    kafka_topic: str | None = Field(default=None, max_length=253)
+    batch_job_name: str | None = Field(default=None, max_length=253)
+
+
+class RcaSnapshotResult(BaseModel):
+    incident_key: str | None = None
+    partial: bool
+    sources: list[InfraOpsSourceResult]
+
+
+class DailyOpsMetricsRequest(BaseModel):
+    report_date: str | None = None
+    namespace: str | None = None
+    index_pattern: str | None = None
+    prometheus_query: str = Field(default="up", min_length=1)
+    kafka_consumer_group: str | None = Field(default=None, max_length=253)
+    kafka_topic: str | None = Field(default=None, max_length=253)
+    batch_job_name: str | None = Field(default=None, max_length=253)
+
+
+class DailyOpsMetricsResult(BaseModel):
+    report_date: str | None = None
+    partial: bool
+    metrics: dict[str, Any]
+    sources: list[InfraOpsSourceResult]
+
+
+class InfraOpsSearchResult(BaseModel):
+    query: str | None = None
+    limit: int
+    items: list[dict[str, Any]]
+    source: str
+    note: str

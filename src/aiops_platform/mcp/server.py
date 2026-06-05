@@ -900,4 +900,188 @@ def create_mcp_server(
         )
         return result
 
+    @mcp.tool(
+        name="create_rca_snapshot",
+        description="Create a read-only RCA evidence snapshot from infraops sources.",
+        tags={"infraops", "rca", "snapshot", "read"},
+        annotations={"readOnlyHint": True, "openWorldHint": False},
+    )
+    def create_rca_snapshot_tool(
+        incident_key: str | None = None,
+        namespace: str | None = None,
+        index_pattern: str | None = None,
+        prometheus_query: str = "up",
+        loki_query: str = '{job=~".+"}',
+        loki_limit: int = 100,
+        kafka_consumer_group: str | None = None,
+        kafka_topic: str | None = None,
+        batch_job_name: str | None = None,
+    ) -> dict[str, Any]:
+        started_at = perf_counter()
+        tool = _resolve_registered_tool("infraops-mcp", "create_rca_snapshot")
+        request_payload = {
+            "incident_key": incident_key,
+            "namespace": namespace,
+            "index_pattern": index_pattern,
+            "prometheus_query": prometheus_query,
+            "loki_query": loki_query,
+            "loki_limit": loki_limit,
+            "kafka_consumer_group": kafka_consumer_group,
+            "kafka_topic": kafka_topic,
+            "batch_job_name": batch_job_name,
+        }
+
+        try:
+            result = infraops.create_rca_snapshot(**request_payload).model_dump(mode="json")
+        except Exception as exc:
+            _record_tool_audit(
+                audit_service=audit_service,
+                tool=tool,
+                request_payload=request_payload,
+                response_payload=None,
+                call_status=McpToolCallStatus.FAILED,
+                started_at=started_at,
+                last_error=str(exc),
+            )
+            raise
+
+        _record_tool_audit(
+            audit_service=audit_service,
+            tool=tool,
+            request_payload=request_payload,
+            response_payload=result,
+            call_status=McpToolCallStatus.SUCCESS,
+            started_at=started_at,
+        )
+        return result
+
+    @mcp.tool(
+        name="aggregate_daily_ops_metrics",
+        description="Aggregate a read-only daily operations metrics summary.",
+        tags={"infraops", "metrics", "report", "read"},
+        annotations={"readOnlyHint": True, "openWorldHint": False},
+    )
+    def aggregate_daily_ops_metrics_tool(
+        report_date: str | None = None,
+        namespace: str | None = None,
+        index_pattern: str | None = None,
+        prometheus_query: str = "up",
+        kafka_consumer_group: str | None = None,
+        kafka_topic: str | None = None,
+        batch_job_name: str | None = None,
+    ) -> dict[str, Any]:
+        started_at = perf_counter()
+        tool = _resolve_registered_tool("infraops-mcp", "aggregate_daily_ops_metrics")
+        request_payload = {
+            "report_date": report_date,
+            "namespace": namespace,
+            "index_pattern": index_pattern,
+            "prometheus_query": prometheus_query,
+            "kafka_consumer_group": kafka_consumer_group,
+            "kafka_topic": kafka_topic,
+            "batch_job_name": batch_job_name,
+        }
+
+        try:
+            result = infraops.aggregate_daily_ops_metrics(**request_payload).model_dump(
+                mode="json"
+            )
+        except Exception as exc:
+            _record_tool_audit(
+                audit_service=audit_service,
+                tool=tool,
+                request_payload=request_payload,
+                response_payload=None,
+                call_status=McpToolCallStatus.FAILED,
+                started_at=started_at,
+                last_error=str(exc),
+            )
+            raise
+
+        _record_tool_audit(
+            audit_service=audit_service,
+            tool=tool,
+            request_payload=request_payload,
+            response_payload=result,
+            call_status=McpToolCallStatus.SUCCESS,
+            started_at=started_at,
+        )
+        return result
+
+    @mcp.tool(
+        name="search_incidents",
+        description="Search incident records through the infraops read-only interface.",
+        tags={"infraops", "incidents", "read"},
+        annotations={"readOnlyHint": True, "openWorldHint": False},
+    )
+    def search_incidents_tool(query: str | None = None, limit: int = 20) -> dict[str, Any]:
+        started_at = perf_counter()
+        tool = _resolve_registered_tool("infraops-mcp", "search_incidents")
+        request_payload = {"query": query, "limit": limit}
+
+        try:
+            result = infraops.search_incidents(
+                query=query,
+                limit=limit,
+            ).model_dump(mode="json")
+        except Exception as exc:
+            _record_tool_audit(
+                audit_service=audit_service,
+                tool=tool,
+                request_payload=request_payload,
+                response_payload=None,
+                call_status=McpToolCallStatus.FAILED,
+                started_at=started_at,
+                last_error=str(exc),
+            )
+            raise
+
+        _record_tool_audit(
+            audit_service=audit_service,
+            tool=tool,
+            request_payload=request_payload,
+            response_payload=result,
+            call_status=McpToolCallStatus.SUCCESS,
+            started_at=started_at,
+        )
+        return result
+
+    @mcp.tool(
+        name="search_rca_history",
+        description="Search RCA history records through the infraops read-only interface.",
+        tags={"infraops", "rca", "history", "read"},
+        annotations={"readOnlyHint": True, "openWorldHint": False},
+    )
+    def search_rca_history_tool(query: str | None = None, limit: int = 20) -> dict[str, Any]:
+        started_at = perf_counter()
+        tool = _resolve_registered_tool("infraops-mcp", "search_rca_history")
+        request_payload = {"query": query, "limit": limit}
+
+        try:
+            result = infraops.search_rca_history(
+                query=query,
+                limit=limit,
+            ).model_dump(mode="json")
+        except Exception as exc:
+            _record_tool_audit(
+                audit_service=audit_service,
+                tool=tool,
+                request_payload=request_payload,
+                response_payload=None,
+                call_status=McpToolCallStatus.FAILED,
+                started_at=started_at,
+                last_error=str(exc),
+            )
+            raise
+
+        _record_tool_audit(
+            audit_service=audit_service,
+            tool=tool,
+            request_payload=request_payload,
+            response_payload=result,
+            call_status=McpToolCallStatus.SUCCESS,
+            started_at=started_at,
+        )
+        return result
+
     return mcp

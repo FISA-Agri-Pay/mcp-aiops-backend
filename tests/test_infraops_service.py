@@ -37,6 +37,14 @@ class FakeHttpClient:
         return self.response
 
 
+class FailingHttpClient:
+    def get_json(self, url, **kwargs):
+        raise RuntimeError("source unavailable")
+
+    def post_json(self, url, **kwargs):
+        raise RuntimeError("source unavailable")
+
+
 def make_infraops_service(**overrides) -> InfraOpsService:
     dependencies = {
         "prometheus_client": PrometheusClient("http://prometheus:9090"),
@@ -443,6 +451,96 @@ def test_infraops_service_clamps_kibana_saved_objects_per_page() -> None:
 
     assert http_client.calls[0]["params"]["per_page"] == "100"
     assert http_client.calls[1]["params"]["per_page"] == "1"
+
+
+def test_infraops_service_creates_partial_rca_snapshot() -> None:
+    service = make_infraops_service(
+        prometheus_client=PrometheusClient(
+            "http://prometheus:9090",
+            http_client=FakeHttpClient({"status": "success", "data": {"result": []}}),
+        ),
+        loki_client=LokiClient(
+            "http://loki:3100",
+            http_client=FakeHttpClient({"status": "success", "data": {"result": []}}),
+        ),
+        elasticsearch_client=ElasticsearchClient(
+            "http://elasticsearch:9200",
+            http_client=FailingHttpClient(),
+        ),
+        kubernetes_client=KubernetesClient(
+            "http://kubernetes:8001",
+            http_client=FakeHttpClient({"items": []}),
+        ),
+        batch_client=BatchClient(
+            "http://batch-api:8081",
+            http_client=FakeHttpClient({"runs": []}),
+        ),
+    )
+
+    result = service.create_rca_snapshot(incident_key="INC-1", namespace="default")
+
+    assert result.incident_key == "INC-1"
+    assert result.partial is True
+    assert {source.source: source.status for source in result.sources} == {
+        "prometheus": "SUCCESS",
+        "loki": "SUCCESS",
+        "elasticsearch": "FAILED",
+        "kubernetes": "SUCCESS",
+        "kafka": "SKIPPED",
+        "batch": "SUCCESS",
+    }
+
+
+def test_infraops_service_aggregates_daily_ops_metrics() -> None:
+    service = make_infraops_service(
+        prometheus_client=PrometheusClient(
+            "http://prometheus:9090",
+            http_client=FakeHttpClient({"status": "success", "data": {"result": []}}),
+        ),
+        elasticsearch_client=ElasticsearchClient(
+            "http://elasticsearch:9200",
+            http_client=FailingHttpClient(),
+        ),
+        kubernetes_client=KubernetesClient(
+            "http://kubernetes:8001",
+            http_client=FakeHttpClient({"items": [{"metadata": {"name": "api"}}]}),
+        ),
+        batch_client=BatchClient(
+            "http://batch-api:8081",
+            http_client=FakeHttpClient({"runs": []}),
+        ),
+    )
+
+    result = service.aggregate_daily_ops_metrics(
+        report_date="2026-06-05",
+        namespace="default",
+    )
+
+    assert result.report_date == "2026-06-05"
+    assert result.partial is True
+    assert result.metrics == {
+        "successful_sources": 3,
+        "failed_sources": 2,
+        "skipped_sources": 1,
+        "pod_count": 1,
+        "event_count": 1,
+        "deployment_count": 1,
+        "hpa_count": 1,
+    }
+
+
+def test_infraops_service_returns_search_skeletons() -> None:
+    service = make_infraops_service()
+
+    incidents = service.search_incidents(query="payment", limit=1000)
+    history = service.search_rca_history(query="latency", limit=0)
+
+    assert incidents.limit == 100
+    assert incidents.items == []
+    assert incidents.source == "incidents"
+    assert history.limit == 1
+    assert history.items == []
+    assert history.source == "rca_history"
 
 
 def test_kibana_per_page_rejects_non_integer_values() -> None:
