@@ -363,11 +363,20 @@ class OrchestrationService:
         session_id: str,
         llm_run_id: str,
     ) -> None:
-        self._repository.attach_llm_run_to_tool_calls(
-            job_id=job_id,
-            session_id=session_id,
-            llm_run_id=llm_run_id,
-        )
+        try:
+            self._repository.attach_llm_run_to_tool_calls(
+                job_id=job_id,
+                session_id=session_id,
+                llm_run_id=llm_run_id,
+            )
+        except Exception:
+            logger.exception(
+                "Failed to link MCP tool calls to LLM run "
+                "for job_id=%s session_id=%s llm_run_id=%s.",
+                job_id,
+                session_id,
+                llm_run_id,
+            )
 
     def _create_approval_requests(
         self,

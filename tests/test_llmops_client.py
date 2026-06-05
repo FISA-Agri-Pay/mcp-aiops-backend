@@ -4,6 +4,8 @@ import pytest
 
 from aiops_platform.core.config import Settings
 from aiops_platform.llmops.client import (
+    DEFAULT_ANTHROPIC_BASE_URL,
+    DEFAULT_OPENAI_BASE_URL,
     AnthropicLlmClient,
     LlmCompletionRequest,
     OpenAICompatibleLlmClient,
@@ -252,8 +254,10 @@ def test_llm_client_factory_uses_anthropic_default_base_url() -> None:
         Settings(
             LLM_PROVIDER="anthropic",
             LLM_MODEL="claude-test",
+            LLM_API_BASE_URL=DEFAULT_OPENAI_BASE_URL,
             LLM_API_KEY="test-key",
         )
     )
 
     assert client.provider == "anthropic"
+    assert client.base_url == DEFAULT_ANTHROPIC_BASE_URL

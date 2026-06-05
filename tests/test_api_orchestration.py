@@ -6,7 +6,10 @@ from aiops_platform.core.database import SessionLocal
 from aiops_platform.llmops.client import FakeLlmClient
 from aiops_platform.llmops.service import LlmOpsService
 from aiops_platform.main import create_app
-from aiops_platform.orchestration.repository import SqlOrchestrationRepository
+from aiops_platform.orchestration.repository import (
+    OrchestrationRepository,
+    SqlOrchestrationRepository,
+)
 from aiops_platform.orchestration.service import OrchestrationService
 from tests.seed_constants import FARMER_1_ID
 
@@ -16,13 +19,20 @@ class FailingAgentOrchestrator:
         raise RuntimeError("planner unavailable")
 
 
+class FailingAttachRepository(SqlOrchestrationRepository):
+    def attach_llm_run_to_tool_calls(self, **kwargs: object) -> None:
+        raise RuntimeError("link unavailable")
+
+
 def create_orchestration_test_client(
     *,
     agent_orchestrator: object | None = None,
+    repository: OrchestrationRepository | None = None,
 ) -> TestClient:
     app = create_app()
     app.state.orchestration_service = OrchestrationService(
         agent_orchestrator=agent_orchestrator,
+        repository=repository,
         llmops_service=LlmOpsService(llm_client=FakeLlmClient()),
     )
     return TestClient(app)
@@ -254,6 +264,22 @@ def test_attach_llm_run_to_tool_calls_rejects_invalid_identifiers(caplog) -> Non
     assert "job_id" in error_message
     assert "llm_run_id" in error_message
     assert "Invalid MCP tool call LLM run link identifiers" in caplog.text
+
+
+def test_chat_flow_continues_when_tool_call_llm_linking_fails(caplog) -> None:
+    client = create_orchestration_test_client(repository=FailingAttachRepository())
+
+    with caplog.at_level("ERROR"):
+        response = client.post(
+            "/farmer/chat/ask",
+            json={"user_id": FARMER_1_ID, "message": "비료 추천해줘"},
+        )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["job"]["status"] == "SUCCEEDED"
+    assert body["llm_run"]["run_status"] == "SUCCESS"
+    assert "Failed to link MCP tool calls to LLM run" in caplog.text
 
 
 def test_agent_failure_finishes_job() -> None:

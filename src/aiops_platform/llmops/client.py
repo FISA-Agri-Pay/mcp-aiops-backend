@@ -88,6 +88,10 @@ class OpenAICompatibleLlmClient:
         self._max_tokens = max_tokens
         self._post = post
 
+    @property
+    def base_url(self) -> str:
+        return self._base_url.rstrip("/")
+
     def complete(self, request: LlmCompletionRequest) -> LlmCompletionResponse:
         started = time.perf_counter()
         response = self._post_json(
@@ -155,6 +159,10 @@ class AnthropicLlmClient:
         self._temperature = temperature
         self._max_tokens = max_tokens
         self._post = post
+
+    @property
+    def base_url(self) -> str:
+        return self._base_url.rstrip("/")
 
     def complete(self, request: LlmCompletionRequest) -> LlmCompletionResponse:
         started = time.perf_counter()

@@ -95,7 +95,7 @@ def test_client_contract_farmer_agent_response_is_renderable() -> None:
     assert body["assistant_message"]["content"]
     assert body["job"]["job_type"] == "farmer_chat"
     assert body["job"]["status"] == "SUCCEEDED"
-    assert body["llm_run"]["provider"]
+    assert body["llm_run"]["provider"] == "fake"
     assert body["llm_run"]["run_status"] == "SUCCESS"
     assert len(body["planned_tools"]) == len(body["tool_results"])
     assert all("server_name" in tool for tool in body["planned_tools"])
