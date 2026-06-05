@@ -1,6 +1,9 @@
 from fastapi import FastAPI
 
+from aiops_platform.api.admin import router as admin_router
+from aiops_platform.api.farmer import router as farmer_router
 from aiops_platform.api.health import router as health_router
+from aiops_platform.api.jobs import router as jobs_router
 from aiops_platform.api.mcp import router as mcp_router
 from aiops_platform.core.config import settings
 from aiops_platform.mcp.server import (
@@ -8,6 +11,7 @@ from aiops_platform.mcp.server import (
     MCP_TRANSPORT_PATH,
     create_mcp_server,
 )
+from aiops_platform.orchestration.service import OrchestrationService
 
 
 def create_app() -> FastAPI:
@@ -19,7 +23,11 @@ def create_app() -> FastAPI:
         redoc_url="/redoc",
         lifespan=mcp_asgi_app.lifespan,
     )
+    app.state.orchestration_service = OrchestrationService()
+    app.include_router(admin_router)
+    app.include_router(farmer_router)
     app.include_router(health_router)
+    app.include_router(jobs_router)
     app.include_router(mcp_router)
     app.mount(MCP_TRANSPORT_MOUNT_PATH, mcp_asgi_app)
     return app
