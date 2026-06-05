@@ -71,3 +71,9 @@ def test_unknown_product_is_rejected_before_checkout_calculation() -> None:
     with pytest.raises(FarmerBnplValidationError):
         service.calculate_cart_total(items=[{"product_id": "unknown", "quantity": 1}])
 
+
+def test_non_string_identifier_raises_domain_validation_error() -> None:
+    service = FarmerBnplService()
+
+    with pytest.raises(FarmerBnplValidationError, match="user_id is invalid"):
+        service.get_user_credit_limit(user_id=123)

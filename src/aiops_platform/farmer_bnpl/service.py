@@ -446,7 +446,7 @@ class FarmerBnplService:
 
 
 def validate_identifier(value: str, *, field_name: str) -> None:
-    if IDENTIFIER_PATTERN.fullmatch(value):
+    if isinstance(value, str) and IDENTIFIER_PATTERN.fullmatch(value):
         return
     raise FarmerBnplValidationError(f"{field_name} is invalid.")
 
