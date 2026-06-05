@@ -16,6 +16,8 @@ from aiops_platform.infraops.clients import (
 )
 from aiops_platform.infraops.schemas import (
     BatchRunStatusResult,
+    DailyOpsMetricsRequest,
+    DailyOpsMetricsResult,
     ElasticsearchClusterHealthResult,
     ElasticsearchIndexHealthItem,
     ElasticsearchIndexHealthResult,
@@ -25,6 +27,8 @@ from aiops_platform.infraops.schemas import (
     ElasticsearchQueryResult,
     ElkSnapshotResult,
     InfraOpsChangePreviewResult,
+    InfraOpsSearchResult,
+    InfraOpsSourceResult,
     KafkaConsumerLagResult,
     KibanaSavedObjectsResult,
     KubectlExecPreviewRequest,
@@ -33,6 +37,8 @@ from aiops_platform.infraops.schemas import (
     LokiQueryResult,
     PodOperationPreviewRequest,
     PrometheusQueryResult,
+    RcaSnapshotRequest,
+    RcaSnapshotResult,
     ScaleDeploymentPreviewRequest,
 )
 
@@ -367,6 +373,184 @@ class InfraOpsService:
             index_health=self.get_elasticsearch_index_health(index_pattern=index_pattern),
         )
 
+    def create_rca_snapshot(
+        self,
+        incident_key: str | None = None,
+        namespace: str | None = None,
+        index_pattern: str | None = None,
+        prometheus_query: str = "up",
+        loki_query: str = '{job=~".+"}',
+        loki_limit: int = 100,
+        kafka_consumer_group: str | None = None,
+        kafka_topic: str | None = None,
+        batch_job_name: str | None = None,
+    ) -> RcaSnapshotResult:
+        request = RcaSnapshotRequest(
+            incident_key=incident_key,
+            namespace=namespace,
+            index_pattern=index_pattern,
+            prometheus_query=prometheus_query,
+            loki_query=loki_query,
+            loki_limit=loki_limit,
+            kafka_consumer_group=kafka_consumer_group,
+            kafka_topic=kafka_topic,
+            batch_job_name=batch_job_name,
+        )
+        sources = [
+            self._capture_source(
+                "prometheus",
+                lambda: self.query_prometheus(request.prometheus_query).model_dump(mode="json"),
+            ),
+            self._capture_source(
+                "loki",
+                lambda: self.query_loki(
+                    query=request.loki_query,
+                    limit=request.loki_limit,
+                ).model_dump(mode="json"),
+            ),
+            self._capture_source(
+                "elasticsearch",
+                lambda: self.create_elk_snapshot(
+                    index_pattern=request.index_pattern,
+                ).model_dump(mode="json"),
+            ),
+            self._capture_source(
+                "kubernetes",
+                lambda: {
+                    "pods": self.get_k8s_pods(namespace=request.namespace).model_dump(
+                        mode="json"
+                    ),
+                    "events": self.get_k8s_events(namespace=request.namespace).model_dump(
+                        mode="json"
+                    ),
+                    "deployments": self.get_k8s_deployments(
+                        namespace=request.namespace,
+                    ).model_dump(mode="json"),
+                    "hpa": self.get_k8s_hpa(namespace=request.namespace).model_dump(
+                        mode="json"
+                    ),
+                },
+            ),
+            self._capture_optional_source(
+                "kafka",
+                request.kafka_consumer_group,
+                lambda: self.get_kafka_consumer_lag(
+                    consumer_group=request.kafka_consumer_group or "",
+                    topic=request.kafka_topic,
+                ).model_dump(mode="json"),
+            ),
+            self._capture_source(
+                "batch",
+                lambda: self.get_batch_run_status(
+                    job_name=request.batch_job_name,
+                ).model_dump(mode="json"),
+            ),
+        ]
+        return RcaSnapshotResult(
+            incident_key=request.incident_key,
+            partial=has_partial_sources(sources),
+            sources=sources,
+        )
+
+    def aggregate_daily_ops_metrics(
+        self,
+        report_date: str | None = None,
+        namespace: str | None = None,
+        index_pattern: str | None = None,
+        prometheus_query: str = "up",
+        kafka_consumer_group: str | None = None,
+        kafka_topic: str | None = None,
+        batch_job_name: str | None = None,
+    ) -> DailyOpsMetricsResult:
+        request = DailyOpsMetricsRequest(
+            report_date=report_date,
+            namespace=namespace,
+            index_pattern=index_pattern,
+            prometheus_query=prometheus_query,
+            kafka_consumer_group=kafka_consumer_group,
+            kafka_topic=kafka_topic,
+            batch_job_name=batch_job_name,
+        )
+        sources = [
+            self._capture_source(
+                "prometheus",
+                lambda: self.query_prometheus(request.prometheus_query).model_dump(mode="json"),
+            ),
+            self._capture_source(
+                "elasticsearch_cluster",
+                lambda: self.get_elasticsearch_cluster_health().model_dump(mode="json"),
+            ),
+            self._capture_source(
+                "elasticsearch_indices",
+                lambda: self.get_elasticsearch_index_health(
+                    index_pattern=request.index_pattern,
+                ).model_dump(mode="json"),
+            ),
+            self._capture_source(
+                "kubernetes",
+                lambda: {
+                    "pod_count": len(
+                        self.get_k8s_pods(namespace=request.namespace).items,
+                    ),
+                    "event_count": len(
+                        self.get_k8s_events(namespace=request.namespace).items,
+                    ),
+                    "deployment_count": len(
+                        self.get_k8s_deployments(namespace=request.namespace).items,
+                    ),
+                    "hpa_count": len(
+                        self.get_k8s_hpa(namespace=request.namespace).items,
+                    ),
+                },
+            ),
+            self._capture_optional_source(
+                "kafka",
+                request.kafka_consumer_group,
+                lambda: self.get_kafka_consumer_lag(
+                    consumer_group=request.kafka_consumer_group or "",
+                    topic=request.kafka_topic,
+                ).model_dump(mode="json"),
+            ),
+            self._capture_source(
+                "batch",
+                lambda: self.get_batch_run_status(
+                    job_name=request.batch_job_name,
+                ).model_dump(mode="json"),
+            ),
+        ]
+        return DailyOpsMetricsResult(
+            report_date=request.report_date,
+            partial=has_partial_sources(sources),
+            metrics=build_daily_metrics(sources),
+            sources=sources,
+        )
+
+    def search_incidents(
+        self,
+        query: str | None = None,
+        limit: int = 20,
+    ) -> InfraOpsSearchResult:
+        return InfraOpsSearchResult(
+            query=query,
+            limit=clamp_search_limit(limit),
+            items=[],
+            source="incidents",
+            note="Incident persistence is not connected yet; returning an empty read-only result.",
+        )
+
+    def search_rca_history(
+        self,
+        query: str | None = None,
+        limit: int = 20,
+    ) -> InfraOpsSearchResult:
+        return InfraOpsSearchResult(
+            query=query,
+            limit=clamp_search_limit(limit),
+            items=[],
+            source="rca_history",
+            note="RCA history persistence is not connected yet.",
+        )
+
     def _get_kubernetes_resource(
         self,
         resource: str,
@@ -393,6 +577,30 @@ class InfraOpsService:
             allowlist=self._kubernetes_namespace_allowlist,
         )
         return resolved_namespace
+
+    def _capture_source(self, source: str, loader) -> InfraOpsSourceResult:
+        try:
+            return InfraOpsSourceResult(
+                source=source,
+                status="SUCCESS",
+                data=loader(),
+            )
+        except Exception as exc:
+            return InfraOpsSourceResult(source=source, status="FAILED", error=str(exc))
+
+    def _capture_optional_source(
+        self,
+        source: str,
+        enabled_value: str | None,
+        loader,
+    ) -> InfraOpsSourceResult:
+        if not enabled_value:
+            return InfraOpsSourceResult(
+                source=source,
+                status="SKIPPED",
+                error="Required input was not provided.",
+            )
+        return self._capture_source(source, loader)
 
 
 def parse_allowlist(value: str) -> tuple[str, ...]:
@@ -436,6 +644,28 @@ def validate_kubectl_exec_command(command: list[str]) -> None:
         raise InfraOpsValidationError("kubectl exec command parts must not be empty.")
     if any(len(part) > MAX_KUBECTL_COMMAND_PART_LENGTH for part in command):
         raise InfraOpsValidationError("kubectl exec command part is too long.")
+
+
+def has_partial_sources(sources: list[InfraOpsSourceResult]) -> bool:
+    return any(source.status != "SUCCESS" for source in sources)
+
+
+def build_daily_metrics(sources: list[InfraOpsSourceResult]) -> dict[str, Any]:
+    metrics = {
+        "successful_sources": sum(source.status == "SUCCESS" for source in sources),
+        "failed_sources": sum(source.status == "FAILED" for source in sources),
+        "skipped_sources": sum(source.status == "SKIPPED" for source in sources),
+    }
+    for source in sources:
+        if source.source == "kubernetes" and isinstance(source.data, dict):
+            metrics.update(source.data)
+    return metrics
+
+
+def clamp_search_limit(limit: int) -> int:
+    if not isinstance(limit, int) or isinstance(limit, bool):
+        raise InfraOpsValidationError("Search limit must be an integer.")
+    return min(max(limit, 1), 100)
 
 
 def clamp_kibana_per_page(per_page: int) -> int:
