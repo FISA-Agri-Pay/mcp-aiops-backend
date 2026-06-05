@@ -2,6 +2,7 @@ import asyncio
 
 from fastmcp.client import Client
 
+from aiops_platform.farmer_bnpl.service import build_public_id
 from aiops_platform.infraops.schemas import (
     BatchRunStatusResult,
     DailyOpsMetricsResult,
@@ -145,7 +146,10 @@ def test_fastmcp_farmer_bnpl_write_tools_return_user_confirmation_preview() -> N
         assert application.data["call_status"] == "APPROVAL_REQUIRED"
         assert application.data["confirmation_policy"] == "USER_CONFIRMATION"
         assert application.data["will_execute"] is False
-        assert application.data["preview"]["application_id"] == "credit-app-farmer-1"
+        assert application.data["preview"]["application_id"] == build_public_id(
+            "credit-app",
+            "farmer-1",
+        )
         assert checkout.data["tool_permission"] == "USER_CONFIRMED_WRITE"
         assert checkout.data["call_status"] == "APPROVAL_REQUIRED"
         assert checkout.data["preview"]["payment_method"] == "BNPL"

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import re
 from datetime import UTC, date, datetime, timedelta
 from typing import Any
@@ -37,6 +38,10 @@ class FarmerBnplValidationError(ValueError):
 
 
 IDENTIFIER_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:-]{0,119}$")
+PUBLIC_ID_DISALLOWED_PATTERN = re.compile(r"[^a-z0-9-]+")
+PUBLIC_ID_REPEATED_SEPARATOR_PATTERN = re.compile(r"-+")
+PUBLIC_ID_MAX_LENGTH = 120
+PUBLIC_ID_HASH_LENGTH = 8
 DEFAULT_REQUIRED_DOCUMENTS = [
     "identity_verification",
     "farmer_registration",
@@ -452,8 +457,26 @@ def validate_identifier(value: str, *, field_name: str) -> None:
 
 
 def build_public_id(prefix: str, user_id: str) -> str:
-    safe_user_id = user_id.lower().replace("_", "-").replace(".", "-").replace(":", "-")
-    return f"{prefix}-{safe_user_id}"
+    if not isinstance(prefix, str) or not prefix:
+        raise FarmerBnplValidationError("public id prefix is invalid.")
+    if not isinstance(user_id, str) or not user_id:
+        raise FarmerBnplValidationError("user_id is invalid.")
+
+    safe_prefix = normalize_public_id_part(prefix)
+    safe_user_id = normalize_public_id_part(user_id)
+    user_hash = hashlib.sha256(user_id.encode("utf-8")).hexdigest()[:PUBLIC_ID_HASH_LENGTH]
+
+    max_prefix_length = PUBLIC_ID_MAX_LENGTH - PUBLIC_ID_HASH_LENGTH - 3
+    safe_prefix = safe_prefix[:max_prefix_length].strip("-") or "id"
+    max_user_id_length = PUBLIC_ID_MAX_LENGTH - len(safe_prefix) - len(user_hash) - 2
+    truncated_user_id = safe_user_id[:max_user_id_length].strip("-") or "id"
+    return f"{safe_prefix}-{truncated_user_id}-{user_hash}"
+
+
+def normalize_public_id_part(value: str) -> str:
+    normalized = PUBLIC_ID_DISALLOWED_PATTERN.sub("-", value.lower())
+    normalized = PUBLIC_ID_REPEATED_SEPARATOR_PATTERN.sub("-", normalized).strip("-")
+    return normalized or "id"
 
 
 def build_action_preview(

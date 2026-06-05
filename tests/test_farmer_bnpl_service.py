@@ -3,6 +3,7 @@ import pytest
 from aiops_platform.farmer_bnpl.service import (
     FarmerBnplService,
     FarmerBnplValidationError,
+    build_public_id,
 )
 
 
@@ -15,7 +16,7 @@ def test_start_credit_application_returns_required_documents() -> None:
         crop_type="rice",
     )
 
-    assert result.application_id == "credit-app-farmer-1"
+    assert result.application_id == build_public_id("credit-app", "farmer-1")
     assert result.status == "DRAFT"
     assert result.requested_amount == 1_500_000
     assert "farmland_document" in result.required_documents
@@ -77,3 +78,21 @@ def test_non_string_identifier_raises_domain_validation_error() -> None:
 
     with pytest.raises(FarmerBnplValidationError, match="user_id is invalid"):
         service.get_user_credit_limit(user_id=123)
+
+
+def test_public_id_is_length_bounded_and_hash_suffixed() -> None:
+    long_user_id = f"Farmer.User:{'A' * 180}"
+
+    public_id = build_public_id("credit-app", long_user_id)
+
+    assert len(public_id) <= 120
+    assert public_id.startswith("credit-app-farmer-user-")
+    assert public_id.rsplit("-", maxsplit=1)[1].isalnum()
+    assert len(public_id.rsplit("-", maxsplit=1)[1]) == 8
+
+
+def test_public_id_keeps_distinct_hash_for_lossy_normalization_collisions() -> None:
+    first = build_public_id("limit", "farmer.a")
+    second = build_public_id("limit", "farmer_a")
+
+    assert first != second
