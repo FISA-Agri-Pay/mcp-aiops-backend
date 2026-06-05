@@ -119,7 +119,14 @@ def test_client_contract_job_and_tool_call_history_are_queryable() -> None:
         "/admin/copilot/ask",
         json={"user_id": "admin-1", "message": "위험 현황과 스케일링 상태 요약"},
     )
-    job_id = ask_response.json()["job"]["job_id"]
+    assert ask_response.status_code == 200
+    ask_body = ask_response.json()
+    job_id = ask_body["job"]["job_id"]
+    tool_call_ids = [
+        result["tool_call_id"]
+        for result in ask_body["tool_results"]
+        if result["tool_call_id"] is not None
+    ]
 
     jobs_response = client.get("/jobs", params={"job_type": "admin_copilot"})
     tool_calls_response = client.get(
@@ -132,8 +139,16 @@ def test_client_contract_job_and_tool_call_history_are_queryable() -> None:
 
     assert tool_calls_response.status_code == 200
     tool_calls = tool_calls_response.json()["items"]
-    assert any(tool_call["job_id"] == job_id for tool_call in tool_calls)
+    listed_tool_call_ids = {tool_call["tool_call_id"] for tool_call in tool_calls}
+    assert set(tool_call_ids).issubset(listed_tool_call_ids)
     assert all(
         "access_token" not in (tool_call["masked_request_payload"] or {})
         for tool_call in tool_calls
     )
+
+    for tool_call_id in tool_call_ids:
+        detail_response = client.get(f"/mcp/tool-calls/{tool_call_id}")
+        assert detail_response.status_code == 200
+        detail = detail_response.json()
+        assert detail["job_id"] == job_id
+        assert "access_token" not in (detail["masked_request_payload"] or {})
