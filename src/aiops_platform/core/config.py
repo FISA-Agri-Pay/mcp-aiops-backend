@@ -22,12 +22,14 @@ class Settings(BaseSettings):
     )
 
     prometheus_base_url: str = Field(default="http://localhost:9090", alias="PROMETHEUS_BASE_URL")
+    prometheus_source_urls: str = Field(default="", alias="PROMETHEUS_SOURCE_URLS")
     prometheus_timeout_seconds: float = Field(
         default=10.0,
         gt=0,
         alias="PROMETHEUS_TIMEOUT_SECONDS",
     )
     loki_base_url: str = Field(default="http://localhost:3100", alias="LOKI_BASE_URL")
+    loki_source_urls: str = Field(default="", alias="LOKI_SOURCE_URLS")
     loki_timeout_seconds: float = Field(default=10.0, gt=0, alias="LOKI_TIMEOUT_SECONDS")
     kubernetes_api_base_url: str = Field(
         default="http://localhost:8001",

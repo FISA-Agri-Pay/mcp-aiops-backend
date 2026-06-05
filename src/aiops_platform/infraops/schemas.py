@@ -25,6 +25,29 @@ class LokiQueryResult(BaseModel):
     data: dict[str, Any]
 
 
+class MultiClusterQuerySourceResult(BaseModel):
+    source: str
+    status: Literal["SUCCESS", "FAILED"]
+    data: dict[str, Any] | None = None
+    error: str | None = None
+
+
+class MultiClusterPrometheusQueryResult(BaseModel):
+    query: str
+    time: str | None = None
+    partial: bool
+    sources: list[MultiClusterQuerySourceResult]
+
+
+class MultiClusterLokiQueryResult(BaseModel):
+    query: str
+    start: str | None = None
+    end: str | None = None
+    limit: int
+    partial: bool
+    sources: list[MultiClusterQuerySourceResult]
+
+
 class KubernetesResourceResult(BaseModel):
     namespace: str
     items: list[dict[str, Any]]

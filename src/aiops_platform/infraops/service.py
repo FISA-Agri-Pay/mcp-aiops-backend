@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+from collections.abc import Callable
 from fnmatch import fnmatch
 from typing import Any
 
@@ -35,7 +36,11 @@ from aiops_platform.infraops.schemas import (
     KubernetesResourceResult,
     LokiQueryRequest,
     LokiQueryResult,
+    MultiClusterLokiQueryResult,
+    MultiClusterPrometheusQueryResult,
+    MultiClusterQuerySourceResult,
     PodOperationPreviewRequest,
+    PrometheusQueryRequest,
     PrometheusQueryResult,
     RcaSnapshotRequest,
     RcaSnapshotResult,
@@ -49,7 +54,9 @@ class InfraOpsValidationError(ValueError):
 
 MAX_KIBANA_SAVED_OBJECTS_PER_PAGE = 100
 KUBERNETES_RESOURCE_NAME_PATTERN = re.compile(r"^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$")
+OBSERVABILITY_SOURCE_NAME_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:-]{0,63}$")
 MAX_KUBECTL_COMMAND_PART_LENGTH = 200
+ObservabilitySourceUrls = tuple[tuple[str, str], ...]
 
 
 class InfraOpsService:
@@ -65,6 +72,8 @@ class InfraOpsService:
         kibana_client: KibanaClient,
         kubernetes_namespace_allowlist: tuple[str, ...],
         elasticsearch_index_allowlist: tuple[str, ...],
+        prometheus_sources: tuple[tuple[str, PrometheusClient], ...] | None = None,
+        loki_sources: tuple[tuple[str, LokiClient], ...] | None = None,
     ) -> None:
         self._prometheus_client = prometheus_client
         self._loki_client = loki_client
@@ -75,6 +84,8 @@ class InfraOpsService:
         self._kibana_client = kibana_client
         self._kubernetes_namespace_allowlist = kubernetes_namespace_allowlist
         self._elasticsearch_index_allowlist = elasticsearch_index_allowlist
+        self._prometheus_sources = prometheus_sources or (("default", prometheus_client),)
+        self._loki_sources = loki_sources or (("default", loki_client),)
 
     @classmethod
     def from_settings(cls, app_settings: Settings | None = None) -> InfraOpsService:
@@ -117,11 +128,33 @@ class InfraOpsService:
             elasticsearch_index_allowlist=parse_allowlist(
                 app_settings.elasticsearch_index_allowlist,
             ),
+            prometheus_sources=build_prometheus_sources(app_settings),
+            loki_sources=build_loki_sources(app_settings),
         )
 
     def query_prometheus(self, query: str, time: str | None = None) -> PrometheusQueryResult:
         response = self._prometheus_client.query(query=query, time=time)
         return PrometheusQueryResult(status=response["status"], data=response["data"])
+
+    def query_multi_cluster_prometheus(
+        self,
+        query: str,
+        time: str | None = None,
+    ) -> MultiClusterPrometheusQueryResult:
+        request = PrometheusQueryRequest(query=query, time=time)
+        sources = [
+            capture_observability_source(
+                source_name,
+                lambda client=client: client.query(query=request.query, time=request.time),
+            )
+            for source_name, client in self._prometheus_sources
+        ]
+        return MultiClusterPrometheusQueryResult(
+            query=request.query,
+            time=request.time,
+            partial=has_partial_observability_sources(sources),
+            sources=sources,
+        )
 
     def query_loki(
         self,
@@ -138,6 +171,35 @@ class InfraOpsService:
             limit=request.limit,
         )
         return LokiQueryResult(status=response["status"], data=response["data"])
+
+    def query_multi_cluster_loki(
+        self,
+        query: str,
+        start: str | None = None,
+        end: str | None = None,
+        limit: int = 100,
+    ) -> MultiClusterLokiQueryResult:
+        request = LokiQueryRequest(query=query, start=start, end=end, limit=limit)
+        sources = [
+            capture_observability_source(
+                source_name,
+                lambda client=client: client.query_range(
+                    request.query,
+                    start=request.start,
+                    end=request.end,
+                    limit=request.limit,
+                ),
+            )
+            for source_name, client in self._loki_sources
+        ]
+        return MultiClusterLokiQueryResult(
+            query=request.query,
+            start=request.start,
+            end=request.end,
+            limit=request.limit,
+            partial=has_partial_observability_sources(sources),
+            sources=sources,
+        )
 
     def get_k8s_pods(self, namespace: str | None = None) -> KubernetesResourceResult:
         return self._get_kubernetes_resource("pods", namespace=namespace)
@@ -608,6 +670,99 @@ def parse_allowlist(value: str) -> tuple[str, ...]:
     if not allowlist:
         raise InfraOpsValidationError("Elasticsearch index allowlist must not be empty.")
     return allowlist
+
+
+def build_prometheus_sources(app_settings: Settings) -> tuple[tuple[str, PrometheusClient], ...]:
+    source_urls = parse_observability_source_urls(
+        app_settings.prometheus_source_urls,
+        default_name="default",
+        default_url=app_settings.prometheus_base_url,
+    )
+    return tuple(
+        (
+            source_name,
+            PrometheusClient(
+                source_url,
+                timeout_seconds=app_settings.prometheus_timeout_seconds,
+            ),
+        )
+        for source_name, source_url in source_urls
+    )
+
+
+def build_loki_sources(app_settings: Settings) -> tuple[tuple[str, LokiClient], ...]:
+    source_urls = parse_observability_source_urls(
+        app_settings.loki_source_urls,
+        default_name="default",
+        default_url=app_settings.loki_base_url,
+    )
+    return tuple(
+        (
+            source_name,
+            LokiClient(
+                source_url,
+                timeout_seconds=app_settings.loki_timeout_seconds,
+            ),
+        )
+        for source_name, source_url in source_urls
+    )
+
+
+def parse_observability_source_urls(
+    value: str,
+    *,
+    default_name: str,
+    default_url: str,
+) -> ObservabilitySourceUrls:
+    entries = tuple(item.strip() for item in value.split(",") if item.strip())
+    if not entries:
+        return ((default_name, default_url),)
+
+    sources: list[tuple[str, str]] = []
+    seen_names: set[str] = set()
+    for index, entry in enumerate(entries, start=1):
+        if "=" in entry:
+            source_name, source_url = (part.strip() for part in entry.split("=", 1))
+        else:
+            source_name = f"source-{index}"
+            source_url = entry
+
+        validate_observability_source_name(source_name)
+        if not source_url:
+            raise InfraOpsValidationError("Observability source URL must not be empty.")
+        if source_name in seen_names:
+            raise InfraOpsValidationError("Observability source names must be unique.")
+        seen_names.add(source_name)
+        sources.append((source_name, source_url))
+    return tuple(sources)
+
+
+def validate_observability_source_name(source_name: str) -> None:
+    if OBSERVABILITY_SOURCE_NAME_PATTERN.fullmatch(source_name):
+        return
+    raise InfraOpsValidationError("Observability source name is invalid.")
+
+
+def capture_observability_source(
+    source_name: str,
+    loader: Callable[[], dict[str, Any]],
+) -> MultiClusterQuerySourceResult:
+    try:
+        return MultiClusterQuerySourceResult(
+            source=source_name,
+            status="SUCCESS",
+            data=loader(),
+        )
+    except Exception as exc:
+        return MultiClusterQuerySourceResult(
+            source=source_name,
+            status="FAILED",
+            error=str(exc),
+        )
+
+
+def has_partial_observability_sources(sources: list[MultiClusterQuerySourceResult]) -> bool:
+    return any(source.status != "SUCCESS" for source in sources)
 
 
 def validate_index_pattern(index_pattern: str, *, allowlist: tuple[str, ...]) -> None:
