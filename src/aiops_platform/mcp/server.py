@@ -107,8 +107,8 @@ def _record_tool_audit(
 
 def create_mcp_server(
     audit_service: McpToolAuditService | None = None,
-    farmer_bnpl_service: FarmerBnplService | None = None,
     infraops_service: InfraOpsService | None = None,
+    farmer_bnpl_service: FarmerBnplService | None = None,
 ) -> FastMCP:
     farmer_bnpl = farmer_bnpl_service or FarmerBnplService()
     infraops = infraops_service or InfraOpsService.from_settings()

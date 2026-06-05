@@ -114,7 +114,8 @@ def test_fastmcp_farmer_bnpl_read_tools_return_results() -> None:
                 },
             )
 
-        assert products.data["items"][0]["category"] == "fertilizer"
+        assert len(products.data["items"]) == 2
+        assert all(item["category"] == "fertilizer" for item in products.data["items"])
         assert total.data["total_amount"] == 84_000
         assert payload.data["eligible"] is True
         assert payload.data["payload"]["total_amount"] == 48_000
@@ -153,6 +154,25 @@ def test_fastmcp_farmer_bnpl_write_tools_return_user_confirmation_preview() -> N
         assert checkout.data["tool_permission"] == "USER_CONFIRMED_WRITE"
         assert checkout.data["call_status"] == "APPROVAL_REQUIRED"
         assert checkout.data["preview"]["payment_method"] == "BNPL"
+
+    asyncio.run(run())
+
+
+def test_create_mcp_server_preserves_positional_infraops_service_argument() -> None:
+    class FakeInfraOpsService:
+        def query_prometheus(self, query: str, time: str | None = None):
+            assert query == "up"
+            assert time is None
+            return PrometheusQueryResult(
+                status="success",
+                data={"resultType": "vector", "result": []},
+            )
+
+    async def run() -> None:
+        async with Client(create_mcp_server(None, FakeInfraOpsService())) as client:
+            result = await client.call_tool("query_prometheus", {"query": "up"})
+
+        assert result.data["status"] == "success"
 
     asyncio.run(run())
 
