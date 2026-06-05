@@ -1,3 +1,5 @@
+from uuid import UUID
+
 import pytest
 from pydantic import ValidationError
 
@@ -22,3 +24,12 @@ def test_observability_timeouts_must_be_positive() -> None:
 
     with pytest.raises(ValidationError):
         Settings(ELASTICSEARCH_TIMEOUT_SECONDS=-1)
+
+
+def test_default_checkout_product_id_must_be_uuid() -> None:
+    settings = Settings()
+
+    assert isinstance(settings.farmer_bnpl_default_checkout_product_id, UUID)
+
+    with pytest.raises(ValidationError):
+        Settings(FARMER_BNPL_DEFAULT_CHECKOUT_PRODUCT_ID="not-a-uuid")

@@ -1,9 +1,17 @@
 import pytest
+from sqlalchemy import text
 
+from aiops_platform.core.database import SessionLocal
 from aiops_platform.farmer_bnpl.service import (
     FarmerBnplService,
     FarmerBnplValidationError,
     build_public_id,
+)
+from tests.seed_constants import (
+    FARMER_1_ID,
+    FERTILIZER_NPK_ID,
+    FERTILIZER_ORGANIC_ID,
+    SEED_RICE_ID,
 )
 
 
@@ -11,12 +19,12 @@ def test_start_credit_application_returns_required_documents() -> None:
     service = FarmerBnplService()
 
     result = service.start_credit_application(
-        user_id="farmer-1",
+        user_id=FARMER_1_ID,
         requested_amount=1_500_000,
         crop_type="rice",
     )
 
-    assert result.application_id == build_public_id("credit-app", "farmer-1")
+    assert result.application_id == build_public_id("credit-app", FARMER_1_ID)
     assert result.status == "DRAFT"
     assert result.requested_amount == 1_500_000
     assert "farmland_document" in result.required_documents
@@ -25,13 +33,115 @@ def test_start_credit_application_returns_required_documents() -> None:
 def test_farmer_credit_and_repayment_reads_return_skeleton_values() -> None:
     service = FarmerBnplService()
 
-    credit_limit = service.get_user_credit_limit(user_id="farmer-1")
-    repayment = service.get_repayment_schedule(user_id="farmer-1")
-    overdue = service.get_overdue_status(user_id="farmer-1")
+    credit_limit = service.get_user_credit_limit(user_id=FARMER_1_ID)
+    repayment = service.get_repayment_schedule(user_id=FARMER_1_ID)
+    overdue = service.get_overdue_status(user_id=FARMER_1_ID)
 
     assert credit_limit.available_limit == 2_550_000
     assert repayment.schedule[0].status == "UPCOMING"
     assert overdue.is_overdue is False
+
+
+def test_repayment_schedule_status_uses_business_priority() -> None:
+    order_id = "90000000-0000-0000-0000-000000000001"
+    principal_id = "91000000-0000-0000-0000-000000000001"
+    with SessionLocal() as session:
+        session.execute(
+            text(
+                """
+                insert into core.orders (
+                    public_id,
+                    user_public_id,
+                    payment_request_public_id,
+                    total_amount,
+                    order_status,
+                    delivery_status,
+                    recipient_name,
+                    recipient_phone,
+                    delivery_address,
+                    delivery_zip_code,
+                    ordered_at,
+                    created_at,
+                    updated_at
+                ) values (
+                    cast(:order_id as uuid),
+                    cast(:user_id as uuid),
+                    '92000000-0000-0000-0000-000000000001',
+                    1000.00,
+                    'CONFIRMED',
+                    'PREPARING',
+                    'Sample farmer',
+                    '010-1111-2222',
+                    'jeonbuk',
+                    '55000',
+                    timestamp '2026-06-05 00:00:00',
+                    timestamp '2026-06-05 00:00:00',
+                    timestamp '2026-06-05 00:00:00'
+                )
+                on conflict (public_id) do nothing
+                """
+            ),
+            {"order_id": order_id, "user_id": FARMER_1_ID},
+        )
+        session.execute(
+            text(
+                """
+                insert into core.principal_repayment_ledger (
+                    public_id,
+                    credit_limit_public_id,
+                    order_public_id,
+                    due_date,
+                    principal_amount,
+                    amount_paid,
+                    status,
+                    created_at,
+                    updated_at
+                ) values (
+                    cast(:principal_id as uuid),
+                    'c0000001-0000-0000-0000-000000000001',
+                    cast(:order_id as uuid),
+                    date '2026-06-15',
+                    1000.00,
+                    0.00,
+                    'OVERDUE',
+                    timestamp '2026-06-05 00:00:00',
+                    timestamp '2026-06-05 00:00:00'
+                )
+                on conflict (public_id) do update set
+                    status = excluded.status,
+                    due_date = excluded.due_date,
+                    updated_at = excluded.updated_at
+                """
+            ),
+            {"principal_id": principal_id, "order_id": order_id},
+        )
+        session.commit()
+    try:
+        repayment = FarmerBnplService().get_repayment_schedule(user_id=FARMER_1_ID)
+
+        assert repayment.schedule[0].due_date == "2026-06-15"
+        assert repayment.schedule[0].status == "OVERDUE"
+    finally:
+        with SessionLocal() as session:
+            session.execute(
+                text(
+                    """
+                    delete from core.principal_repayment_ledger
+                    where public_id = cast(:principal_id as uuid)
+                    """
+                ),
+                {"principal_id": principal_id},
+            )
+            session.execute(
+                text(
+                    """
+                    delete from core.orders
+                    where public_id = cast(:order_id as uuid)
+                    """
+                ),
+                {"order_id": order_id},
+            )
+            session.commit()
 
 
 def test_product_search_and_lowest_fertilizer_are_deterministic() -> None:
@@ -39,26 +149,26 @@ def test_product_search_and_lowest_fertilizer_are_deterministic() -> None:
 
     search = service.search_products(query="fertilizer", limit=10)
     lowest = service.search_lowest_price_fertilizer(limit=1)
-    detail = service.get_product_detail(product_id="fertilizer-organic-20kg")
+    detail = service.get_product_detail(product_id=FERTILIZER_ORGANIC_ID)
 
     assert {item.product_id for item in search.items} == {
-        "fertilizer-npk-20kg",
-        "fertilizer-organic-20kg",
+        FERTILIZER_NPK_ID,
+        FERTILIZER_ORGANIC_ID,
     }
-    assert lowest.items[0].product_id == "fertilizer-organic-20kg"
+    assert lowest.items[0].product_id == FERTILIZER_ORGANIC_ID
     assert detail.product.unit_price == 24000
 
 
 def test_cart_total_and_checkout_payload_use_catalog_prices() -> None:
     service = FarmerBnplService()
     items = [
-        {"product_id": "fertilizer-organic-20kg", "quantity": 2},
-        {"product_id": "seed-rice-10kg", "quantity": 1},
+        {"product_id": FERTILIZER_ORGANIC_ID, "quantity": 2},
+        {"product_id": SEED_RICE_ID, "quantity": 1},
     ]
 
     total = service.calculate_cart_total(items=items)
-    payload = service.prepare_bnpl_checkout_payload(user_id="farmer-1", items=items)
-    intent = service.create_checkout_intent(user_id="farmer-1", items=items)
+    payload = service.prepare_bnpl_checkout_payload(user_id=FARMER_1_ID, items=items)
+    intent = service.create_checkout_intent(user_id=FARMER_1_ID, items=items)
 
     assert total.total_amount == 84_000
     assert payload.eligible is True

@@ -2,9 +2,14 @@ from __future__ import annotations
 
 import hashlib
 import re
-from datetime import UTC, date, datetime, timedelta
+from datetime import UTC, datetime
 from typing import Any
 
+from aiops_platform.core.config import settings
+from aiops_platform.farmer_bnpl.repository import (
+    FarmerBnplRepository,
+    SqlFarmerBnplRepository,
+)
 from aiops_platform.farmer_bnpl.schemas import (
     BnplCheckoutPreviewResult,
     CartItem,
@@ -26,7 +31,6 @@ from aiops_platform.farmer_bnpl.schemas import (
     ProductDetailResult,
     ProductResult,
     ProductSearchResult,
-    RepaymentScheduleItem,
     RepaymentScheduleResult,
     RequiredDocumentsResult,
     UserCreditLimitResult,
@@ -37,57 +41,17 @@ class FarmerBnplValidationError(ValueError):
     pass
 
 
-IDENTIFIER_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:-]{0,119}$")
+IDENTIFIER_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:\-]{0,119}$")
 PUBLIC_ID_DISALLOWED_PATTERN = re.compile(r"[^a-z0-9-]+")
 PUBLIC_ID_REPEATED_SEPARATOR_PATTERN = re.compile(r"-+")
 PUBLIC_ID_MAX_LENGTH = 120
 PUBLIC_ID_HASH_LENGTH = 8
-DEFAULT_REQUIRED_DOCUMENTS = [
-    "identity_verification",
-    "farmer_registration",
-    "farmland_document",
-    "crop_plan",
-    "insurance_certificate",
-]
-
-
-PRODUCT_CATALOG = (
-    ProductResult(
-        product_id="fertilizer-npk-20kg",
-        name="NPK 20kg fertilizer",
-        category="fertilizer",
-        unit_price=28000,
-        vendor="AgriMart",
-        stock_status="IN_STOCK",
-    ),
-    ProductResult(
-        product_id="fertilizer-organic-20kg",
-        name="Organic 20kg fertilizer",
-        category="fertilizer",
-        unit_price=24000,
-        vendor="GreenSupply",
-        stock_status="IN_STOCK",
-    ),
-    ProductResult(
-        product_id="seed-rice-10kg",
-        name="Rice seed 10kg",
-        category="seed",
-        unit_price=36000,
-        vendor="SeedBank",
-        stock_status="LOW_STOCK",
-    ),
-    ProductResult(
-        product_id="pesticide-safe-1l",
-        name="Low-toxicity pesticide 1L",
-        category="pesticide",
-        unit_price=18000,
-        vendor="FarmCare",
-        stock_status="IN_STOCK",
-    ),
-)
 
 
 class FarmerBnplService:
+    def __init__(self, repository: FarmerBnplRepository | None = None) -> None:
+        self._repository = repository or SqlFarmerBnplRepository()
+
     def start_credit_application(
         self,
         *,
@@ -107,7 +71,7 @@ class FarmerBnplService:
             application_id=build_public_id("credit-app", request.user_id),
             user_id=request.user_id,
             requested_amount=request.requested_amount,
-            required_documents=list(DEFAULT_REQUIRED_DOCUMENTS),
+            required_documents=get_required_document_keys(),
         )
 
     def save_farmland_info(
@@ -180,7 +144,7 @@ class FarmerBnplService:
         return RequiredDocumentsResult(
             user_id=user_id,
             application_type=application_type,
-            documents=list(DEFAULT_REQUIRED_DOCUMENTS),
+            documents=get_required_document_keys(),
         )
 
     def submit_credit_documents(
@@ -220,60 +184,37 @@ class FarmerBnplService:
 
     def get_user_credit_limit(self, *, user_id: str) -> UserCreditLimitResult:
         validate_identifier(user_id, field_name="user_id")
-        total_limit = 3_000_000
-        used_amount = 450_000
-        return UserCreditLimitResult(
-            user_id=user_id,
-            credit_limit_id=build_public_id("limit", user_id),
-            total_limit=total_limit,
-            used_amount=used_amount,
-            available_limit=total_limit - used_amount,
-        )
+        credit_limit = self._repository.get_user_credit_limit(user_id)
+        if credit_limit is None:
+            raise FarmerBnplValidationError("credit limit was not found.")
+        return credit_limit
 
     def get_farmer_profile(self, *, user_id: str) -> FarmerProfileResult:
         validate_identifier(user_id, field_name="user_id")
-        return FarmerProfileResult(
-            user_id=user_id,
-            display_name="Sample farmer",
-            region="Jeollabuk-do",
-            main_crop="rice",
-            profile_status="READY_FOR_REVIEW",
-        )
+        profile = self._repository.get_farmer_profile(user_id)
+        if profile is None:
+            raise FarmerBnplValidationError("farmer profile was not found.")
+        return profile
 
     def get_repayment_schedule(self, *, user_id: str) -> RepaymentScheduleResult:
         validate_identifier(user_id, field_name="user_id")
-        today = date.today()
+        schedule = self._repository.list_repayment_schedule(user_id)
         return RepaymentScheduleResult(
             user_id=user_id,
-            schedule=[
-                RepaymentScheduleItem(
-                    installment_no=1,
-                    due_date=(today + timedelta(days=30)).isoformat(),
-                    principal_due=300_000,
-                    interest_due=12_000,
-                    status="UPCOMING",
-                ),
-                RepaymentScheduleItem(
-                    installment_no=2,
-                    due_date=(today + timedelta(days=60)).isoformat(),
-                    principal_due=300_000,
-                    interest_due=9_000,
-                    status="UPCOMING",
-                ),
-            ],
+            schedule=schedule,
         )
 
     def get_interest_due(self, *, user_id: str) -> InterestDueResult:
         validate_identifier(user_id, field_name="user_id")
-        return InterestDueResult(
-            user_id=user_id,
-            due_date=(date.today() + timedelta(days=30)).isoformat(),
-            interest_due=12_000,
-        )
+        interest_due = self._repository.get_interest_due(user_id)
+        if interest_due is None:
+            raise FarmerBnplValidationError("interest due was not found.")
+        return interest_due
 
     def get_overdue_status(self, *, user_id: str) -> OverdueStatusResult:
         validate_identifier(user_id, field_name="user_id")
-        return OverdueStatusResult(
+        overdue_status = self._repository.get_overdue_status(user_id)
+        return overdue_status or OverdueStatusResult(
             user_id=user_id,
             is_overdue=False,
             overdue_amount=0,
@@ -290,15 +231,11 @@ class FarmerBnplService:
         clamped_limit = clamp_limit(limit)
         normalized_query = query.lower().strip() if query else None
         normalized_category = category.lower().strip() if category else None
-        items = [
-            product
-            for product in PRODUCT_CATALOG
-            if product_matches(
-                product,
-                query=normalized_query,
-                category=normalized_category,
-            )
-        ][:clamped_limit]
+        items = self._repository.list_products(
+            query=normalized_query,
+            category=normalized_category,
+            limit=clamped_limit,
+        )
         return ProductSearchResult(
             query=query,
             category=category,
@@ -308,10 +245,7 @@ class FarmerBnplService:
 
     def search_lowest_price_fertilizer(self, *, limit: int = 5) -> ProductSearchResult:
         clamped_limit = clamp_limit(limit)
-        items = sorted(
-            (product for product in PRODUCT_CATALOG if product.category == "fertilizer"),
-            key=lambda product: product.unit_price,
-        )[:clamped_limit]
+        items = self._repository.list_products(category="fertilizer", limit=clamped_limit)
         return ProductSearchResult(
             query="lowest_price",
             category="fertilizer",
@@ -444,9 +378,9 @@ class FarmerBnplService:
 
     def _get_product(self, product_id: str) -> ProductResult:
         validate_identifier(product_id, field_name="product_id")
-        for product in PRODUCT_CATALOG:
-            if product.product_id == product_id:
-                return product
+        product = self._repository.get_product(product_id)
+        if product is not None:
+            return product
         raise FarmerBnplValidationError("Product is not available in the BNPL catalog.")
 
 
@@ -506,18 +440,12 @@ def parse_cart_items(items: list[dict[str, Any]]) -> list[CartItem]:
 def clamp_limit(limit: int) -> int:
     if not isinstance(limit, int) or isinstance(limit, bool):
         raise FarmerBnplValidationError("limit must be an integer.")
-    return min(max(limit, 1), 50)
+    return min(max(limit, 1), settings.farmer_bnpl_max_search_limit)
 
 
-def product_matches(
-    product: ProductResult,
-    *,
-    query: str | None,
-    category: str | None,
-) -> bool:
-    if category is not None and product.category.lower() != category:
-        return False
-    if query is None:
-        return True
-    searchable = f"{product.name} {product.category} {product.vendor}".lower()
-    return query in searchable
+def get_required_document_keys() -> list[str]:
+    return [
+        item.strip()
+        for item in settings.farmer_bnpl_required_documents.split(",")
+        if item.strip()
+    ]

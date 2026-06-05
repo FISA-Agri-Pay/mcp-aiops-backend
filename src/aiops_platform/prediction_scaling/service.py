@@ -5,6 +5,7 @@ import math
 import re
 from datetime import UTC, datetime
 
+from aiops_platform.core.config import settings
 from aiops_platform.prediction_scaling.repository import (
     PredictionScalingRepository,
     SqlPredictionScalingRepository,
@@ -36,160 +37,7 @@ class PredictionScalingValidationError(ValueError):
 
 IDENTIFIER_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:-]{0,119}$")
 METRIC_NAME_PATTERN = re.compile(r"^[A-Za-z_:][A-Za-z0-9_:]{0,119}$")
-MAX_SEARCH_LIMIT = 100
-SKELETON_MODEL_VERSION_IDS = {"traffic-forecast-v2", "traffic-forecast-v1"}
-SKELETON_MODEL_VERSIONS = (
-    ModelVersionResult(
-        model_version_id="traffic-forecast-v2",
-        service_name="api",
-        model_name="gru-traffic-forecast",
-        version="2.0.0",
-        status="ACTIVE",
-        deployed_at="2026-06-04T12:00:00+00:00",
-        description="GRU traffic forecast model for API autoscaling.",
-    ),
-    ModelVersionResult(
-        model_version_id="traffic-forecast-v1",
-        service_name="api",
-        model_name="lstm-traffic-forecast",
-        version="1.0.0",
-        status="ARCHIVED",
-        deployed_at="2026-05-10T12:00:00+00:00",
-        description="Archived LSTM baseline for API traffic forecast.",
-    ),
-    ModelVersionResult(
-        model_version_id="batch-runtime-v1",
-        service_name="batch-worker",
-        model_name="batch-runtime-forecast",
-        version="1.0.0",
-        status="CANDIDATE",
-        deployed_at="2026-06-01T12:00:00+00:00",
-        description="Candidate model for batch runtime prediction.",
-    ),
-)
-SKELETON_PREDICTION_RUN_IDS = {"pred-run-20260605-001"}
-SKELETON_PREDICTION_RUNS = (
-    PredictionRunResult(
-        prediction_run_id="pred-run-20260605-001",
-        model_version_id="traffic-forecast-v2",
-        service_name="api",
-        namespace="default",
-        workload="api",
-        status="SUCCEEDED",
-        metric_name="http_requests_per_second",
-        horizon_minutes=30,
-        started_at="2026-06-05T00:00:00+00:00",
-        completed_at="2026-06-05T00:01:00+00:00",
-    ),
-    PredictionRunResult(
-        prediction_run_id="pred-run-20260605-002",
-        model_version_id="batch-runtime-v1",
-        service_name="batch-worker",
-        namespace="jobs",
-        workload="settlement-worker",
-        status="RUNNING",
-        metric_name="job_runtime_seconds",
-        horizon_minutes=60,
-        started_at="2026-06-05T00:02:00+00:00",
-    ),
-)
-SKELETON_PREDICTION_POINTS = (
-    PredictionMetricPoint(
-        prediction_run_id="pred-run-20260605-001",
-        metric_name="http_requests_per_second",
-        target_timestamp="2026-06-05T00:05:00+00:00",
-        predicted_value=100.0,
-        unit="rps",
-        confidence_lower=90.0,
-        confidence_upper=110.0,
-    ),
-    PredictionMetricPoint(
-        prediction_run_id="pred-run-20260605-001",
-        metric_name="http_requests_per_second",
-        target_timestamp="2026-06-05T00:10:00+00:00",
-        predicted_value=120.0,
-        unit="rps",
-        confidence_lower=108.0,
-        confidence_upper=132.0,
-    ),
-    PredictionMetricPoint(
-        prediction_run_id="pred-run-20260605-001",
-        metric_name="http_requests_per_second",
-        target_timestamp="2026-06-05T00:15:00+00:00",
-        predicted_value=150.0,
-        unit="rps",
-        confidence_lower=135.0,
-        confidence_upper=165.0,
-    ),
-    PredictionMetricPoint(
-        prediction_run_id="pred-run-20260605-002",
-        metric_name="job_runtime_seconds",
-        target_timestamp="2026-06-05T01:00:00+00:00",
-        predicted_value=780.0,
-        unit="seconds",
-        confidence_lower=720.0,
-        confidence_upper=840.0,
-    ),
-)
-SKELETON_ACTUAL_METRICS = (
-    ActualMetricItem(
-        metric_name="http_requests_per_second",
-        namespace="default",
-        workload="api",
-        observed_at="2026-06-05T00:05:00+00:00",
-        actual_value=96.0,
-        unit="rps",
-    ),
-    ActualMetricItem(
-        metric_name="http_requests_per_second",
-        namespace="default",
-        workload="api",
-        observed_at="2026-06-05T00:10:00+00:00",
-        actual_value=130.0,
-        unit="rps",
-    ),
-    ActualMetricItem(
-        metric_name="http_requests_per_second",
-        namespace="default",
-        workload="api",
-        observed_at="2026-06-05T00:15:00+00:00",
-        actual_value=144.0,
-        unit="rps",
-    ),
-    ActualMetricItem(
-        metric_name="job_runtime_seconds",
-        namespace="jobs",
-        workload="settlement-worker",
-        observed_at="2026-06-05T01:00:00+00:00",
-        actual_value=760.0,
-        unit="seconds",
-    ),
-)
-SKELETON_SCALING_EVENTS = (
-    ScalingEventItem(
-        scaling_event_id="scale-evt-20260605-001",
-        namespace="default",
-        workload="api",
-        event_type="SCALE_UP",
-        trigger_source="PREDICTION",
-        occurred_at="2026-06-05T00:12:00+00:00",
-        previous_replicas=2,
-        desired_replicas=4,
-        reason="Prediction forecasted API traffic increase.",
-        related_prediction_run_id="pred-run-20260605-001",
-    ),
-    ScalingEventItem(
-        scaling_event_id="scale-evt-20260605-002",
-        namespace="default",
-        workload="api",
-        event_type="SCALE_DOWN",
-        trigger_source="HPA",
-        occurred_at="2026-06-05T00:25:00+00:00",
-        previous_replicas=4,
-        desired_replicas=3,
-        reason="Observed utilization normalized after peak.",
-    ),
-)
+MAX_SEARCH_LIMIT = settings.prediction_scaling_max_search_limit
 
 
 class PredictionScalingService:
@@ -202,14 +50,7 @@ class PredictionScalingService:
         service_name: str | None = None,
         limit: int = 20,
     ) -> list[ModelVersionResult]:
-        items = self._repository.list_model_versions(service_name=service_name, limit=limit)
-        if not SKELETON_MODEL_VERSION_IDS.issubset({item.model_version_id for item in items}):
-            items = [
-                item
-                for item in SKELETON_MODEL_VERSIONS
-                if service_name is None or item.service_name == service_name
-            ]
-        return items[:limit]
+        return self._repository.list_model_versions(service_name=service_name, limit=limit)[:limit]
 
     def _list_prediction_runs(
         self,
@@ -218,19 +59,11 @@ class PredictionScalingService:
         status: str | None = None,
         limit: int = 20,
     ) -> list[PredictionRunResult]:
-        items = self._repository.list_prediction_runs(
+        return self._repository.list_prediction_runs(
             model_version_id=model_version_id,
             status=status,
             limit=limit,
-        )
-        if not SKELETON_PREDICTION_RUN_IDS.issubset({item.prediction_run_id for item in items}):
-            items = [
-                item
-                for item in SKELETON_PREDICTION_RUNS
-                if (model_version_id is None or item.model_version_id == model_version_id)
-                and (status is None or item.status == status)
-            ]
-        return items[:limit]
+        )[:limit]
 
     def _list_prediction_points(
         self,
@@ -238,18 +71,10 @@ class PredictionScalingService:
         prediction_run_id: str,
         metric_name: str | None = None,
     ) -> list[PredictionMetricPoint]:
-        items = self._repository.list_prediction_points(
+        return self._repository.list_prediction_points(
             prediction_run_id=prediction_run_id,
             metric_name=metric_name,
         )
-        if not items:
-            items = [
-                item
-                for item in SKELETON_PREDICTION_POINTS
-                if item.prediction_run_id == prediction_run_id
-                and (metric_name is None or item.metric_name == metric_name)
-            ]
-        return items
 
     def _list_actual_metrics(
         self,
@@ -259,21 +84,12 @@ class PredictionScalingService:
         workload: str | None = None,
         limit: int = 20,
     ) -> list[ActualMetricItem]:
-        items = self._repository.list_actual_metrics(
+        return self._repository.list_actual_metrics(
             metric_name=metric_name,
             namespace=namespace,
             workload=workload,
             limit=limit,
-        )
-        if not items:
-            items = [
-                item
-                for item in SKELETON_ACTUAL_METRICS
-                if item.metric_name == metric_name
-                and (namespace is None or item.namespace == namespace)
-                and (workload is None or item.workload == workload)
-            ]
-        return items[:limit]
+        )[:limit]
 
     def _list_scaling_events(
         self,
@@ -282,19 +98,11 @@ class PredictionScalingService:
         workload: str | None = None,
         limit: int = 20,
     ) -> list[ScalingEventItem]:
-        items = self._repository.list_scaling_events(
+        return self._repository.list_scaling_events(
             namespace=namespace,
             workload=workload,
             limit=limit,
-        )
-        if not items:
-            items = [
-                item
-                for item in SKELETON_SCALING_EVENTS
-                if (namespace is None or item.namespace == namespace)
-                and (workload is None or item.workload == workload)
-            ]
-        return items[:limit]
+        )[:limit]
 
     def get_model_versions(
         self,
@@ -564,15 +372,6 @@ class PredictionScalingService:
         validate_identifier(prediction_run_id, field_name="prediction_run_id")
         normalized_run_id = prediction_run_id.strip().lower()
         run = self._repository.get_prediction_run(normalized_run_id)
-        if run is None:
-            run = next(
-                (
-                    item
-                    for item in SKELETON_PREDICTION_RUNS
-                    if item.prediction_run_id == normalized_run_id
-                ),
-                None,
-            )
         if run is None:
             raise PredictionScalingValidationError("prediction run was not found.")
         return run

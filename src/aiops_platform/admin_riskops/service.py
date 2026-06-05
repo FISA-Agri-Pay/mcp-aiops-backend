@@ -25,6 +25,7 @@ from aiops_platform.admin_riskops.schemas import (
     OverdueUserSearchResult,
     RiskAnalysisSnapshotResult,
 )
+from aiops_platform.core.config import settings
 
 
 class AdminRiskOpsValidationError(ValueError):
@@ -32,57 +33,7 @@ class AdminRiskOpsValidationError(ValueError):
 
 
 IDENTIFIER_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:-]{0,119}$")
-MAX_SEARCH_LIMIT = 100
 MAX_ALERT_RECIPIENTS = 100
-SKELETON_USER_IDS = {"farmer-1", "farmer-2", "farmer-3"}
-SKELETON_BNPL_USERS = (
-    RiskOpsUserRecord(
-        user_id="farmer-1",
-        farmer_name="Sample farmer",
-        region="jeonbuk",
-        main_crop="rice",
-        credit_limit=3_000_000,
-        used_amount=450_000,
-        risk_level="LOW",
-        overdue_amount=0,
-        days_overdue=0,
-        bss_score=820,
-    ),
-    RiskOpsUserRecord(
-        user_id="farmer-2",
-        farmer_name="Pepper grower",
-        region="gyeongbuk",
-        main_crop="pepper",
-        credit_limit=5_000_000,
-        used_amount=3_200_000,
-        risk_level="MEDIUM",
-        overdue_amount=120_000,
-        days_overdue=7,
-        application_id="credit-app-farmer-2",
-        application_status="PENDING",
-        application_submitted_at="2026-06-04T09:00:00+00:00",
-        bss_score=720,
-        farmland_area_hectare=1.2,
-        missing_documents=["insurance_certificate"],
-    ),
-    RiskOpsUserRecord(
-        user_id="farmer-3",
-        farmer_name="Cabbage farm",
-        region="gangwon",
-        main_crop="cabbage",
-        credit_limit=4_000_000,
-        used_amount=3_700_000,
-        risk_level="HIGH",
-        overdue_amount=550_000,
-        days_overdue=21,
-        application_id="credit-app-farmer-3",
-        application_status="PENDING",
-        application_submitted_at="2026-06-03T14:30:00+00:00",
-        bss_score=610,
-        farmland_area_hectare=0.8,
-        missing_documents=[],
-    ),
-)
 
 
 class AdminRiskOpsService:
@@ -90,17 +41,10 @@ class AdminRiskOpsService:
         self._repository = repository or SqlAdminRiskOpsRepository()
 
     def _list_users(self) -> list[RiskOpsUserRecord]:
-        users = self._repository.list_users()
-        if SKELETON_USER_IDS.issubset({user.user_id for user in users}):
-            return users
-        return list(SKELETON_BNPL_USERS)
+        return self._repository.list_users()
 
     def _list_credit_review_users(self) -> list[RiskOpsUserRecord]:
-        users = self._repository.list_credit_review_users()
-        application_ids = {user.application_id for user in users if user.application_id}
-        if {"credit-app-farmer-2", "credit-app-farmer-3"}.issubset(application_ids):
-            return users
-        return [user for user in SKELETON_BNPL_USERS if user.application_id is not None]
+        return self._repository.list_credit_review_users()
 
     def get_credit_review_queue(
         self,
@@ -392,7 +336,7 @@ def validate_non_negative_int(value: int, *, field_name: str) -> None:
 def clamp_limit(limit: int) -> int:
     if not isinstance(limit, int) or isinstance(limit, bool):
         raise AdminRiskOpsValidationError("limit must be an integer.")
-    return min(max(limit, 1), MAX_SEARCH_LIMIT)
+    return min(max(limit, 1), settings.admin_riskops_max_search_limit)
 
 
 def normalize_channel(channel: str) -> str:
@@ -466,7 +410,7 @@ def user_matches(user: RiskOpsUserRecord, query: str) -> bool:
 
 def build_risk_factors(user: RiskOpsUserRecord) -> list[str]:
     factors = []
-    if user.used_amount / user.credit_limit > 0.7:
+    if user.credit_limit > 0 and user.used_amount / user.credit_limit > 0.7:
         factors.append("high_limit_utilization")
     if user.overdue_amount > 0:
         factors.append("overdue_balance")

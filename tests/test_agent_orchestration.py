@@ -2,6 +2,7 @@ from aiops_platform.agent.dispatcher import McpToolDispatcher
 from aiops_platform.agent.planner import RuleBasedAgentPlanner
 from aiops_platform.agent.schemas import AgentToolPlan
 from aiops_platform.mcp.schemas import McpToolCallStatus
+from tests.seed_constants import FARMER_1_ID
 
 
 def test_rule_based_planner_selects_farmer_bnpl_purchase_tools() -> None:
@@ -10,7 +11,7 @@ def test_rule_based_planner_selects_farmer_bnpl_purchase_tools() -> None:
     plan = planner.plan(
         chat_type="farmer_bnpl",
         message="내 한도 안에서 비료를 추천하고 checkout 준비해줘",
-        user_id="farmer-1",
+        user_id=FARMER_1_ID,
     )
 
     assert [tool.tool_name for tool in plan.tool_plans] == [
@@ -29,7 +30,7 @@ def test_dispatcher_executes_read_tool_and_masks_payload() -> None:
         AgentToolPlan(
             server_name="farmer-bnpl-mcp",
             tool_name="get_user_credit_limit",
-            request_payload={"user_id": "farmer-1", "access_token": "secret-token"},
+            request_payload={"user_id": FARMER_1_ID, "access_token": "secret-token"},
             reason="Check credit limit.",
         )
     )
@@ -49,7 +50,7 @@ def test_dispatcher_blocks_user_confirmed_write_tool() -> None:
             server_name="farmer-bnpl-mcp",
             tool_name="create_bnpl_checkout",
             request_payload={
-                "user_id": "farmer-1",
+                "user_id": FARMER_1_ID,
                 "checkout_intent_id": "checkout-intent-preview",
             },
             reason="Checkout requires user confirmation.",

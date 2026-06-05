@@ -1,4 +1,5 @@
 from functools import lru_cache
+from uuid import UUID
 
 from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -19,6 +20,47 @@ class Settings(BaseSettings):
     database_url: str = Field(
         default="postgresql+psycopg://kkpp:kkpp@localhost:5432/kkpp",
         alias="DATABASE_URL",
+    )
+    farmer_bnpl_required_documents: str = Field(
+        default=(
+            "identity_verification,farmer_registration,farmland_document,"
+            "crop_plan,insurance_certificate"
+        ),
+        alias="FARMER_BNPL_REQUIRED_DOCUMENTS",
+    )
+    farm_advisory_default_bnpl_budget: int = Field(
+        default=3_000_000,
+        ge=0,
+        alias="FARM_ADVISORY_DEFAULT_BNPL_BUDGET",
+    )
+    farm_advisory_max_area_hectare: float = Field(
+        default=1000.0,
+        gt=0,
+        alias="FARM_ADVISORY_MAX_AREA_HECTARE",
+    )
+    farmer_bnpl_max_search_limit: int = Field(
+        default=50,
+        ge=1,
+        alias="FARMER_BNPL_MAX_SEARCH_LIMIT",
+    )
+    farmer_bnpl_default_checkout_product_id: UUID = Field(
+        default="10000000-0000-0000-0000-000000000002",
+        alias="FARMER_BNPL_DEFAULT_CHECKOUT_PRODUCT_ID",
+    )
+    farmer_bnpl_default_checkout_quantity: int = Field(
+        default=2,
+        ge=1,
+        alias="FARMER_BNPL_DEFAULT_CHECKOUT_QUANTITY",
+    )
+    admin_riskops_max_search_limit: int = Field(
+        default=100,
+        ge=1,
+        alias="ADMIN_RISKOPS_MAX_SEARCH_LIMIT",
+    )
+    prediction_scaling_max_search_limit: int = Field(
+        default=100,
+        ge=1,
+        alias="PREDICTION_SCALING_MAX_SEARCH_LIMIT",
     )
 
     prometheus_base_url: str = Field(default="http://localhost:9090", alias="PROMETHEUS_BASE_URL")

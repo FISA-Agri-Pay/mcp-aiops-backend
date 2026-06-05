@@ -5,6 +5,11 @@ from aiops_platform.farm_advisory.service import (
     FarmAdvisoryValidationError,
 )
 from aiops_platform.farmer_bnpl.service import FarmerBnplService
+from tests.seed_constants import (
+    FERTILIZER_ORGANIC_ID,
+    PESTICIDE_SAFE_ID,
+    SEED_RICE_ID,
+)
 
 
 def test_crop_calendar_returns_planning_to_harvest_stages() -> None:
@@ -30,9 +35,9 @@ def test_material_recommendations_include_bnpl_product_ids() -> None:
     assert result.estimated_budget == 432_000
     assert result.bnpl_eligible_hint is True
     assert result.recommended_product_ids == [
-        "fertilizer-organic-20kg",
-        "seed-rice-10kg",
-        "pesticide-safe-1l",
+        FERTILIZER_ORGANIC_ID,
+        SEED_RICE_ID,
+        PESTICIDE_SAFE_ID,
     ]
 
 
@@ -85,9 +90,9 @@ def test_fractional_area_recommendations_round_quantities_up() -> None:
     result = service.recommend_product_bundle(crop_type="rice", area_hectare=1.1)
 
     assert result.cart_items == [
-        {"product_id": "fertilizer-organic-20kg", "quantity": 14},
-        {"product_id": "seed-rice-10kg", "quantity": 4},
-        {"product_id": "pesticide-safe-1l", "quantity": 3},
+        {"product_id": FERTILIZER_ORGANIC_ID, "quantity": 14},
+        {"product_id": SEED_RICE_ID, "quantity": 4},
+        {"product_id": PESTICIDE_SAFE_ID, "quantity": 3},
     ]
 
 

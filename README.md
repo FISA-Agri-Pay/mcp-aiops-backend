@@ -55,3 +55,11 @@ GET http://localhost:8000/health
 - 원본 기획서와 실제 DB schema SQL은 내부 공유용으로 관리합니다.
 - 공개 가능한 ERD 요약은 `docs/erd.md`에만 작성합니다.
 - API, MCP, ERD 구조 변경 시 공개 docs와 로컬 기획서를 함께 갱신합니다.
+
+## 하드코딩 제거 방향
+
+- production 서비스 코드는 샘플 농가, 샘플 상품, 샘플 예측 실행값을 fallback으로 사용하지 않습니다.
+- 관리자 Copilot, RiskOps, BNPL, 예측/스케일링 조회는 Docker PostgreSQL의 `core`, `catalog`, `ai` schema를 기준으로 동작합니다.
+- DB에 데이터가 없으면 빈 목록 또는 domain not-found 오류를 반환합니다. 샘플 데이터가 필요하면 production 코드가 아니라 테스트 fixture 또는 seed SQL에 둡니다.
+- 테스트는 `tests/seed/local_dummy.sql`을 pytest session fixture에서 실행한 뒤 로컬 Docker PostgreSQL을 기준으로 검증합니다.
+- 수동으로 seed를 다시 적용해야 할 때는 `python -m pytest`를 실행하거나, 같은 SQL을 로컬 DB에 직접 실행하면 됩니다.
