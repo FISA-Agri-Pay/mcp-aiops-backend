@@ -16,6 +16,7 @@ from aiops_platform.infraops.service import (
     InfraOpsValidationError,
     clamp_kibana_per_page,
     parse_allowlist,
+    parse_observability_source_urls,
     validate_index_pattern,
     validate_kubectl_exec_command,
     validate_kubernetes_resource_name,
@@ -342,6 +343,70 @@ def test_infraops_service_maps_loki_query() -> None:
     assert result.data == {"result": []}
 
 
+def test_infraops_service_maps_multi_cluster_prometheus_partial_results() -> None:
+    service = make_infraops_service(
+        prometheus_sources=(
+            (
+                "onprem",
+                PrometheusClient(
+                    "http://onprem-prometheus:9090",
+                    http_client=FakeHttpClient(
+                        {"status": "success", "data": {"result": [{"value": 1}]}}
+                    ),
+                ),
+            ),
+            (
+                "aws",
+                PrometheusClient(
+                    "http://aws-prometheus:9090",
+                    http_client=FailingHttpClient(),
+                ),
+            ),
+        ),
+    )
+
+    result = service.query_multi_cluster_prometheus(query="up")
+
+    assert result.query == "up"
+    assert result.partial is True
+    assert [source.source for source in result.sources] == ["onprem", "aws"]
+    assert result.sources[0].status == "SUCCESS"
+    assert result.sources[0].data == {
+        "status": "success",
+        "data": {"result": [{"value": 1}]},
+    }
+    assert result.sources[1].status == "FAILED"
+    assert result.sources[1].error == "source unavailable"
+
+
+def test_infraops_service_maps_multi_cluster_loki_results() -> None:
+    service = make_infraops_service(
+        loki_sources=(
+            (
+                "onprem",
+                LokiClient(
+                    "http://onprem-loki:3100",
+                    http_client=FakeHttpClient(
+                        {"status": "success", "data": {"result": []}}
+                    ),
+                ),
+            ),
+        ),
+    )
+
+    result = service.query_multi_cluster_loki(
+        query='{app="api"}',
+        start="1",
+        end="2",
+        limit=50,
+    )
+
+    assert result.partial is False
+    assert result.limit == 50
+    assert result.sources[0].source == "onprem"
+    assert result.sources[0].data == {"status": "success", "data": {"result": []}}
+
+
 def test_infraops_service_maps_kubernetes_resources() -> None:
     http_client = FakeHttpClient({"items": [{"metadata": {"name": "api-pod"}}]})
     service = make_infraops_service(
@@ -546,3 +611,35 @@ def test_infraops_service_returns_search_skeletons() -> None:
 def test_kibana_per_page_rejects_non_integer_values() -> None:
     with pytest.raises(InfraOpsValidationError):
         clamp_kibana_per_page("20")  # type: ignore[arg-type]
+
+
+def test_observability_source_url_parser_supports_named_and_default_sources() -> None:
+    assert parse_observability_source_urls(
+        "",
+        default_name="default",
+        default_url="http://prometheus:9090",
+    ) == (("default", "http://prometheus:9090"),)
+    assert parse_observability_source_urls(
+        "onprem=http://prometheus:9090,aws=http://aws-prometheus:9090",
+        default_name="default",
+        default_url="http://prometheus:9090",
+    ) == (
+        ("onprem", "http://prometheus:9090"),
+        ("aws", "http://aws-prometheus:9090"),
+    )
+
+
+def test_observability_source_url_parser_rejects_invalid_sources() -> None:
+    with pytest.raises(InfraOpsValidationError, match="source name is invalid"):
+        parse_observability_source_urls(
+            "bad source=http://prometheus:9090",
+            default_name="default",
+            default_url="http://prometheus:9090",
+        )
+
+    with pytest.raises(InfraOpsValidationError, match="source names must be unique"):
+        parse_observability_source_urls(
+            "aws=http://a,aws=http://b",
+            default_name="default",
+            default_url="http://prometheus:9090",
+        )
