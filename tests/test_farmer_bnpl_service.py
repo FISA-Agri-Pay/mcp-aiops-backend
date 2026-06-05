@@ -1,0 +1,73 @@
+import pytest
+
+from aiops_platform.farmer_bnpl.service import (
+    FarmerBnplService,
+    FarmerBnplValidationError,
+)
+
+
+def test_start_credit_application_returns_required_documents() -> None:
+    service = FarmerBnplService()
+
+    result = service.start_credit_application(
+        user_id="farmer-1",
+        requested_amount=1_500_000,
+        crop_type="rice",
+    )
+
+    assert result.application_id == "credit-app-farmer-1"
+    assert result.status == "DRAFT"
+    assert result.requested_amount == 1_500_000
+    assert "farmland_document" in result.required_documents
+
+
+def test_farmer_credit_and_repayment_reads_return_skeleton_values() -> None:
+    service = FarmerBnplService()
+
+    credit_limit = service.get_user_credit_limit(user_id="farmer-1")
+    repayment = service.get_repayment_schedule(user_id="farmer-1")
+    overdue = service.get_overdue_status(user_id="farmer-1")
+
+    assert credit_limit.available_limit == 2_550_000
+    assert repayment.schedule[0].status == "UPCOMING"
+    assert overdue.is_overdue is False
+
+
+def test_product_search_and_lowest_fertilizer_are_deterministic() -> None:
+    service = FarmerBnplService()
+
+    search = service.search_products(query="fertilizer", limit=10)
+    lowest = service.search_lowest_price_fertilizer(limit=1)
+    detail = service.get_product_detail(product_id="fertilizer-organic-20kg")
+
+    assert {item.product_id for item in search.items} == {
+        "fertilizer-npk-20kg",
+        "fertilizer-organic-20kg",
+    }
+    assert lowest.items[0].product_id == "fertilizer-organic-20kg"
+    assert detail.product.unit_price == 24000
+
+
+def test_cart_total_and_checkout_payload_use_catalog_prices() -> None:
+    service = FarmerBnplService()
+    items = [
+        {"product_id": "fertilizer-organic-20kg", "quantity": 2},
+        {"product_id": "seed-rice-10kg", "quantity": 1},
+    ]
+
+    total = service.calculate_cart_total(items=items)
+    payload = service.prepare_bnpl_checkout_payload(user_id="farmer-1", items=items)
+    intent = service.create_checkout_intent(user_id="farmer-1", items=items)
+
+    assert total.total_amount == 84_000
+    assert payload.eligible is True
+    assert payload.payload["total_amount"] == 84_000
+    assert intent.status == "PENDING_USER_CONFIRMATION"
+
+
+def test_unknown_product_is_rejected_before_checkout_calculation() -> None:
+    service = FarmerBnplService()
+
+    with pytest.raises(FarmerBnplValidationError):
+        service.calculate_cart_total(items=[{"product_id": "unknown", "quantity": 1}])
+
