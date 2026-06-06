@@ -21,7 +21,7 @@ from aiops_platform.ops_reports.schemas import (
     ReportIncidentResult,
     ReportMetricSummaryResult,
 )
-from aiops_platform.ops_reports.service import OpsReportService
+from aiops_platform.ops_reports.service import OpsReportService, OpsReportValidationError
 from aiops_platform.orchestration.schemas import JobResult
 from aiops_platform.prediction_scaling.schemas import (
     PredictionErrorMetricsResult,
@@ -127,6 +127,20 @@ def test_ops_report_api_uses_configured_service() -> None:
 
     assert response.status_code == 200
     assert response.json()["report"]["report_id"] == "report-1"
+
+
+def test_send_ops_report_email_validation_error_returns_400() -> None:
+    app = create_app()
+    app.state.ops_report_service = FailingEndpointOpsReportService()
+    client = TestClient(app)
+
+    response = client.post(
+        "/reports/ops/report-1/send-email",
+        json={"recipients": ["ops@example.com"]},
+    )
+
+    assert response.status_code == 400
+    assert response.json()["detail"] == "email request is invalid."
 
 
 class Dumpable:
@@ -446,6 +460,11 @@ class FakeEndpointOpsReportService:
 
     def send_ops_report_email(self, report_id: str, request: OpsReportEmailRequest):
         return OpsReportEmailResult(report_id=report_id, notification_ids=["notification-1"])
+
+
+class FailingEndpointOpsReportService(FakeEndpointOpsReportService):
+    def send_ops_report_email(self, report_id: str, request: OpsReportEmailRequest):
+        raise OpsReportValidationError("email request is invalid.")
 
 
 def build_endpoint_generation_result() -> OpsReportGenerationResult:

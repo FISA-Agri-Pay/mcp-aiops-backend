@@ -246,7 +246,30 @@ class LlmOpsService:
         metric_summaries: list[dict[str, Any]],
         job_id: str | None = None,
     ) -> LlmRunResult:
-        normalized_report_type = report_type.strip().lower()
+        raw_report_type = "" if report_type is None else str(report_type)
+        normalized_report_type = raw_report_type.strip().lower()
+        input_payload = {
+            "report_type": raw_report_type,
+            "period": period,
+            "incidents": incidents,
+            "rca_reports": rca_reports,
+            "metric_summaries": metric_summaries,
+        }
+        if not normalized_report_type:
+            return self._repository.record_llm_run(
+                provider=self._llm_client.provider,
+                model=self._llm_client.model,
+                prompt_key="ops_report.invalid.v1",
+                prompt_version_id=None,
+                status="FAILED",
+                masked_input=mask_payload(input_payload) or {},
+                masked_output={},
+                output_schema=OUTPUT_SCHEMA,
+                validation_errors=["report_type is required."],
+                job_id=job_id,
+                session_id=None,
+                last_error="report_type is required.",
+            )
         prompt = self.ensure_prompt_version(
             scope="ops_report",
             prompt_key=f"ops_report.{normalized_report_type}.v1",
@@ -256,13 +279,6 @@ class LlmOpsService:
                 "Return an answer with key findings and recommended actions."
             ),
         )
-        input_payload = {
-            "report_type": report_type,
-            "period": period,
-            "incidents": incidents,
-            "rca_reports": rca_reports,
-            "metric_summaries": metric_summaries,
-        }
         request = LlmCompletionRequest(
             chat_type="admin_copilot",
             prompt_key=prompt.prompt_key,

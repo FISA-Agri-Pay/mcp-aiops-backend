@@ -89,3 +89,5 @@ def send_ops_report_email(
         return service.send_ops_report_email(report_id, request)
     except OpsReportNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except OpsReportValidationError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc

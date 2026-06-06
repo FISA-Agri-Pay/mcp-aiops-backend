@@ -133,6 +133,23 @@ def test_notification_outbox_skeleton_is_queryable() -> None:
     assert matched[0]["payload"]["access_token"] == "***MASKED***"
 
 
+def test_ops_report_completion_rejects_blank_report_type() -> None:
+    service = LlmOpsService(llm_client=FakeLlmClient())
+
+    result = service.run_ops_report_completion(
+        report_type=" ",
+        period={},
+        incidents=[],
+        rca_reports=[],
+        metric_summaries=[],
+        job_id=None,
+    )
+
+    assert result.run_status == "FAILED"
+    assert result.prompt_key == "ops_report.invalid.v1"
+    assert result.last_error == "report_type is required."
+
+
 def test_prompt_versions_validation_error_returns_400() -> None:
     app = create_app()
     app.state.llmops_service = FailingPromptVersionService()
