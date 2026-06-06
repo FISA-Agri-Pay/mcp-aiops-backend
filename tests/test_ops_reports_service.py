@@ -90,13 +90,31 @@ def test_ops_report_llm_failure_marks_report_and_job_failed() -> None:
 
 def test_send_ops_report_email_creates_notification_outbox_records() -> None:
     repository = FakeOpsReportRepository()
+    duplicated_rca_text = (
+        "Root Cause: High CPU usage likely due to insufficient autoscaling response. "
+        "Impact: Critical service disruption. "
+        "Confidence: Medium. "
+        "Recommended Actions: Tune scaling thresholds."
+    )
+    repository.rcas = [
+        IncludedRcaReport(
+            rca_report_id="rca-1",
+            incident_id="incident-1",
+            status="COMPLETED",
+            summary=duplicated_rca_text,
+            probable_root_cause=duplicated_rca_text,
+            confidence=0.75,
+            created_at="2026-06-06T01:05:00",
+        )
+    ]
+    email_sender = FakeEmailSender()
     service = OpsReportService(
         repository=repository,
         orchestration_repository=FakeOrchestrationRepository(),
         llmops_service=FakeLlmOpsService(),
         infraops_service=FakeInfraOpsService(),
         prediction_scaling_service=FakePredictionScalingService(),
-        email_sender=FakeEmailSender(),
+        email_sender=email_sender,
     )
     report_result = service.create_ops_report(
         OpsReportCreateRequest(report_type="DAILY", report_date=date(2026, 6, 6))
@@ -106,7 +124,6 @@ def test_send_ops_report_email_creates_notification_outbox_records() -> None:
         report_result.report.report_id,
         OpsReportEmailRequest(
             recipients=["ops@example.com", "sre@example.com"],
-            subject="[AIOps] Daily report",
         ),
     )
 
@@ -114,6 +131,17 @@ def test_send_ops_report_email_creates_notification_outbox_records() -> None:
     assert result.status == "SENT"
     assert len(result.notification_ids) == 2
     assert repository.reports[report_result.report.report_id].report_status == "SENT"
+    assert email_sender.sent_messages
+    assert email_sender.sent_messages[0]["subject"] == (
+        "[AIOps] 일일 운영 리포트 - 2026-06-06"
+    )
+    html_body = email_sender.sent_messages[0]["html_body"]
+    assert "권장 조치" in html_body
+    assert "예측/스케일링 인사이트" in html_body
+    assert "api 워크로드의 KEDA threshold를 조정합니다." in html_body
+    assert "mean_absolute_percentage_error=0.08" in html_body
+    assert "Critical service disruption." in html_body
+    assert "High CPU usage likely due to insufficient autoscaling response." in html_body
 
 
 def test_ops_report_api_uses_configured_service() -> None:
@@ -271,7 +299,21 @@ class FakeLlmOpsService:
             job_id=kwargs.get("job_id"),
             session_id=None,
             masked_input={},
-            masked_output={"answer": "Operations remained stable with one RCA."},
+            masked_output={
+                "answer": "RCA 이후 autoscaling 후속 조치가 필요합니다.",
+                "executive_summary": (
+                    "CRITICAL 인시던트 1건에 대한 autoscaling 후속 조치가 필요합니다."
+                ),
+                "risk_level": "HIGH",
+                "key_findings": ["api 워크로드에서 High CPU 인시던트가 발생했습니다."],
+                "incident_highlights": ["HighCPUUsage가 주요 alert였습니다."],
+                "rca_highlights": ["트래픽 급증으로 CPU capacity가 포화되었습니다."],
+                "prediction_scaling_insights": [
+                    "Prediction-driven scaling은 발생했지만 인시던트 압력을 따라가지 못했습니다."
+                ],
+                "recommended_actions": ["api 워크로드의 KEDA threshold를 조정합니다."],
+                "data_quality_notes": ["Prometheus summary는 정상 수집되었습니다."],
+            },
             output_schema={"type": "object"},
             validation_errors=[],
             latency_ms=0,
@@ -307,10 +349,20 @@ class FakeLlmOpsService:
 
 
 class FakeEmailSender:
+    def __init__(self) -> None:
+        self.sent_messages: list[dict[str, str]] = []
+
     def send_html(self, *, recipient: str, subject: str, html_body: str) -> None:
         assert recipient
         assert subject
         assert html_body
+        self.sent_messages.append(
+            {
+                "recipient": recipient,
+                "subject": subject,
+                "html_body": html_body,
+            }
+        )
 
 
 class FailingLlmOpsService(FakeLlmOpsService):

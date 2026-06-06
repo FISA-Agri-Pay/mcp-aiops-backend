@@ -533,14 +533,20 @@ class InfraRcaService:
         evidence: list[dict[str, Any]],
     ) -> RcaReportResult:
         answer = str(llm_output.get("answer") or "RCA evidence was collected.")
+        summary = extract_rca_summary(answer)
+        probable_root_cause = extract_labeled_section(
+            answer,
+            "Root Cause",
+            fallback=summary,
+        )
         partial = any(item.last_error for item in snapshot.items)
         return self._repository.create_rca_report(
             incident_id=incident.incident_id,
             llm_run_id=llm_run_id,
             snapshot_id=snapshot.snapshot_id,
             status="COMPLETED",
-            summary=answer,
-            probable_root_cause=answer,
+            summary=summary,
+            probable_root_cause=probable_root_cause,
             impact=build_impact_summary(incident),
             timeline=build_timeline(incident, snapshot),
             evidence=evidence,
@@ -553,6 +559,48 @@ class InfraRcaService:
             confidence=0.55 if partial else 0.75,
             prompt_version="rca.infra.v1",
         )
+
+
+def extract_rca_summary(answer: str) -> str:
+    impact = extract_labeled_section(answer, "Impact", fallback="")
+    if impact:
+        return impact
+    return first_sentence(answer)
+
+
+def extract_labeled_section(answer: str, label: str, *, fallback: str) -> str:
+    marker = f"{label}:"
+    start = answer.find(marker)
+    if start < 0:
+        return fallback
+    value_start = start + len(marker)
+    following_labels = [
+        "Root Cause:",
+        "Impact:",
+        "Confidence:",
+        "Recommended Actions:",
+        "Recommended Action:",
+    ]
+    value_end = len(answer)
+    for following_label in following_labels:
+        if following_label == marker:
+            continue
+        index = answer.find(following_label, value_start)
+        if index >= 0:
+            value_end = min(value_end, index)
+    extracted = answer[value_start:value_end].strip()
+    return extracted or fallback
+
+
+def first_sentence(value: str) -> str:
+    normalized = value.strip()
+    if not normalized:
+        return "RCA evidence was collected."
+    for delimiter in [". ", "\n"]:
+        index = normalized.find(delimiter)
+        if index > 0:
+            return normalized[: index + 1].strip()
+    return normalized[:240]
 
 
 def select_primary_alert(request: AlertmanagerWebhookRequest) -> AlertmanagerAlert:

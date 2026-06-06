@@ -64,6 +64,21 @@ OUTPUT_SCHEMA = {
     "type": "object",
     "required": ["answer"],
 }
+OPS_REPORT_OUTPUT_SCHEMA = {
+    "type": "object",
+    "required": ["answer"],
+    "properties": {
+        "answer": {"type": "string"},
+        "executive_summary": {"type": "string"},
+        "risk_level": {"type": "string"},
+        "key_findings": {"type": "array", "items": {"type": "string"}},
+        "incident_highlights": {"type": "array", "items": {"type": "string"}},
+        "rca_highlights": {"type": "array", "items": {"type": "string"}},
+        "prediction_scaling_insights": {"type": "array", "items": {"type": "string"}},
+        "recommended_actions": {"type": "array", "items": {"type": "string"}},
+        "data_quality_notes": {"type": "array", "items": {"type": "string"}},
+    },
+}
 
 
 class LlmOpsService:
@@ -264,7 +279,7 @@ class LlmOpsService:
                 status="FAILED",
                 masked_input=mask_payload(input_payload) or {},
                 masked_output={},
-                output_schema=OUTPUT_SCHEMA,
+                output_schema=OPS_REPORT_OUTPUT_SCHEMA,
                 validation_errors=["report_type is required."],
                 job_id=job_id,
                 session_id=None,
@@ -276,7 +291,15 @@ class LlmOpsService:
             template=(
                 "Create a concise operations report from pre-aggregated "
                 "incident, RCA, prediction, and autoscaling evidence. "
-                "Return an answer with key findings and recommended actions."
+                "Return JSON with answer, executive_summary, risk_level, "
+                "key_findings, incident_highlights, rca_highlights, "
+                "prediction_scaling_insights, recommended_actions, and "
+                "data_quality_notes. Write every narrative field in Korean. "
+                "Keep metric names, alert names, source types, Kubernetes "
+                "resource names, and identifiers in their original English form. "
+                "Keep answer and executive_summary under 180 Korean characters. "
+                "Each list must have at most 3 items, and each item must be under "
+                "90 Korean characters."
             ),
         )
         request = LlmCompletionRequest(
@@ -284,11 +307,14 @@ class LlmOpsService:
             prompt_key=prompt.prompt_key,
             prompt_template=prompt.template,
             input_payload=mask_payload(input_payload) or {},
-            output_schema=OUTPUT_SCHEMA,
+            output_schema=OPS_REPORT_OUTPUT_SCHEMA,
         )
         try:
             response = self._llm_client.complete(request)
-            validation = validate_output_payload(response.output_payload, OUTPUT_SCHEMA)
+            validation = validate_output_payload(
+                response.output_payload,
+                OPS_REPORT_OUTPUT_SCHEMA,
+            )
             status: LlmRunStatus = "SUCCESS" if validation.is_valid else "VALIDATION_FAILED"
             last_error = "; ".join(validation.errors) if validation.errors else None
             return self._repository.record_llm_run(
@@ -299,7 +325,7 @@ class LlmOpsService:
                 status=status,
                 masked_input=request.input_payload,
                 masked_output=mask_payload(response.output_payload) or {},
-                output_schema=OUTPUT_SCHEMA,
+                output_schema=OPS_REPORT_OUTPUT_SCHEMA,
                 validation_errors=validation.errors,
                 job_id=job_id,
                 session_id=None,
@@ -315,7 +341,7 @@ class LlmOpsService:
                 status="FAILED",
                 masked_input=request.input_payload,
                 masked_output={},
-                output_schema=OUTPUT_SCHEMA,
+                output_schema=OPS_REPORT_OUTPUT_SCHEMA,
                 validation_errors=[],
                 job_id=job_id,
                 session_id=None,

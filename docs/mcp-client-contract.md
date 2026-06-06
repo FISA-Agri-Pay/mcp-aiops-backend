@@ -140,6 +140,7 @@ Agent 실행 snapshot은 `/agent-snapshots`의 `session_id`, `llm_run_id`, `payl
 
 운영 리포트 상세를 조회한다.
 응답에는 리포트 본문, incident 요약, 포함 RCA report, prediction error summary, scaling event summary, 이메일 발송 상태를 포함한다.
+리포트의 서술형 본문은 한국어로 작성하고, metric name, alert name, source type, Kubernetes resource name, identifier는 원문을 유지한다.
 
 ### `POST /reports/ops/{report_id}/send-email`
 

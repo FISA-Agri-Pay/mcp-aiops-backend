@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import smtplib
+from email.header import Header
 from email.message import EmailMessage
 from typing import Protocol
 
@@ -32,11 +33,14 @@ class SmtpEmailSender:
 
         sender = self._settings.smtp_from.strip() or self._settings.smtp_username.strip()
         message = EmailMessage()
-        message["Subject"] = subject
+        message["Subject"] = Header(subject, "utf-8").encode()
         message["From"] = sender
         message["To"] = recipient
-        message.set_content("This report is available as an HTML email.")
-        message.add_alternative(html_body, subtype="html")
+        message.set_content(
+            "이 리포트는 HTML 이메일 본문으로 제공됩니다.",
+            charset="utf-8",
+        )
+        message.add_alternative(html_body, subtype="html", charset="utf-8")
 
         try:
             with smtplib.SMTP(

@@ -125,8 +125,9 @@ class OpsReportService:
                 job_id=job.job_id,
             )
             report_status = "COMPLETED" if llm_run.run_status == "SUCCESS" else "FAILED"
+            llm_output = llm_run.masked_output if llm_run.run_status == "SUCCESS" else {}
             summary = (
-                str(llm_run.masked_output.get("answer"))
+                build_report_summary(llm_output)
                 if llm_run.run_status == "SUCCESS"
                 else f"Ops report LLM generation failed: {llm_run.run_status}"
             )
@@ -141,6 +142,7 @@ class OpsReportService:
                     incidents=incidents,
                     rca_reports=rca_reports,
                     metric_inputs=metric_inputs,
+                    llm_output=llm_output,
                 ),
                 metrics=metrics,
                 llm_run_id=llm_run.llm_run_id,
@@ -255,7 +257,7 @@ class OpsReportService:
         request: OpsReportEmailRequest,
     ) -> OpsReportEmailResult:
         detail = self.get_ops_report(report_id)
-        subject = request.subject or f"[AIOps] {detail.report.title}"
+        subject = request.subject or build_report_email_subject(detail.report)
         html_body = build_report_email_html(detail)
         notification_ids = []
         delivery_statuses: list[str] = []
@@ -639,32 +641,69 @@ def build_report_sections(
     incidents: list[IncludedIncident],
     rca_reports: list[IncludedRcaReport],
     metric_inputs: list[dict[str, Any]],
+    llm_output: dict[str, Any] | None = None,
 ) -> list[dict[str, Any]]:
+    llm_output = llm_output or {}
     return [
+        {
+            "title": "Executive summary",
+            "summary": text_value(
+                llm_output.get("executive_summary"),
+                fallback=text_value(llm_output.get("answer"), fallback=""),
+            ),
+            "items": list_values(llm_output.get("key_findings")),
+            "metadata": {
+                "risk_level": text_value(llm_output.get("risk_level"), fallback="UNKNOWN"),
+                "recommended_actions": list_values(llm_output.get("recommended_actions")),
+                "data_quality_notes": list_values(llm_output.get("data_quality_notes")),
+            },
+        },
         {
             "title": "Incidents",
             "summary": f"{len(incidents)} incidents included.",
             "items": [incident.model_dump(mode="json") for incident in incidents[:10]],
+            "highlights": list_values(llm_output.get("incident_highlights")),
         },
         {
             "title": "RCA",
             "summary": f"{len(rca_reports)} RCA reports included.",
             "items": [rca.model_dump(mode="json") for rca in rca_reports[:10]],
+            "highlights": list_values(llm_output.get("rca_highlights")),
         },
         {
             "title": "Prediction and scaling",
             "summary": f"{len(metric_inputs)} metric summaries included.",
             "items": metric_inputs[:10],
+            "highlights": list_values(llm_output.get("prediction_scaling_insights")),
         },
     ]
 
 
+def build_report_summary(llm_output: dict[str, Any]) -> str:
+    return text_value(
+        llm_output.get("executive_summary"),
+        fallback=text_value(llm_output.get("answer"), fallback=""),
+    )
+
+
 def build_report_email_html(detail: OpsReportDetailResult) -> str:
     report = detail.report
+    executive_section = find_section(report.sections, "Executive summary")
+    executive_metadata = executive_section.get("metadata", {})
+    risk_level = text_value(executive_metadata.get("risk_level"), fallback="UNKNOWN")
+    key_findings = list_values(executive_section.get("items"))
+    recommended_actions = list_values(executive_metadata.get("recommended_actions"))
+    data_quality_notes = list_values(executive_metadata.get("data_quality_notes"))
+    incident_highlights = list_values(find_section(report.sections, "Incidents").get("highlights"))
+    rca_highlights = list_values(find_section(report.sections, "RCA").get("highlights"))
+    scaling_highlights = list_values(
+        find_section(report.sections, "Prediction and scaling").get("highlights")
+    )
     incident_rows = "".join(
         "<tr>"
         f"<td>{html.escape(incident.severity)}</td>"
         f"<td>{html.escape(incident.alert_name or '')}</td>"
+        f"<td>{html.escape(incident.service_name or incident.workload or '')}</td>"
         f"<td>{html.escape(incident.summary or '')}</td>"
         "</tr>"
         for incident in detail.included_incidents
@@ -672,20 +711,170 @@ def build_report_email_html(detail: OpsReportDetailResult) -> str:
     rca_rows = "".join(
         "<tr>"
         f"<td>{html.escape(rca.status)}</td>"
-        f"<td>{html.escape(rca.summary or '')}</td>"
-        f"<td>{html.escape(rca.probable_root_cause or '')}</td>"
+        f"<td>{html.escape(display_rca_summary(rca))}</td>"
+        f"<td>{html.escape(display_rca_root_cause(rca))}</td>"
         "</tr>"
         for rca in detail.included_rca_reports
     )
+    metric_rows = "".join(
+        "<tr>"
+        f"<td>{html.escape(metric.source_type)}</td>"
+        f"<td>{html.escape(metric.metric_name)}</td>"
+        f"<td>{html.escape(compact_metric_summary(metric.summary_values))}</td>"
+        "</tr>"
+        for metric in detail.metric_summaries
+    )
     return (
-        "<html><body>"
-        f"<h1>{html.escape(report.title)}</h1>"
+        "<html><body style=\"font-family:Arial,sans-serif;color:#1f2933;line-height:1.5\">"
+        "<div style=\"max-width:920px;margin:0 auto;padding:24px\">"
+        f"<h1 style=\"margin-bottom:8px\">{html.escape(report.title)}</h1>"
+        f"<p style=\"margin-top:0;color:#52606d\">{html.escape(report.period_start)}"
+        f" - {html.escape(report.period_end)} / {html.escape(report.timezone)}</p>"
+        f"<p><strong>위험도:</strong> {html.escape(risk_level)}</p>"
         f"<p>{html.escape(report.summary or '')}</p>"
-        "<h2>Incidents</h2>"
-        "<table><thead><tr><th>Severity</th><th>Alert</th><th>Summary</th></tr></thead>"
-        f"<tbody>{incident_rows}</tbody></table>"
-        "<h2>RCA</h2>"
-        "<table><thead><tr><th>Status</th><th>Summary</th><th>Root cause</th></tr></thead>"
-        f"<tbody>{rca_rows}</tbody></table>"
+        f"{render_list('주요 발견', key_findings)}"
+        f"{render_list('권장 조치', recommended_actions)}"
+        f"{render_list('인시던트 하이라이트', incident_highlights)}"
+        f"{render_list('RCA 하이라이트', rca_highlights)}"
+        f"{render_list('예측/스케일링 인사이트', scaling_highlights)}"
+        "<h2>인시던트 상세</h2>"
+        "<table style=\"border-collapse:collapse;width:100%\"><thead><tr>"
+        "<th align=\"left\">심각도</th><th align=\"left\">Alert</th>"
+        "<th align=\"left\">Service</th><th align=\"left\">요약</th></tr></thead>"
+        f"<tbody>{incident_rows or empty_row(4)}</tbody></table>"
+        "<h2>RCA 상세</h2>"
+        "<table style=\"border-collapse:collapse;width:100%\"><thead><tr>"
+        "<th align=\"left\">상태</th><th align=\"left\">요약</th>"
+        "<th align=\"left\">추정 원인</th></tr></thead>"
+        f"<tbody>{rca_rows or empty_row(3)}</tbody></table>"
+        "<h2>메트릭 요약</h2>"
+        "<table style=\"border-collapse:collapse;width:100%\"><thead><tr>"
+        "<th align=\"left\">Source</th><th align=\"left\">Metric</th>"
+        "<th align=\"left\">요약</th></tr></thead>"
+        f"<tbody>{metric_rows or empty_row(3)}</tbody></table>"
+        f"{render_list('데이터 품질 메모', data_quality_notes)}"
+        "</div>"
         "</body></html>"
     )
+
+
+def build_report_email_subject(report: OpsReportResult) -> str:
+    label = "일일" if report.report_type == "DAILY" else "주간"
+    report_date = report.period_start[:10]
+    return f"[AIOps] {label} 운영 리포트 - {report_date}"
+
+
+def find_section(sections: list[dict[str, Any]], title: str) -> dict[str, Any]:
+    for section in sections:
+        if section.get("title") == title:
+            return section
+    return {}
+
+
+def text_value(value: Any, *, fallback: str) -> str:
+    if isinstance(value, str):
+        normalized = value.strip()
+        if normalized:
+            return normalized
+    return fallback
+
+
+def list_values(value: Any) -> list[str]:
+    if not isinstance(value, list):
+        return []
+    return [item.strip() for item in value if isinstance(item, str) and item.strip()]
+
+
+def render_list(title: str, items: list[str]) -> str:
+    if not items:
+        return ""
+    rendered_items = "".join(f"<li>{html.escape(item)}</li>" for item in items[:8])
+    return f"<h2>{html.escape(title)}</h2><ul>{rendered_items}</ul>"
+
+
+def empty_row(column_count: int) -> str:
+    return (
+        "<tr>"
+        f"<td colspan=\"{column_count}\" style=\"color:#697586\">포함된 데이터가 없습니다.</td>"
+        "</tr>"
+    )
+
+
+def compact_metric_summary(values: dict[str, Any]) -> str:
+    if not values:
+        return ""
+    if values.get("status") == "FAILED":
+        return f"FAILED: {values.get('error', 'unknown error')}"
+    interesting_keys = [
+        "total_events",
+        "prediction_driven_events",
+        "latest_desired_replicas",
+        "max_desired_replicas",
+        "mean_absolute_percentage_error",
+        "root_mean_squared_error",
+        "partial",
+    ]
+    parts = [
+        f"{key}={values[key]}"
+        for key in interesting_keys
+        if key in values and values[key] is not None
+    ]
+    if parts:
+        return ", ".join(parts)
+    return ", ".join(f"{key}={value}" for key, value in list(values.items())[:4])
+
+
+def display_rca_summary(rca: IncludedRcaReport) -> str:
+    summary = (rca.summary or "").strip()
+    root_cause = (rca.probable_root_cause or "").strip()
+    if summary and summary != root_cause:
+        return summary
+    impact = extract_labeled_text(summary or root_cause, "Impact")
+    if impact:
+        return impact
+    return first_text_sentence(summary or root_cause)
+
+
+def display_rca_root_cause(rca: IncludedRcaReport) -> str:
+    root_cause = (rca.probable_root_cause or "").strip()
+    extracted = extract_labeled_text(root_cause, "Root Cause")
+    if extracted:
+        return extracted
+    summary = (rca.summary or "").strip()
+    if root_cause and root_cause != summary:
+        return root_cause
+    return first_text_sentence(root_cause or summary)
+
+
+def extract_labeled_text(value: str, label: str) -> str:
+    marker = f"{label}:"
+    start = value.find(marker)
+    if start < 0:
+        return ""
+    value_start = start + len(marker)
+    labels = [
+        "Root Cause:",
+        "Impact:",
+        "Confidence:",
+        "Recommended Actions:",
+        "Recommended Action:",
+    ]
+    value_end = len(value)
+    for candidate in labels:
+        if candidate == marker:
+            continue
+        index = value.find(candidate, value_start)
+        if index >= 0:
+            value_end = min(value_end, index)
+    return value[value_start:value_end].strip()
+
+
+def first_text_sentence(value: str) -> str:
+    normalized = value.strip()
+    if not normalized:
+        return ""
+    for delimiter in [". ", "\n"]:
+        index = normalized.find(delimiter)
+        if index > 0:
+            return normalized[: index + 1].strip()
+    return normalized[:240]
