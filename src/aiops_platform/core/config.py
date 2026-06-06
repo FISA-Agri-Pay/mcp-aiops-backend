@@ -131,6 +131,17 @@ class Settings(BaseSettings):
         ge=0,
         alias="RCA_DEFAULT_AFTER_MINUTES",
     )
+    email_provider: str = Field(default="smtp", alias="EMAIL_PROVIDER")
+    smtp_host: str = Field(default="", alias="SMTP_HOST")
+    smtp_port: int = Field(default=587, ge=1, le=65535, alias="SMTP_PORT")
+    smtp_username: str = Field(default="", alias="SMTP_USERNAME")
+    smtp_password: str = Field(default="", alias="SMTP_PASSWORD")
+    smtp_from: str = Field(default="aiops@example.com", alias="SMTP_FROM")
+    smtp_use_tls: bool = Field(default=True, alias="SMTP_USE_TLS")
+    ops_report_email_recipients: str = Field(
+        default="",
+        alias="OPS_REPORT_EMAIL_RECIPIENTS",
+    )
 
 
 @lru_cache
