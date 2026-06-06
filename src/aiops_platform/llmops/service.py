@@ -64,6 +64,21 @@ OUTPUT_SCHEMA = {
     "type": "object",
     "required": ["answer"],
 }
+OPS_REPORT_OUTPUT_SCHEMA = {
+    "type": "object",
+    "required": ["answer"],
+    "properties": {
+        "answer": {"type": "string"},
+        "executive_summary": {"type": "string"},
+        "risk_level": {"type": "string"},
+        "key_findings": {"type": "array", "items": {"type": "string"}},
+        "incident_highlights": {"type": "array", "items": {"type": "string"}},
+        "rca_highlights": {"type": "array", "items": {"type": "string"}},
+        "prediction_scaling_insights": {"type": "array", "items": {"type": "string"}},
+        "recommended_actions": {"type": "array", "items": {"type": "string"}},
+        "data_quality_notes": {"type": "array", "items": {"type": "string"}},
+    },
+}
 
 
 class LlmOpsService:
@@ -236,6 +251,103 @@ class LlmOpsService:
                 last_error=exc.__class__.__name__,
             )
 
+    def run_ops_report_completion(
+        self,
+        *,
+        report_type: str,
+        period: dict[str, Any],
+        incidents: list[dict[str, Any]],
+        rca_reports: list[dict[str, Any]],
+        metric_summaries: list[dict[str, Any]],
+        job_id: str | None = None,
+    ) -> LlmRunResult:
+        raw_report_type = "" if report_type is None else str(report_type)
+        normalized_report_type = raw_report_type.strip().lower()
+        input_payload = {
+            "report_type": raw_report_type,
+            "period": period,
+            "incidents": incidents,
+            "rca_reports": rca_reports,
+            "metric_summaries": metric_summaries,
+        }
+        if not normalized_report_type:
+            return self._repository.record_llm_run(
+                provider=self._llm_client.provider,
+                model=self._llm_client.model,
+                prompt_key="ops_report.invalid.v1",
+                prompt_version_id=None,
+                status="FAILED",
+                masked_input=mask_payload(input_payload) or {},
+                masked_output={},
+                output_schema=OPS_REPORT_OUTPUT_SCHEMA,
+                validation_errors=["report_type is required."],
+                job_id=job_id,
+                session_id=None,
+                last_error="report_type is required.",
+            )
+        prompt = self.ensure_prompt_version(
+            scope="ops_report",
+            prompt_key=f"ops_report.{normalized_report_type}.v1",
+            template=(
+                "Create a concise operations report from pre-aggregated "
+                "incident, RCA, prediction, and autoscaling evidence. "
+                "Return JSON with answer, executive_summary, risk_level, "
+                "key_findings, incident_highlights, rca_highlights, "
+                "prediction_scaling_insights, recommended_actions, and "
+                "data_quality_notes. Write every narrative field in Korean. "
+                "Keep metric names, alert names, source types, Kubernetes "
+                "resource names, and identifiers in their original English form. "
+                "Keep answer and executive_summary under 180 Korean characters. "
+                "Each list must have at most 3 items, and each item must be under "
+                "90 Korean characters."
+            ),
+        )
+        request = LlmCompletionRequest(
+            chat_type="admin_copilot",
+            prompt_key=prompt.prompt_key,
+            prompt_template=prompt.template,
+            input_payload=mask_payload(input_payload) or {},
+            output_schema=OPS_REPORT_OUTPUT_SCHEMA,
+        )
+        try:
+            response = self._llm_client.complete(request)
+            validation = validate_output_payload(
+                response.output_payload,
+                OPS_REPORT_OUTPUT_SCHEMA,
+            )
+            status: LlmRunStatus = "SUCCESS" if validation.is_valid else "VALIDATION_FAILED"
+            last_error = "; ".join(validation.errors) if validation.errors else None
+            return self._repository.record_llm_run(
+                provider=response.provider,
+                model=response.model,
+                prompt_key=prompt.prompt_key,
+                prompt_version_id=prompt.prompt_version_id,
+                status=status,
+                masked_input=request.input_payload,
+                masked_output=mask_payload(response.output_payload) or {},
+                output_schema=OPS_REPORT_OUTPUT_SCHEMA,
+                validation_errors=validation.errors,
+                job_id=job_id,
+                session_id=None,
+                latency_ms=response.latency_ms,
+                last_error=last_error,
+            )
+        except Exception as exc:
+            return self._repository.record_llm_run(
+                provider=self._llm_client.provider,
+                model=self._llm_client.model,
+                prompt_key=prompt.prompt_key,
+                prompt_version_id=prompt.prompt_version_id,
+                status="FAILED",
+                masked_input=request.input_payload,
+                masked_output={},
+                output_schema=OPS_REPORT_OUTPUT_SCHEMA,
+                validation_errors=[],
+                job_id=job_id,
+                session_id=None,
+                last_error=exc.__class__.__name__,
+            )
+
     def get_llm_run(self, llm_run_id: str) -> LlmRunResult:
         llm_run = self._repository.get_llm_run(llm_run_id)
         if llm_run is None:
@@ -332,6 +444,25 @@ class LlmOpsService:
                 limit=clamped_limit,
             ),
         )
+
+    def update_notification_status(
+        self,
+        notification_id: str,
+        *,
+        status: str,
+        last_error: str | None = None,
+    ) -> NotificationOutboxResult:
+        normalized_status = normalize_optional_notification_status(status)
+        if normalized_status is None:
+            raise LlmOpsValidationError("notification status is invalid.")
+        notification = self._repository.update_notification_status(
+            notification_id,
+            status=normalized_status,
+            last_error=last_error,
+        )
+        if notification is None:
+            raise LlmOpsNotFoundError("notification was not found.")
+        return notification
 
     def create_agent_snapshot(
         self,
