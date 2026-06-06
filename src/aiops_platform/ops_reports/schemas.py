@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import date
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, ValidationInfo, field_validator
 
 from aiops_platform.llmops.schemas import LlmRunResult
 from aiops_platform.orchestration.schemas import JobResult
@@ -37,10 +37,14 @@ class OpsReportCreateRequest(BaseModel):
 
     @field_validator("timezone", "namespace", "service_name")
     @classmethod
-    def normalize_text(cls, value: str | None) -> str | None:
+    def normalize_text(cls, value: str | None, info: ValidationInfo) -> str | None:
         if value is None:
+            if info.field_name == "timezone":
+                raise ValueError("timezone is required.")
             return None
         normalized = value.strip()
+        if info.field_name == "timezone" and not normalized:
+            raise ValueError("timezone is required.")
         return normalized or None
 
 

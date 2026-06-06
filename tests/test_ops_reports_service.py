@@ -3,6 +3,7 @@ from __future__ import annotations
 from datetime import date
 from typing import Any
 
+import pytest
 from fastapi.testclient import TestClient
 
 from aiops_platform.llmops.schemas import LlmRunResult, NotificationOutboxResult
@@ -127,6 +128,25 @@ def test_ops_report_api_uses_configured_service() -> None:
 
     assert response.status_code == 200
     assert response.json()["report"]["report_id"] == "report-1"
+
+
+def test_ops_report_request_rejects_blank_timezone() -> None:
+    with pytest.raises(ValueError, match="timezone is required"):
+        OpsReportCreateRequest(
+            report_type="DAILY",
+            report_date=date(2026, 6, 6),
+            timezone=" ",
+        )
+
+    request = OpsReportCreateRequest(
+        report_type="DAILY",
+        report_date=date(2026, 6, 6),
+        namespace=" ",
+        service_name=" api ",
+    )
+    assert request.timezone == "Asia/Seoul"
+    assert request.namespace is None
+    assert request.service_name == "api"
 
 
 def test_send_ops_report_email_validation_error_returns_400() -> None:
