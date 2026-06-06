@@ -257,12 +257,16 @@ class FakeLlmOpsService:
         self.notifications: dict[str, NotificationOutboxResult] = {}
 
     def run_ops_report_completion(self, **kwargs: object) -> LlmRunResult:
+        report_type = kwargs.get("report_type")
+        if not isinstance(report_type, str) or not report_type.strip():
+            raise ValueError("report_type is required.")
+        normalized_report_type = report_type.strip().lower()
         return LlmRunResult(
             llm_run_id="llm-run-1",
             provider="fake",
             model="fake-agentic-planner",
             prompt_version_id=None,
-            prompt_key=f"ops_report.{str(kwargs['report_type']).lower()}.v1",
+            prompt_key=f"ops_report.{normalized_report_type}.v1",
             run_status="SUCCESS",
             job_id=kwargs.get("job_id"),
             session_id=None,
@@ -393,7 +397,11 @@ class FakeOpsReportRepository:
         return self.reports.get(report_id)
 
     def list_ops_reports(self, **kwargs: object):
-        return list(self.reports.values())[: kwargs["limit"]]
+        reports = list(self.reports.values())
+        limit = kwargs.get("limit")
+        if limit is None:
+            return reports
+        return reports[: int(limit)]
 
     def list_incidents_for_period(self, **kwargs: object):
         return self.incidents
