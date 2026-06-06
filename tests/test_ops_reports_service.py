@@ -39,6 +39,7 @@ def test_daily_ops_report_includes_rca_prediction_and_scaling_evidence() -> None
         llmops_service=FakeLlmOpsService(),
         infraops_service=FakeInfraOpsService(),
         prediction_scaling_service=FakePredictionScalingService(),
+        email_sender=FakeEmailSender(),
     )
 
     result = service.create_ops_report(
@@ -94,6 +95,7 @@ def test_send_ops_report_email_creates_notification_outbox_records() -> None:
         llmops_service=FakeLlmOpsService(),
         infraops_service=FakeInfraOpsService(),
         prediction_scaling_service=FakePredictionScalingService(),
+        email_sender=FakeEmailSender(),
     )
     report_result = service.create_ops_report(
         OpsReportCreateRequest(report_type="DAILY", report_date=date(2026, 6, 6))
@@ -108,7 +110,7 @@ def test_send_ops_report_email_creates_notification_outbox_records() -> None:
     )
 
     assert result.channel == "EMAIL"
-    assert result.status == "PENDING"
+    assert result.status == "SENT"
     assert len(result.notification_ids) == 2
     assert repository.reports[report_result.report.report_id].report_status == "SENT"
 
@@ -217,6 +219,9 @@ class FakeOrchestrationRepository:
 
 
 class FakeLlmOpsService:
+    def __init__(self) -> None:
+        self.notifications: dict[str, NotificationOutboxResult] = {}
+
     def run_ops_report_completion(self, **kwargs: object) -> LlmRunResult:
         return LlmRunResult(
             llm_run_id="llm-run-1",
@@ -237,7 +242,7 @@ class FakeLlmOpsService:
 
     def create_notification(self, **kwargs: object) -> NotificationOutboxResult:
         recipient = str(kwargs.get("recipient"))
-        return NotificationOutboxResult(
+        notification = NotificationOutboxResult(
             notification_id=f"notification-{recipient}",
             channel="EMAIL",
             recipient=recipient,
@@ -246,6 +251,28 @@ class FakeLlmOpsService:
             attempts=0,
             created_at="2026-06-06T00:00:02",
         )
+        self.notifications[notification.notification_id] = notification
+        return notification
+
+    def update_notification_status(
+        self,
+        notification_id: str,
+        *,
+        status: str,
+        last_error: str | None = None,
+    ) -> NotificationOutboxResult:
+        notification = self.notifications[notification_id].model_copy(
+            update={"notification_status": status, "last_error": last_error}
+        )
+        self.notifications[notification_id] = notification
+        return notification
+
+
+class FakeEmailSender:
+    def send_html(self, *, recipient: str, subject: str, html_body: str) -> None:
+        assert recipient
+        assert subject
+        assert html_body
 
 
 class FailingLlmOpsService(FakeLlmOpsService):

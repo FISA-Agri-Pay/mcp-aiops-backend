@@ -403,6 +403,25 @@ class LlmOpsService:
             ),
         )
 
+    def update_notification_status(
+        self,
+        notification_id: str,
+        *,
+        status: str,
+        last_error: str | None = None,
+    ) -> NotificationOutboxResult:
+        normalized_status = normalize_optional_notification_status(status)
+        if normalized_status is None:
+            raise LlmOpsValidationError("notification status is invalid.")
+        notification = self._repository.update_notification_status(
+            notification_id,
+            status=normalized_status,
+            last_error=last_error,
+        )
+        if notification is None:
+            raise LlmOpsNotFoundError("notification was not found.")
+        return notification
+
     def create_agent_snapshot(
         self,
         *,

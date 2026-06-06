@@ -8,6 +8,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from aiops_platform.infraops.service import InfraOpsService
 from aiops_platform.llmops.service import LlmOpsService
+from aiops_platform.ops_reports.email_delivery import EmailSender, SmtpEmailSender
 from aiops_platform.ops_reports.repository import OpsReportRepository, SqlOpsReportRepository
 from aiops_platform.ops_reports.schemas import (
     IncludedIncident,
@@ -56,6 +57,7 @@ class OpsReportService:
         llmops_service: LlmOpsService | None = None,
         infraops_service: InfraOpsService | None = None,
         prediction_scaling_service: PredictionScalingService | None = None,
+        email_sender: EmailSender | None = None,
     ) -> None:
         self._repository = repository or SqlOpsReportRepository()
         self._orchestration_repository = (
@@ -66,6 +68,7 @@ class OpsReportService:
         self._prediction_scaling_service = (
             prediction_scaling_service or PredictionScalingService()
         )
+        self._email_sender = email_sender or SmtpEmailSender()
 
     def create_ops_report(
         self,
@@ -255,6 +258,7 @@ class OpsReportService:
         subject = request.subject or f"[AIOps] {detail.report.title}"
         html_body = build_report_email_html(detail)
         notification_ids = []
+        delivery_statuses: list[str] = []
         for recipient in request.recipients:
             notification = self._llmops_service.create_notification(
                 channel="email",
@@ -269,10 +273,36 @@ class OpsReportService:
                 recipient=recipient,
             )
             notification_ids.append(notification.notification_id)
-        self._repository.update_ops_report_status(report_id, status="SENT")
+            try:
+                self._email_sender.send_html(
+                    recipient=recipient,
+                    subject=subject,
+                    html_body=html_body,
+                )
+                self._llmops_service.update_notification_status(
+                    notification.notification_id,
+                    status="SENT",
+                    last_error=None,
+                )
+                delivery_statuses.append("SENT")
+            except Exception as exc:
+                self._llmops_service.update_notification_status(
+                    notification.notification_id,
+                    status="FAILED",
+                    last_error=f"{exc.__class__.__name__}: {exc}",
+                )
+                delivery_statuses.append("FAILED")
+        overall_status = (
+            "SENT"
+            if all(status == "SENT" for status in delivery_statuses)
+            else "FAILED"
+        )
+        if overall_status == "SENT":
+            self._repository.update_ops_report_status(report_id, status="SENT")
         return OpsReportEmailResult(
             report_id=report_id,
             notification_ids=notification_ids,
+            status=overall_status,
         )
 
     def _collect_metric_inputs(

@@ -111,6 +111,15 @@ class LlmOpsRepository(Protocol):
     ) -> list[NotificationOutboxResult]:
         pass
 
+    def update_notification_status(
+        self,
+        notification_id: str,
+        *,
+        status: NotificationStatus,
+        last_error: str | None = None,
+    ) -> NotificationOutboxResult | None:
+        pass
+
     def create_agent_snapshot(
         self,
         *,
@@ -518,6 +527,49 @@ class SqlLlmOpsRepository:
                 {"status": status, "limit": limit},
             ).mappings().all()
         return [build_notification(row) for row in rows]
+
+    def update_notification_status(
+        self,
+        notification_id: str,
+        *,
+        status: NotificationStatus,
+        last_error: str | None = None,
+    ) -> NotificationOutboxResult | None:
+        query = text(
+            """
+            update ai.notification_outbox
+            set send_status = cast(:status as varchar),
+                sent_at = case
+                    when cast(:status as text) = 'SENT' then current_timestamp
+                    else sent_at
+                end,
+                retry_count = case
+                    when cast(:status as text) = 'FAILED' then retry_count + 1
+                    else retry_count
+                end,
+                last_error = :last_error
+            where public_id = cast(:notification_id as uuid)
+            returning
+                public_id::text as notification_id,
+                notification_channel,
+                target_recipient,
+                send_status,
+                message_payload,
+                retry_count,
+                created_at::text as created_at,
+                last_error
+            """
+        )
+        with self._session_scope(commit=True) as session:
+            row = session.execute(
+                query,
+                {
+                    "notification_id": notification_id,
+                    "status": status,
+                    "last_error": last_error,
+                },
+            ).mappings().first()
+        return build_notification(row) if row is not None else None
 
     def create_agent_snapshot(
         self,

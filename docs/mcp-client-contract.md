@@ -154,14 +154,15 @@ Agent 실행 snapshot은 `/agent-snapshots`의 `session_id`, `llm_run_id`, `payl
 ```
 
 1차 MVP는 PDF 또는 문서 첨부를 만들지 않는다.
-API는 수신자별 `notification_outbox` record를 생성하고 `notification_id` 목록을 반환한다.
+API는 수신자별 `notification_outbox` record를 생성하고 SMTP 발송을 시도한 뒤
+`SENT` 또는 `FAILED` 상태로 갱신한다. 응답은 `notification_id` 목록과 전체 발송 상태를 반환한다.
 
 ```json
 {
   "report_id": "string",
   "channel": "EMAIL",
   "notification_ids": ["string"],
-  "status": "PENDING"
+  "status": "SENT"
 }
 ```
 
@@ -197,7 +198,7 @@ API는 수신자별 `notification_outbox` record를 생성하고 `notification_i
 9. `POST /reports/ops`
    - 일간/주간 운영 리포트가 RCA, prediction/scaling 요약과 함께 생성되는지 확인한다.
 10. `POST /reports/ops/{report_id}/send-email`
-   - HTML 이메일 발송 요청이 `notification_outbox`에 기록되는지 확인한다.
+   - HTML 이메일이 SMTP로 발송되고 `notification_outbox` 상태가 갱신되는지 확인한다.
 
 ## Client Implementation Notes
 

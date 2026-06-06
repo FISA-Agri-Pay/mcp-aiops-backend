@@ -150,4 +150,4 @@ class OpsReportEmailResult(BaseModel):
     report_id: str
     channel: Literal["EMAIL"] = "EMAIL"
     notification_ids: list[str]
-    status: Literal["PENDING"] = "PENDING"
+    status: Literal["PENDING", "SENT", "FAILED"] = "PENDING"
