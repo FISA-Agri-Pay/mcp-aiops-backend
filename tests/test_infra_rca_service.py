@@ -129,6 +129,30 @@ def test_duplicate_firing_alert_skips_second_rca_generation() -> None:
     assert "Duplicate" in result.message
 
 
+def test_prediction_scaling_failure_is_recorded_as_partial_evidence() -> None:
+    repository = FakeInfraRcaRepository()
+    service = InfraRcaService(
+        repository=repository,
+        orchestration_repository=FakeOrchestrationRepository(),
+        llmops_service=FakeLlmOpsService(),
+        infraops_service=FakeInfraOpsService(),
+        prediction_scaling_service=FailingPredictionScalingService(),
+    )
+
+    result = service.handle_alertmanager_webhook(
+        AlertmanagerWebhookRequest.model_validate(ALERT_PAYLOAD)
+    )
+
+    assert result.job is not None
+    assert result.job.status == "SUCCEEDED"
+    assert result.rca_report is not None
+    assert result.rca_report.confidence == 0.55
+    assert result.snapshot is not None
+    failed_items = [item for item in result.snapshot.items if item.last_error]
+    assert any("get_scaling_summary failed" in item.last_error for item in failed_items)
+    assert any("get_scaling_events failed" in item.last_error for item in failed_items)
+
+
 def test_alertmanager_webhook_api_uses_configured_service() -> None:
     app = create_app()
     app.state.infra_rca_service = FakeEndpointRcaService()
@@ -204,6 +228,14 @@ class FakePredictionScalingService:
             mean_absolute_percentage_error=0.05,
             root_mean_squared_error=7.1,
         )
+
+
+class FailingPredictionScalingService:
+    def get_scaling_summary(self, **kwargs: object) -> ScalingSummaryResult:
+        raise RuntimeError("scaling summary unavailable")
+
+    def get_scaling_events(self, **kwargs: object) -> ScalingEventResult:
+        raise RuntimeError("scaling events unavailable")
 
 
 class FakeOrchestrationRepository:

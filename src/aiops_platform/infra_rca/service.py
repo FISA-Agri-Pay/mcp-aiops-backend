@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import logging
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
@@ -29,6 +30,9 @@ from aiops_platform.prediction_scaling.service import (
 
 class InfraRcaValidationError(ValueError):
     pass
+
+
+logger = logging.getLogger(__name__)
 
 
 class InfraRcaService:
@@ -240,17 +244,38 @@ class InfraRcaService:
             "prometheus_query": build_prometheus_query(labels),
             "loki_query": build_loki_query(labels),
         }
-        result = self._infraops_service.create_rca_snapshot(**request_payload)
-        response_payload = result.model_dump(mode="json")
-        self._repository.record_mcp_tool_call(
-            server_name="infraops-mcp",
-            tool_name="create_rca_snapshot",
-            request_payload=request_payload,
-            response_payload=response_payload,
-            call_status="SUCCESS",
-            job_id=job_id,
-        )
-        return response_payload
+        try:
+            result = self._infraops_service.create_rca_snapshot(**request_payload)
+            response_payload = result.model_dump(mode="json")
+            self._record_tool_call(
+                server_name="infraops-mcp",
+                tool_name="create_rca_snapshot",
+                request_payload=request_payload,
+                response_payload=response_payload,
+                call_status="SUCCESS",
+                job_id=job_id,
+            )
+            return response_payload
+        except Exception as exc:
+            self._record_tool_call(
+                server_name="infraops-mcp",
+                tool_name="create_rca_snapshot",
+                request_payload=request_payload,
+                response_payload=None,
+                call_status="FAILED",
+                job_id=job_id,
+                last_error=exc.__class__.__name__,
+            )
+            return {
+                "partial": True,
+                "sources": [
+                    {
+                        "source": "infraops",
+                        "status": "FAILED",
+                        "error": f"create_rca_snapshot failed: {exc.__class__.__name__}",
+                    }
+                ],
+            }
 
     def _capture_prediction_scaling_items(
         self,
@@ -264,54 +289,112 @@ class InfraRcaService:
     ):
         items = []
         summary_request = {"namespace": namespace, "workload": workload}
-        scaling_summary = self._prediction_scaling_service.get_scaling_summary(**summary_request)
-        self._repository.record_mcp_tool_call(
-            server_name="prediction-scaling-mcp",
-            tool_name="get_scaling_summary",
-            request_payload=summary_request,
-            response_payload=scaling_summary.model_dump(mode="json"),
-            call_status="SUCCESS",
-            job_id=job_id,
-        )
-        items.append(
-            self._repository.add_snapshot_item(
-                snapshot_id=snapshot_id,
-                source_type="KEDA",
+        try:
+            scaling_summary = self._prediction_scaling_service.get_scaling_summary(
+                **summary_request
+            )
+            self._record_tool_call(
+                server_name="prediction-scaling-mcp",
                 tool_name="get_scaling_summary",
-                query_text=None,
-                query_params={
-                    "namespace": namespace,
-                    "workload": workload,
-                    "time_start": time_start.isoformat(),
-                    "time_end": time_end.isoformat(),
-                },
-                raw_data=None,
-                masked_data=scaling_summary.model_dump(mode="json"),
-                summary=scaling_summary.recommendation,
+                request_payload=summary_request,
+                response_payload=scaling_summary.model_dump(mode="json"),
+                call_status="SUCCESS",
+                job_id=job_id,
             )
-        )
+            items.append(
+                self._repository.add_snapshot_item(
+                    snapshot_id=snapshot_id,
+                    source_type="KEDA",
+                    tool_name="get_scaling_summary",
+                    query_text=None,
+                    query_params={
+                        "namespace": namespace,
+                        "workload": workload,
+                        "time_start": time_start.isoformat(),
+                        "time_end": time_end.isoformat(),
+                    },
+                    raw_data=None,
+                    masked_data=scaling_summary.model_dump(mode="json"),
+                    summary=scaling_summary.recommendation,
+                )
+            )
+        except Exception as exc:
+            self._record_tool_call(
+                server_name="prediction-scaling-mcp",
+                tool_name="get_scaling_summary",
+                request_payload=summary_request,
+                response_payload=None,
+                call_status="FAILED",
+                job_id=job_id,
+                last_error=exc.__class__.__name__,
+            )
+            items.append(
+                self._repository.add_snapshot_item(
+                    snapshot_id=snapshot_id,
+                    source_type="KEDA",
+                    tool_name="get_scaling_summary",
+                    query_text=None,
+                    query_params={
+                        "namespace": namespace,
+                        "workload": workload,
+                        "time_start": time_start.isoformat(),
+                        "time_end": time_end.isoformat(),
+                    },
+                    raw_data=None,
+                    masked_data=None,
+                    summary="Scaling summary evidence unavailable.",
+                    last_error=f"get_scaling_summary failed: {exc.__class__.__name__}",
+                )
+            )
         events_request = {"namespace": namespace, "workload": workload, "limit": 20}
-        scaling_events = self._prediction_scaling_service.get_scaling_events(**events_request)
-        self._repository.record_mcp_tool_call(
-            server_name="prediction-scaling-mcp",
-            tool_name="get_scaling_events",
-            request_payload=events_request,
-            response_payload=scaling_events.model_dump(mode="json"),
-            call_status="SUCCESS",
-            job_id=job_id,
-        )
-        items.append(
-            self._repository.add_snapshot_item(
-                snapshot_id=snapshot_id,
-                source_type="KEDA",
-                tool_name="get_scaling_events",
-                query_text=None,
-                query_params={"namespace": namespace, "workload": workload, "limit": 20},
-                raw_data=None,
-                masked_data=scaling_events.model_dump(mode="json"),
-                summary=f"Collected {len(scaling_events.items)} scaling events.",
+        try:
+            scaling_events = self._prediction_scaling_service.get_scaling_events(
+                **events_request
             )
-        )
+            self._record_tool_call(
+                server_name="prediction-scaling-mcp",
+                tool_name="get_scaling_events",
+                request_payload=events_request,
+                response_payload=scaling_events.model_dump(mode="json"),
+                call_status="SUCCESS",
+                job_id=job_id,
+            )
+            items.append(
+                self._repository.add_snapshot_item(
+                    snapshot_id=snapshot_id,
+                    source_type="KEDA",
+                    tool_name="get_scaling_events",
+                    query_text=None,
+                    query_params={"namespace": namespace, "workload": workload, "limit": 20},
+                    raw_data=None,
+                    masked_data=scaling_events.model_dump(mode="json"),
+                    summary=f"Collected {len(scaling_events.items)} scaling events.",
+                )
+            )
+        except Exception as exc:
+            self._record_tool_call(
+                server_name="prediction-scaling-mcp",
+                tool_name="get_scaling_events",
+                request_payload=events_request,
+                response_payload=None,
+                call_status="FAILED",
+                job_id=job_id,
+                last_error=exc.__class__.__name__,
+            )
+            items.append(
+                self._repository.add_snapshot_item(
+                    snapshot_id=snapshot_id,
+                    source_type="KEDA",
+                    tool_name="get_scaling_events",
+                    query_text=None,
+                    query_params={"namespace": namespace, "workload": workload, "limit": 20},
+                    raw_data=None,
+                    masked_data=None,
+                    summary="Scaling event evidence unavailable.",
+                    last_error=f"get_scaling_events failed: {exc.__class__.__name__}",
+                )
+            )
+            return items
         related_run_ids = {
             event.related_prediction_run_id
             for event in scaling_events.items
@@ -322,9 +405,34 @@ class InfraRcaService:
                 error_metrics = self._prediction_scaling_service.get_prediction_error_metrics(
                     prediction_run_id=prediction_run_id,
                 )
-            except PredictionScalingValidationError:
+            except (PredictionScalingValidationError, RuntimeError) as exc:
+                self._record_tool_call(
+                    server_name="prediction-scaling-mcp",
+                    tool_name="get_prediction_error_metrics",
+                    request_payload={"prediction_run_id": prediction_run_id},
+                    response_payload=None,
+                    call_status="FAILED",
+                    job_id=job_id,
+                    last_error=exc.__class__.__name__,
+                )
+                items.append(
+                    self._repository.add_snapshot_item(
+                        snapshot_id=snapshot_id,
+                        source_type="PREDICTION",
+                        tool_name="get_prediction_error_metrics",
+                        query_text=None,
+                        query_params={"prediction_run_id": prediction_run_id},
+                        raw_data=None,
+                        masked_data=None,
+                        summary="Prediction error evidence unavailable.",
+                        last_error=(
+                            "get_prediction_error_metrics failed: "
+                            f"{exc.__class__.__name__}"
+                        ),
+                    )
+                )
                 continue
-            self._repository.record_mcp_tool_call(
+            self._record_tool_call(
                 server_name="prediction-scaling-mcp",
                 tool_name="get_prediction_error_metrics",
                 request_payload={"prediction_run_id": prediction_run_id},
@@ -348,6 +456,34 @@ class InfraRcaService:
                 )
             )
         return items
+
+    def _record_tool_call(
+        self,
+        *,
+        server_name: str,
+        tool_name: str,
+        request_payload: dict[str, Any],
+        response_payload: dict[str, Any] | list[Any] | None,
+        call_status: str,
+        job_id: str | None,
+        last_error: str | None = None,
+    ) -> None:
+        try:
+            self._repository.record_mcp_tool_call(
+                server_name=server_name,
+                tool_name=tool_name,
+                request_payload=request_payload,
+                response_payload=response_payload,
+                call_status=call_status,
+                job_id=job_id,
+                last_error=last_error,
+            )
+        except Exception:
+            logger.exception(
+                "Failed to record RCA MCP tool call audit for %s.%s.",
+                server_name,
+                tool_name,
+            )
 
     def _create_rca_report(
         self,
