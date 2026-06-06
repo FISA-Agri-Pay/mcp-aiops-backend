@@ -169,6 +169,73 @@ class LlmOpsService:
                 last_error=exc.__class__.__name__,
             )
 
+    def run_rca_completion(
+        self,
+        *,
+        incident: dict[str, Any],
+        alert: dict[str, Any],
+        snapshot: dict[str, Any],
+        evidence: list[dict[str, Any]],
+        job_id: str | None = None,
+    ) -> LlmRunResult:
+        prompt = self.ensure_prompt_version(
+            scope="rca",
+            prompt_key="rca.infra.v1",
+            template=(
+                "Create an infrastructure RCA from Alertmanager, observability, "
+                "prediction, and autoscaling evidence. Return a concise answer "
+                "with probable root cause, impact, confidence, and recommended actions."
+            ),
+        )
+        input_payload = {
+            "incident": incident,
+            "alert": alert,
+            "snapshot": snapshot,
+            "evidence": evidence,
+        }
+        request = LlmCompletionRequest(
+            chat_type="admin_copilot",
+            prompt_key=prompt.prompt_key,
+            prompt_template=prompt.template,
+            input_payload=mask_payload(input_payload) or {},
+            output_schema=OUTPUT_SCHEMA,
+        )
+        try:
+            response = self._llm_client.complete(request)
+            validation = validate_output_payload(response.output_payload, OUTPUT_SCHEMA)
+            status: LlmRunStatus = "SUCCESS" if validation.is_valid else "VALIDATION_FAILED"
+            last_error = "; ".join(validation.errors) if validation.errors else None
+            return self._repository.record_llm_run(
+                provider=response.provider,
+                model=response.model,
+                prompt_key=prompt.prompt_key,
+                prompt_version_id=prompt.prompt_version_id,
+                status=status,
+                masked_input=request.input_payload,
+                masked_output=mask_payload(response.output_payload) or {},
+                output_schema=OUTPUT_SCHEMA,
+                validation_errors=validation.errors,
+                job_id=job_id,
+                session_id=None,
+                latency_ms=response.latency_ms,
+                last_error=last_error,
+            )
+        except Exception as exc:
+            return self._repository.record_llm_run(
+                provider=self._llm_client.provider,
+                model=self._llm_client.model,
+                prompt_key=prompt.prompt_key,
+                prompt_version_id=prompt.prompt_version_id,
+                status="FAILED",
+                masked_input=request.input_payload,
+                masked_output={},
+                output_schema=OUTPUT_SCHEMA,
+                validation_errors=[],
+                job_id=job_id,
+                session_id=None,
+                last_error=exc.__class__.__name__,
+            )
+
     def get_llm_run(self, llm_run_id: str) -> LlmRunResult:
         llm_run = self._repository.get_llm_run(llm_run_id)
         if llm_run is None:

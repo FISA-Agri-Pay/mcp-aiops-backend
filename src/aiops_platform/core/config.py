@@ -121,6 +121,16 @@ class Settings(BaseSettings):
         alias="ELASTICSEARCH_TIMEOUT_SECONDS",
     )
     kibana_base_url: str = Field(default="http://localhost:5601", alias="KIBANA_BASE_URL")
+    rca_default_before_minutes: int = Field(
+        default=30,
+        ge=0,
+        alias="RCA_DEFAULT_BEFORE_MINUTES",
+    )
+    rca_default_after_minutes: int = Field(
+        default=10,
+        ge=0,
+        alias="RCA_DEFAULT_AFTER_MINUTES",
+    )
 
 
 @lru_cache
