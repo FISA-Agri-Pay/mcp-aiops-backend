@@ -24,7 +24,6 @@ from aiops_platform.orchestration.repository import (
 )
 from aiops_platform.prediction_scaling.service import (
     PredictionScalingService,
-    PredictionScalingValidationError,
 )
 
 
@@ -128,6 +127,42 @@ class InfraRcaService:
                 evidence=evidence,
                 job_id=job.job_id,
             )
+            if llm_run.run_status != "SUCCESS":
+                failed_incident = self._repository.update_incident_status(
+                    incident.incident_id,
+                    status="INVESTIGATING",
+                )
+                failed_job = self._orchestration_repository.finish_job(
+                    job_id=job.job_id,
+                    status="FAILED",
+                    error_message=f"RCA LLM run failed: {llm_run.run_status}",
+                )
+                notification = self._llmops_service.create_notification(
+                    channel="dashboard",
+                    title="RCA generation failed",
+                    content=f"RCA LLM run finished with {llm_run.run_status}.",
+                    payload={
+                        "incident_id": incident.incident_id,
+                        "snapshot_id": snapshot.snapshot_id,
+                        "llm_run_id": llm_run.llm_run_id,
+                        "run_status": llm_run.run_status,
+                        "last_error": llm_run.last_error,
+                        "validation_errors": llm_run.validation_errors,
+                    },
+                    recipient="infra-admin",
+                )
+                return AlertWebhookResult(
+                    incident=failed_incident or incident,
+                    alert=incident_alert,
+                    job=failed_job or job,
+                    snapshot=snapshot,
+                    notification_id=notification.notification_id,
+                    duplicate=duplicate,
+                    message=(
+                        "Alertmanager webhook was recorded, but RCA LLM "
+                        "generation failed."
+                    ),
+                )
             rca_report = self._create_rca_report(
                 incident=incident,
                 snapshot=snapshot,
@@ -135,7 +170,10 @@ class InfraRcaService:
                 llm_output=llm_run.masked_output,
                 evidence=evidence,
             )
-            self._repository.update_incident_status(incident.incident_id, status="ANALYZED")
+            analyzed_incident = self._repository.update_incident_status(
+                incident.incident_id,
+                status="ANALYZED",
+            )
             finished_job = self._orchestration_repository.finish_job(
                 job_id=job.job_id,
                 status="SUCCEEDED",
@@ -152,7 +190,7 @@ class InfraRcaService:
                 recipient="infra-admin",
             )
             return AlertWebhookResult(
-                incident=incident,
+                incident=analyzed_incident or incident,
                 alert=incident_alert,
                 job=finished_job or job,
                 snapshot=snapshot,
@@ -405,7 +443,7 @@ class InfraRcaService:
                 error_metrics = self._prediction_scaling_service.get_prediction_error_metrics(
                     prediction_run_id=prediction_run_id,
                 )
-            except (PredictionScalingValidationError, RuntimeError) as exc:
+            except Exception as exc:
                 self._record_tool_call(
                     server_name="prediction-scaling-mcp",
                     tool_name="get_prediction_error_metrics",

@@ -153,6 +153,30 @@ def test_prediction_scaling_failure_is_recorded_as_partial_evidence() -> None:
     assert any("get_scaling_events failed" in item.last_error for item in failed_items)
 
 
+def test_llm_failure_does_not_create_rca_report() -> None:
+    repository = FakeInfraRcaRepository()
+    service = InfraRcaService(
+        repository=repository,
+        orchestration_repository=FakeOrchestrationRepository(),
+        llmops_service=FailingLlmOpsService(),
+        infraops_service=FakeInfraOpsService(),
+        prediction_scaling_service=FakePredictionScalingService(),
+    )
+
+    result = service.handle_alertmanager_webhook(
+        AlertmanagerWebhookRequest.model_validate(ALERT_PAYLOAD)
+    )
+
+    assert result.incident.status == "INVESTIGATING"
+    assert result.job is not None
+    assert result.job.status == "FAILED"
+    assert result.rca_report is None
+    assert result.snapshot is not None
+    assert result.notification_id == "notification-1"
+    assert "LLM generation failed" in result.message
+    assert repository.created_rca_reports == 0
+
+
 def test_alertmanager_webhook_api_uses_configured_service() -> None:
     app = create_app()
     app.state.infra_rca_service = FakeEndpointRcaService()
@@ -294,13 +318,36 @@ class FakeLlmOpsService:
         )
 
 
+class FailingLlmOpsService(FakeLlmOpsService):
+    def run_rca_completion(self, **kwargs: object) -> LlmRunResult:
+        return LlmRunResult(
+            llm_run_id="00000000-0000-0000-0000-000000000202",
+            provider="fake",
+            model="fake-agentic-planner",
+            prompt_version_id=None,
+            prompt_key="rca.infra.v1",
+            run_status="VALIDATION_FAILED",
+            job_id=kwargs.get("job_id"),
+            session_id=None,
+            masked_input={},
+            masked_output={},
+            output_schema={"type": "object"},
+            validation_errors=["answer is required"],
+            latency_ms=0,
+            created_at="2026-06-06T01:00:01",
+            last_error="LLM output validation failed.",
+        )
+
+
 class FakeInfraRcaRepository:
     def __init__(self, *, duplicate: bool = False) -> None:
         self.items: list[SnapshotItemResult] = []
         self.duplicate = duplicate
+        self.created_rca_reports = 0
+        self.incident: IncidentResult | None = None
 
     def upsert_incident(self, **kwargs: object) -> IncidentResult:
-        return IncidentResult(
+        self.incident = IncidentResult(
             incident_id="incident-1",
             dedup_key=str(kwargs["dedup_key"]),
             source_type="ALERTMANAGER",
@@ -316,6 +363,7 @@ class FakeInfraRcaRepository:
             created_at="2026-06-06T01:00:00",
             updated_at="2026-06-06T01:00:00",
         )
+        return self.incident
 
     def upsert_incident_alert(self, **kwargs: object):
         return (
@@ -332,7 +380,12 @@ class FakeInfraRcaRepository:
         )
 
     def update_incident_status(self, incident_id: str, *, status: str):
-        return None
+        if self.incident is None:
+            return None
+        self.incident = self.incident.model_copy(
+            update={"status": status, "updated_at": "2026-06-06T01:00:01"}
+        )
+        return self.incident
 
     def create_observability_snapshot(self, **kwargs: object) -> ObservabilitySnapshotResult:
         return ObservabilitySnapshotResult(
@@ -372,6 +425,7 @@ class FakeInfraRcaRepository:
         )
 
     def create_rca_report(self, **kwargs: object) -> RcaReportResult:
+        self.created_rca_reports += 1
         return RcaReportResult(
             rca_report_id="rca-report-1",
             incident_id=kwargs["incident_id"],
