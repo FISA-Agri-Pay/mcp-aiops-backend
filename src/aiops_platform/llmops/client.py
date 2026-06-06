@@ -215,7 +215,7 @@ def create_llm_client(settings: Settings) -> LlmClient:
     provider = settings.llm_provider.strip().lower()
     has_api_key = bool(settings.llm_api_key.strip())
     can_call_without_key = not settings.llm_require_api_key
-    if provider in {"openai", "openai-compatible", "openai_compatible"} and (
+    if provider in {"openai", "openai-compatible", "openai_compatible", "groq"} and (
         has_api_key or can_call_without_key
     ):
         return OpenAICompatibleLlmClient(
@@ -249,7 +249,10 @@ def validate_llm_base_url(base_url: str) -> str:
 
 
 def build_openai_compatible_headers(api_key: str | None) -> dict[str, str]:
-    headers = {"Content-Type": "application/json"}
+    headers = {
+        "Content-Type": "application/json",
+        "User-Agent": "aiops-platform/0.1",
+    }
     if api_key:
         headers["Authorization"] = f"Bearer {api_key}"
     return headers
