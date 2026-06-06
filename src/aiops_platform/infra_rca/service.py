@@ -573,14 +573,19 @@ def parse_alert_timestamp(value: str | None) -> datetime | None:
     normalized = value.strip()
     if not normalized or normalized.startswith("0001-01-01"):
         return None
-    parsed = datetime.fromisoformat(normalized.replace("Z", "+00:00"))
+    try:
+        parsed = datetime.fromisoformat(normalized.replace("Z", "+00:00"))
+    except ValueError as exc:
+        raise InfraRcaValidationError(
+            f"alert timestamp is invalid: {value}"
+        ) from exc
     if parsed.tzinfo is not None:
         return parsed.astimezone(UTC).replace(tzinfo=None)
     return parsed
 
 
 def resolve_fingerprint(alert: AlertmanagerAlert, labels: dict[str, str]) -> str:
-    if alert.fingerprint:
+    if alert.fingerprint and alert.fingerprint.strip():
         return alert.fingerprint.strip()
     seed = "|".join(
         [
@@ -625,17 +630,35 @@ def resolve_alert_summary(labels: dict[str, str], annotations: dict[str, str]) -
 
 
 def build_prometheus_query(labels: dict[str, str]) -> str:
-    service = labels.get("service") or labels.get("app") or labels.get("workload")
+    service = escape_query_label_value(
+        labels.get("service") or labels.get("app") or labels.get("workload")
+    )
     if service:
         return f'up{{service="{service}"}}'
     return "up"
 
 
 def build_loki_query(labels: dict[str, str]) -> str:
-    service = labels.get("service") or labels.get("app") or labels.get("workload")
+    service = escape_query_label_value(
+        labels.get("service") or labels.get("app") or labels.get("workload")
+    )
     if service:
         return f'{{service="{service}"}}'
     return '{job=~".+"}'
+
+
+def escape_query_label_value(value: str | None) -> str | None:
+    if value is None:
+        return None
+    if not value.strip():
+        return None
+    return (
+        value.replace("\\", "\\\\")
+        .replace("\n", "\\n")
+        .replace("\r", "\\r")
+        .replace("\t", "\\t")
+        .replace('"', '\\"')
+    )
 
 
 def map_snapshot_source(source: str | None) -> str:

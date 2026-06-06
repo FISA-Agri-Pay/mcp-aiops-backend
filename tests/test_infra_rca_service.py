@@ -3,9 +3,11 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any
 
+import pytest
 from fastapi.testclient import TestClient
 
 from aiops_platform.infra_rca.schemas import (
+    AlertmanagerAlert,
     AlertmanagerWebhookRequest,
     AlertWebhookResult,
     IncidentAlertResult,
@@ -14,7 +16,15 @@ from aiops_platform.infra_rca.schemas import (
     RcaReportResult,
     SnapshotItemResult,
 )
-from aiops_platform.infra_rca.service import InfraRcaService
+from aiops_platform.infra_rca.service import (
+    InfraRcaService,
+    InfraRcaValidationError,
+    build_loki_query,
+    build_prometheus_query,
+    parse_alert_timestamp,
+    resolve_dedup_key,
+    resolve_fingerprint,
+)
 from aiops_platform.llmops.schemas import LlmRunResult, NotificationOutboxResult
 from aiops_platform.main import create_app
 from aiops_platform.orchestration.schemas import JobResult
@@ -110,7 +120,7 @@ def test_resolved_alert_records_incident_without_rca() -> None:
 
 
 def test_duplicate_firing_alert_skips_second_rca_generation() -> None:
-    repository = FakeInfraRcaRepository(duplicate=True)
+    repository = FakeInfraRcaRepository()
     service = InfraRcaService(
         repository=repository,
         orchestration_repository=FakeOrchestrationRepository(),
@@ -119,14 +129,21 @@ def test_duplicate_firing_alert_skips_second_rca_generation() -> None:
         prediction_scaling_service=FakePredictionScalingService(),
     )
 
-    result = service.handle_alertmanager_webhook(
+    first = service.handle_alertmanager_webhook(
+        AlertmanagerWebhookRequest.model_validate(ALERT_PAYLOAD)
+    )
+    second = service.handle_alertmanager_webhook(
         AlertmanagerWebhookRequest.model_validate(ALERT_PAYLOAD)
     )
 
-    assert result.duplicate is True
-    assert result.job is None
-    assert result.rca_report is None
-    assert "Duplicate" in result.message
+    assert first.duplicate is False
+    assert first.job is not None
+    assert first.rca_report is not None
+    assert second.duplicate is True
+    assert second.job is None
+    assert second.rca_report is None
+    assert "Duplicate" in second.message
+    assert repository.created_rca_reports == 1
 
 
 def test_prediction_scaling_failure_is_recorded_as_partial_evidence() -> None:
@@ -175,6 +192,41 @@ def test_llm_failure_does_not_create_rca_report() -> None:
     assert result.notification_id == "notification-1"
     assert "LLM generation failed" in result.message
     assert repository.created_rca_reports == 0
+
+
+def test_invalid_alert_timestamp_raises_validation_error() -> None:
+    with pytest.raises(InfraRcaValidationError, match="not-a-date"):
+        parse_alert_timestamp("not-a-date")
+
+
+def test_blank_alert_fingerprint_falls_back_to_hash() -> None:
+    labels = {
+        "alertname": "HighCPUUsage",
+        "namespace": "default",
+        "service": "api",
+        "workload": "api",
+    }
+
+    fingerprint = resolve_fingerprint(AlertmanagerAlert(fingerprint="   "), labels)
+    dedup_key = resolve_dedup_key(fingerprint, labels)
+
+    assert fingerprint
+    assert fingerprint != ""
+    assert dedup_key.endswith(fingerprint)
+
+
+def test_metric_queries_escape_service_label_values() -> None:
+    labels = {"service": 'api"prod\\blue\n'}
+
+    assert build_prometheus_query(labels) == 'up{service="api\\"prod\\\\blue\\n"}'
+    assert build_loki_query(labels) == '{service="api\\"prod\\\\blue\\n"}'
+
+
+def test_metric_queries_fallback_on_blank_service_label() -> None:
+    labels = {"service": "   "}
+
+    assert build_prometheus_query(labels) == "up"
+    assert build_loki_query(labels) == '{job=~".+"}'
 
 
 def test_alertmanager_webhook_api_uses_configured_service() -> None:
@@ -345,6 +397,7 @@ class FakeInfraRcaRepository:
         self.duplicate = duplicate
         self.created_rca_reports = 0
         self.incident: IncidentResult | None = None
+        self.seen_fingerprints: set[str] = set()
 
     def upsert_incident(self, **kwargs: object) -> IncidentResult:
         self.incident = IncidentResult(
@@ -366,17 +419,20 @@ class FakeInfraRcaRepository:
         return self.incident
 
     def upsert_incident_alert(self, **kwargs: object):
+        fingerprint = str(kwargs["fingerprint"])
+        duplicate = self.duplicate or fingerprint in self.seen_fingerprints
+        self.seen_fingerprints.add(fingerprint)
         return (
             IncidentAlertResult(
                 incident_alert_id="incident-alert-1",
                 incident_id=kwargs["incident_id"],
-                fingerprint=kwargs["fingerprint"],
+                fingerprint=fingerprint,
                 status=kwargs["status"],
                 starts_at=stringify_dt(kwargs.get("starts_at")),
                 ends_at=stringify_dt(kwargs.get("ends_at")),
                 received_at="2026-06-06T01:00:00",
             ),
-            self.duplicate,
+            duplicate,
         )
 
     def update_incident_status(self, incident_id: str, *, status: str):
