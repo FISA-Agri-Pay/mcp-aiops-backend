@@ -72,6 +72,7 @@ class OpenAICompatibleLlmClient:
     def __init__(
         self,
         *,
+        provider: str = "openai-compatible",
         model: str,
         api_key: str | None,
         base_url: str,
@@ -80,6 +81,7 @@ class OpenAICompatibleLlmClient:
         max_tokens: int,
         post: Callable[..., Any] = urlopen,
     ) -> None:
+        self.provider = provider
         self.model = model
         self._api_key = api_key
         self._base_url = base_url.rstrip("/") + "/"
@@ -219,6 +221,7 @@ def create_llm_client(settings: Settings) -> LlmClient:
         has_api_key or can_call_without_key
     ):
         return OpenAICompatibleLlmClient(
+            provider="groq" if provider == "groq" else "openai-compatible",
             model=settings.llm_model,
             api_key=settings.llm_api_key or None,
             base_url=validate_llm_base_url(settings.llm_api_base_url),
