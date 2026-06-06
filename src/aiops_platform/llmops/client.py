@@ -72,6 +72,7 @@ class OpenAICompatibleLlmClient:
     def __init__(
         self,
         *,
+        provider: str = "openai-compatible",
         model: str,
         api_key: str | None,
         base_url: str,
@@ -80,6 +81,7 @@ class OpenAICompatibleLlmClient:
         max_tokens: int,
         post: Callable[..., Any] = urlopen,
     ) -> None:
+        self.provider = provider
         self.model = model
         self._api_key = api_key
         self._base_url = base_url.rstrip("/") + "/"
@@ -215,10 +217,11 @@ def create_llm_client(settings: Settings) -> LlmClient:
     provider = settings.llm_provider.strip().lower()
     has_api_key = bool(settings.llm_api_key.strip())
     can_call_without_key = not settings.llm_require_api_key
-    if provider in {"openai", "openai-compatible", "openai_compatible"} and (
+    if provider in {"openai", "openai-compatible", "openai_compatible", "groq"} and (
         has_api_key or can_call_without_key
     ):
         return OpenAICompatibleLlmClient(
+            provider="groq" if provider == "groq" else "openai-compatible",
             model=settings.llm_model,
             api_key=settings.llm_api_key or None,
             base_url=validate_llm_base_url(settings.llm_api_base_url),
@@ -249,7 +252,10 @@ def validate_llm_base_url(base_url: str) -> str:
 
 
 def build_openai_compatible_headers(api_key: str | None) -> dict[str, str]:
-    headers = {"Content-Type": "application/json"}
+    headers = {
+        "Content-Type": "application/json",
+        "User-Agent": "aiops-platform/0.1",
+    }
     if api_key:
         headers["Authorization"] = f"Bearer {api_key}"
     return headers
