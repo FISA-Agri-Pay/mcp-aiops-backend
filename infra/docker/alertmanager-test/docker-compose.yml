@@ -17,6 +17,8 @@ services:
   alertmanager:
     image: prom/alertmanager:v0.27.0
     container_name: aiops-alertmanager
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     command:
       - "--config.file=/etc/alertmanager/alertmanager.yml"
       - "--storage.path=/alertmanager"

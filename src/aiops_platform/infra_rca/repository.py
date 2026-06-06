@@ -243,7 +243,7 @@ class SqlInfraRcaRepository:
         starts_at: datetime | None,
         ends_at: datetime | None,
     ) -> tuple[IncidentAlertResult, bool]:
-        query = text(
+        insert_query = text(
             """
             insert into ai.incident_alerts (
                 incident_public_id,
@@ -265,13 +265,7 @@ class SqlInfraRcaRepository:
                 :starts_at,
                 :ends_at
             )
-            on conflict (incident_public_id, fingerprint) do update
-            set alert_status = excluded.alert_status,
-                event_payload = excluded.event_payload,
-                labels = excluded.labels,
-                annotations = excluded.annotations,
-                starts_at = excluded.starts_at,
-                ends_at = excluded.ends_at
+            on conflict (incident_public_id, fingerprint) do nothing
             returning
                 public_id::text as incident_alert_id,
                 incident_public_id::text as incident_id,
@@ -279,25 +273,46 @@ class SqlInfraRcaRepository:
                 alert_status,
                 starts_at::text as starts_at,
                 ends_at::text as ends_at,
-                received_at::text as received_at,
-                (xmax <> 0) as was_existing
+                received_at::text as received_at
             """
         )
+        update_query = text(
+            """
+            update ai.incident_alerts
+            set alert_status = :status,
+                event_payload = cast(:event_payload as jsonb),
+                labels = cast(:labels as jsonb),
+                annotations = cast(:annotations as jsonb),
+                starts_at = :starts_at,
+                ends_at = :ends_at
+            where incident_public_id = cast(:incident_id as uuid)
+              and fingerprint = :fingerprint
+            returning
+                public_id::text as incident_alert_id,
+                incident_public_id::text as incident_id,
+                fingerprint,
+                alert_status,
+                starts_at::text as starts_at,
+                ends_at::text as ends_at,
+                received_at::text as received_at
+            """
+        )
+        params = {
+            "incident_id": incident_id,
+            "fingerprint": fingerprint,
+            "status": status,
+            "event_payload": to_json(event_payload),
+            "labels": to_json(labels),
+            "annotations": to_json(annotations),
+            "starts_at": starts_at,
+            "ends_at": ends_at,
+        }
         with self._session_scope(commit=True) as session:
-            row = session.execute(
-                query,
-                {
-                    "incident_id": incident_id,
-                    "fingerprint": fingerprint,
-                    "status": status,
-                    "event_payload": to_json(event_payload),
-                    "labels": to_json(labels),
-                    "annotations": to_json(annotations),
-                    "starts_at": starts_at,
-                    "ends_at": ends_at,
-                },
-            ).mappings().one()
-        return build_incident_alert(row), bool(row["was_existing"])
+            row = session.execute(insert_query, params).mappings().first()
+            was_existing = row is None
+            if row is None:
+                row = session.execute(update_query, params).mappings().one()
+        return build_incident_alert(row), was_existing
 
     def update_incident_status(self, incident_id: str, *, status: str) -> IncidentResult | None:
         if not is_uuid(incident_id):
