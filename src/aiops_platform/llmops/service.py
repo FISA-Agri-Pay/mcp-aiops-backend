@@ -236,6 +236,76 @@ class LlmOpsService:
                 last_error=exc.__class__.__name__,
             )
 
+    def run_ops_report_completion(
+        self,
+        *,
+        report_type: str,
+        period: dict[str, Any],
+        incidents: list[dict[str, Any]],
+        rca_reports: list[dict[str, Any]],
+        metric_summaries: list[dict[str, Any]],
+        job_id: str | None = None,
+    ) -> LlmRunResult:
+        normalized_report_type = report_type.strip().lower()
+        prompt = self.ensure_prompt_version(
+            scope="ops_report",
+            prompt_key=f"ops_report.{normalized_report_type}.v1",
+            template=(
+                "Create a concise operations report from pre-aggregated "
+                "incident, RCA, prediction, and autoscaling evidence. "
+                "Return an answer with key findings and recommended actions."
+            ),
+        )
+        input_payload = {
+            "report_type": report_type,
+            "period": period,
+            "incidents": incidents,
+            "rca_reports": rca_reports,
+            "metric_summaries": metric_summaries,
+        }
+        request = LlmCompletionRequest(
+            chat_type="admin_copilot",
+            prompt_key=prompt.prompt_key,
+            prompt_template=prompt.template,
+            input_payload=mask_payload(input_payload) or {},
+            output_schema=OUTPUT_SCHEMA,
+        )
+        try:
+            response = self._llm_client.complete(request)
+            validation = validate_output_payload(response.output_payload, OUTPUT_SCHEMA)
+            status: LlmRunStatus = "SUCCESS" if validation.is_valid else "VALIDATION_FAILED"
+            last_error = "; ".join(validation.errors) if validation.errors else None
+            return self._repository.record_llm_run(
+                provider=response.provider,
+                model=response.model,
+                prompt_key=prompt.prompt_key,
+                prompt_version_id=prompt.prompt_version_id,
+                status=status,
+                masked_input=request.input_payload,
+                masked_output=mask_payload(response.output_payload) or {},
+                output_schema=OUTPUT_SCHEMA,
+                validation_errors=validation.errors,
+                job_id=job_id,
+                session_id=None,
+                latency_ms=response.latency_ms,
+                last_error=last_error,
+            )
+        except Exception as exc:
+            return self._repository.record_llm_run(
+                provider=self._llm_client.provider,
+                model=self._llm_client.model,
+                prompt_key=prompt.prompt_key,
+                prompt_version_id=prompt.prompt_version_id,
+                status="FAILED",
+                masked_input=request.input_payload,
+                masked_output={},
+                output_schema=OUTPUT_SCHEMA,
+                validation_errors=[],
+                job_id=job_id,
+                session_id=None,
+                last_error=exc.__class__.__name__,
+            )
+
     def get_llm_run(self, llm_run_id: str) -> LlmRunResult:
         llm_run = self._repository.get_llm_run(llm_run_id)
         if llm_run is None:

@@ -899,6 +899,10 @@ def infer_domain_and_purpose(prompt_key: str) -> tuple[str, str]:
     if prompt_key.startswith("admin_copilot"):
         return "RISKOPS", "RISK_ANALYSIS"
     if prompt_key.startswith("ops_report"):
+        if "weekly" in prompt_key:
+            return "REPORT", "WEEKLY_REPORT"
+        if "scaling" in prompt_key:
+            return "REPORT", "SCALING_REPORT"
         return "REPORT", "DAILY_REPORT"
     return "INFRAOPS", "RCA"
 
@@ -907,7 +911,9 @@ def api_purpose_prompt_key(purpose: str) -> str:
     return {
         "FARMER_CHAT": "farmer_bnpl_chat",
         "RISK_ANALYSIS": "admin_copilot",
-        "DAILY_REPORT": "ops_report",
+        "DAILY_REPORT": "ops_report.daily.v1",
+        "WEEKLY_REPORT": "ops_report.weekly.v1",
+        "SCALING_REPORT": "ops_report.scaling.v1",
         "RCA": "rca",
     }.get(purpose, "common")
 
