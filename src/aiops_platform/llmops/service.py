@@ -49,7 +49,12 @@ DEFAULT_PROMPTS = {
     ),
     "admin_copilot": (
         "admin_copilot",
-        "Summarize admin risk, infra, and prediction evidence with safe actions.",
+        (
+            "관리자 RiskOps Copilot으로서 MCP Tool 결과만 근거로 한국어 답변을 작성한다. "
+            "BNPL 심사, 연체 위험, 운영/스케일링 근거를 요약하고 주요 수치, 위험 신호, "
+            "우선순위가 높은 관리자 Action을 포함한다. 확인되지 않은 내용은 "
+            "추정으로 단정하지 않는다."
+        ),
     ),
     "rca": (
         "rca",
