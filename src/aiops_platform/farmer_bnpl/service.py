@@ -27,6 +27,7 @@ from aiops_platform.farmer_bnpl.schemas import (
     FarmlandInfoRequest,
     InsuranceInfoRequest,
     InterestDueResult,
+    LatestOrderDeliveryStatusResult,
     OverdueStatusResult,
     ProductDetailResult,
     ProductResult,
@@ -220,6 +221,17 @@ class FarmerBnplService:
             overdue_amount=0,
             days_overdue=0,
         )
+
+    def get_latest_order_delivery_status(
+        self,
+        *,
+        user_id: str,
+    ) -> LatestOrderDeliveryStatusResult:
+        validate_identifier(user_id, field_name="user_id")
+        delivery_status = self._repository.get_latest_order_delivery_status(user_id)
+        if delivery_status is None:
+            raise FarmerBnplValidationError("latest order delivery status was not found.")
+        return delivery_status
 
     def search_products(
         self,
