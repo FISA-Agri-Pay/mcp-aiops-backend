@@ -60,6 +60,8 @@ class ChatMessageResult(BaseModel):
     content: str
     created_at: str
     mcp_tool_call_ids: list[str] = Field(default_factory=list)
+    ui_cards: list[dict[str, Any]] = Field(default_factory=list)
+    ui_actions: list[dict[str, Any]] = Field(default_factory=list)
 
 
 class PlannedToolResult(BaseModel):
@@ -78,6 +80,8 @@ class ChatAskResult(BaseModel):
     llm_run: LlmRunResult | None = None
     planned_tools: list[PlannedToolResult]
     tool_results: list["AgentToolExecutionResult"] = Field(default_factory=list)
+    ui_cards: list[dict[str, Any]] = Field(default_factory=list)
+    ui_actions: list[dict[str, Any]] = Field(default_factory=list)
 
 
 class JobResult(BaseModel):

@@ -2,15 +2,22 @@ import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import text
 
+from aiops_platform.agent.schemas import AgentToolExecutionResult
 from aiops_platform.core.database import SessionLocal
 from aiops_platform.llmops.client import FakeLlmClient
 from aiops_platform.llmops.service import LlmOpsService
 from aiops_platform.main import create_app
+from aiops_platform.mcp.schemas import (
+    McpConfirmationPolicy,
+    McpExecutionPolicy,
+    McpToolCallStatus,
+    McpToolPermission,
+)
 from aiops_platform.orchestration.repository import (
     OrchestrationRepository,
     SqlOrchestrationRepository,
 )
-from aiops_platform.orchestration.service import OrchestrationService
+from aiops_platform.orchestration.service import OrchestrationService, build_chat_ui_cards
 from tests.seed_constants import CREDIT_APP_2_ID, FARMER_1_ID, FARMER_2_ID
 
 
@@ -22,6 +29,26 @@ class FailingAgentOrchestrator:
 class FailingAttachRepository(SqlOrchestrationRepository):
     def attach_llm_run_to_tool_calls(self, **kwargs: object) -> None:
         raise RuntimeError("link unavailable")
+
+
+def build_successful_farmer_tool_result(
+    *,
+    tool_name: str,
+    response_payload: dict,
+) -> AgentToolExecutionResult:
+    return AgentToolExecutionResult(
+        server_name="farmer-bnpl-mcp",
+        tool_name=tool_name,
+        tool_permission=McpToolPermission.READ,
+        confirmation_policy=McpConfirmationPolicy.NONE,
+        execution_policy=McpExecutionPolicy.ALLOWED,
+        call_status=McpToolCallStatus.SUCCESS,
+        will_execute=True,
+        requires_approval=False,
+        is_blocked=False,
+        request_payload={},
+        response_payload=response_payload,
+    )
 
 
 def create_orchestration_test_client(
@@ -78,6 +105,12 @@ def test_farmer_chat_api_creates_session_and_records_masked_tool_calls() -> None
     ]
     assert {result["call_status"] for result in answer["tool_results"]} == {"SUCCESS"}
     assert answer["tool_results"][0]["response_payload"]["available_limit"] == 2550000
+    assert {card["type"] for card in answer["ui_cards"]} == {
+        "credit-summary",
+        "recommendation",
+    }
+    credit_card = next(card for card in answer["ui_cards"] if card["type"] == "credit-summary")
+    assert credit_card["remaining"] == 2_550_000
 
     for result in answer["tool_results"]:
         detail_response = client.get(f"/mcp/tool-calls/{result['tool_call_id']}")
@@ -90,6 +123,7 @@ def test_farmer_chat_api_creates_session_and_records_masked_tool_calls() -> None
         "USER",
         "ASSISTANT",
     ]
+    assert messages.json()["items"][1]["ui_cards"] == answer["ui_cards"]
 
     tool_calls = client.get(
         "/mcp/tool-calls",
@@ -111,6 +145,103 @@ def test_farmer_chat_api_creates_session_and_records_masked_tool_calls() -> None
     detail = client.get(f"/mcp/tool-calls/{tool_call_items[0]['tool_call_id']}")
     assert detail.status_code == 200
     assert detail.json()["server_name"] == "farmer-bnpl-mcp"
+
+
+def test_farmer_chat_delivery_question_returns_delivery_card() -> None:
+    client = create_orchestration_test_client()
+    order_id = "90000000-0000-0000-0000-000000000101"
+    insert_latest_order(order_id=order_id, user_id=FARMER_1_ID)
+    try:
+        delivery_response = client.get(
+            "/farmer/orders/latest/delivery",
+            params={"user_id": FARMER_1_ID},
+        )
+        ask_response = client.post(
+            "/farmer/chat/ask",
+            json={"user_id": FARMER_1_ID, "message": "배송 현황 조회"},
+        )
+
+        assert delivery_response.status_code == 200
+        assert delivery_response.json()["delivery_status"] == "PREPARING"
+        assert ask_response.status_code == 200
+        answer = ask_response.json()
+        assert "get_latest_order_delivery_status" in {
+            result["tool_name"] for result in answer["tool_results"]
+        }
+        delivery_cards = answer["ui_cards"]
+        assert [card["type"] for card in delivery_cards] == ["delivery-status"]
+        assert delivery_cards[0]["order_id"] == order_id
+        assert delivery_cards[0]["delivery_status"] == "PREPARING"
+    finally:
+        delete_order(order_id)
+
+
+def test_farmer_chat_ui_cards_include_repayment_summary_type() -> None:
+    cards = build_chat_ui_cards(
+        "farmer_bnpl",
+        "상환 일정과 연체 여부 알려줘",
+        [
+            build_successful_farmer_tool_result(
+                tool_name="get_repayment_schedule",
+                response_payload={
+                    "currency": "KRW",
+                    "schedule": [
+                        {
+                            "due_date": "2026-06-30",
+                            "principal_due": 120000,
+                            "interest_due": 3500,
+                            "status": "DUE",
+                        }
+                    ],
+                },
+            ),
+            build_successful_farmer_tool_result(
+                tool_name="get_overdue_status",
+                response_payload={
+                    "is_overdue": False,
+                    "overdue_amount": 0,
+                    "days_overdue": 0,
+                    "currency": "KRW",
+                },
+            ),
+        ],
+    )
+
+    assert any(card["type"] == "repayment-summary" for card in cards)
+
+
+def test_farmer_chat_ui_cards_include_checkout_confirmation_type() -> None:
+    cards = build_chat_ui_cards(
+        "farmer_bnpl",
+        "비료 외상 결제 준비해줘",
+        [
+            build_successful_farmer_tool_result(
+                tool_name="prepare_bnpl_checkout_payload",
+                response_payload={
+                    "eligible": True,
+                    "checkout_intent_id": "checkout-123",
+                    "total_amount": 84000,
+                    "available_limit": 2550000,
+                    "currency": "KRW",
+                },
+            )
+        ],
+    )
+
+    checkout_card = next(card for card in cards if card["type"] == "checkout-confirmation")
+    assert checkout_card["checkout_intent_id"] == "checkout-123"
+
+
+def test_farmer_latest_delivery_api_maps_invalid_user_id_to_bad_request() -> None:
+    client = create_orchestration_test_client()
+
+    response = client.get(
+        "/farmer/orders/latest/delivery",
+        params={"user_id": "invalid user"},
+    )
+
+    assert response.status_code == 400
+    assert response.json()["detail"] == "user_id is invalid."
 
 
 def test_admin_copilot_api_creates_job_and_planned_tools() -> None:
@@ -381,3 +512,62 @@ def test_missing_orchestration_resources_return_404() -> None:
     assert client.get("/jobs/missing-job").status_code == 404
     assert client.get("/mcp/tool-calls/missing-call").status_code == 404
     assert client.get("/admin/copilot/sessions/missing-session").status_code == 404
+
+
+def insert_latest_order(*, order_id: str, user_id: str) -> None:
+    with SessionLocal() as session:
+        session.execute(
+            text(
+                """
+                insert into core.orders (
+                    public_id,
+                    user_public_id,
+                    payment_request_public_id,
+                    total_amount,
+                    order_status,
+                    delivery_status,
+                    recipient_name,
+                    recipient_phone,
+                    delivery_address,
+                    delivery_zip_code,
+                    ordered_at,
+                    created_at,
+                    updated_at
+                ) values (
+                    cast(:order_id as uuid),
+                    cast(:user_id as uuid),
+                    '92000000-0000-0000-0000-000000000101',
+                    50000.00,
+                    'CONFIRMED',
+                    'PREPARING',
+                    'Sample farmer',
+                    '010-1111-2222',
+                    'jeonbuk',
+                    '55000',
+                    timestamp '2026-06-06 10:00:00',
+                    timestamp '2026-06-06 10:00:00',
+                    timestamp '2026-06-06 10:00:00'
+                )
+                on conflict (public_id) do update set
+                    delivery_status = excluded.delivery_status,
+                    ordered_at = excluded.ordered_at,
+                    updated_at = excluded.updated_at
+                """
+            ),
+            {"order_id": order_id, "user_id": user_id},
+        )
+        session.commit()
+
+
+def delete_order(order_id: str) -> None:
+    with SessionLocal() as session:
+        session.execute(
+            text(
+                """
+                delete from core.orders
+                where public_id = cast(:order_id as uuid)
+                """
+            ),
+            {"order_id": order_id},
+        )
+        session.commit()

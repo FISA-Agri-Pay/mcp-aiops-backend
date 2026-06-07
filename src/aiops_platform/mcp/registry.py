@@ -46,6 +46,7 @@ MCP_SERVERS: tuple[McpServerMetadata, ...] = (
                 ("get_repayment_schedule", READ),
                 ("get_interest_due", READ),
                 ("get_overdue_status", READ),
+                ("get_latest_order_delivery_status", READ),
                 ("search_products", READ),
                 ("search_lowest_price_fertilizer", READ),
                 ("get_product_detail", READ),

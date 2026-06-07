@@ -463,6 +463,20 @@ def create_mcp_server(
         )
 
     @mcp.tool(
+        name="get_latest_order_delivery_status",
+        description="Read the farmer's latest order delivery status.",
+        tags={"farmer-bnpl", "orders", "delivery", "read"},
+        annotations={"readOnlyHint": True, "openWorldHint": False},
+    )
+    def get_latest_order_delivery_status_tool(user_id: str) -> dict[str, Any]:
+        request_payload = {"user_id": user_id}
+        return call_farmer_bnpl_tool(
+            tool_name="get_latest_order_delivery_status",
+            request_payload=request_payload,
+            operation=lambda: farmer_bnpl.get_latest_order_delivery_status(**request_payload),
+        )
+
+    @mcp.tool(
         name="search_products",
         description="Search the skeleton agricultural input catalog.",
         tags={"farmer-bnpl", "products", "read"},

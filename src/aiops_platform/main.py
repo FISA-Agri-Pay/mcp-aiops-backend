@@ -4,6 +4,7 @@ from aiops_platform.admin_riskops.service import AdminRiskOpsService
 from aiops_platform.api.admin import router as admin_router
 from aiops_platform.api.admin_risk import router as admin_risk_router
 from aiops_platform.api.farmer import router as farmer_router
+from aiops_platform.api.farmer_bnpl import router as farmer_bnpl_router
 from aiops_platform.api.health import router as health_router
 from aiops_platform.api.jobs import router as jobs_router
 from aiops_platform.api.llmops import router as llmops_router
@@ -11,6 +12,7 @@ from aiops_platform.api.mcp import router as mcp_router
 from aiops_platform.api.rca import router as rca_router
 from aiops_platform.api.reports import router as reports_router
 from aiops_platform.core.config import settings
+from aiops_platform.farmer_bnpl.service import FarmerBnplService
 from aiops_platform.infra_rca.service import InfraRcaService
 from aiops_platform.llmops.service import LlmOpsService
 from aiops_platform.mcp.server import (
@@ -39,9 +41,11 @@ def create_app() -> FastAPI:
     app.state.infra_rca_service = InfraRcaService(llmops_service=llmops_service)
     app.state.ops_report_service = OpsReportService(llmops_service=llmops_service)
     app.state.admin_riskops_service = AdminRiskOpsService()
+    app.state.farmer_bnpl_service = FarmerBnplService()
     app.include_router(admin_router)
     app.include_router(admin_risk_router)
     app.include_router(farmer_router)
+    app.include_router(farmer_bnpl_router)
     app.include_router(health_router)
     app.include_router(jobs_router)
     app.include_router(llmops_router)

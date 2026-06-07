@@ -314,6 +314,8 @@ class OrchestrationService:
                 llm_run.masked_output,
                 agent_run.answer,
             )
+            ui_cards = build_chat_ui_cards(session.chat_type, message, tool_results)
+            ui_actions = build_chat_ui_actions(ui_cards)
         except Exception as exc:
             logger.exception("Agent orchestration failed for job %s.", job.job_id)
             planned_tool_results = []
@@ -325,6 +327,8 @@ class OrchestrationService:
                 error_message=f"Agent execution failed: {exc.__class__.__name__}",
             )
             assistant_content = "Agent execution failed before MCP tool results were finalized."
+            ui_cards = []
+            ui_actions = []
         assistant_message = self._append_message(
             session_id=session.session_id,
             role="ASSISTANT",
@@ -334,6 +338,8 @@ class OrchestrationService:
                 for tool_result in tool_results
                 if tool_result.tool_call_id is not None
             ],
+            ui_cards=ui_cards,
+            ui_actions=ui_actions,
         )
         self._touch_session(session.session_id)
         updated_session = self.get_chat_session(session.session_id, chat_type=session.chat_type)
@@ -345,6 +351,8 @@ class OrchestrationService:
             llm_run=llm_run,
             planned_tools=planned_tool_results,
             tool_results=tool_results,
+            ui_cards=ui_cards,
+            ui_actions=ui_actions,
         )
 
     def _append_message(
@@ -354,12 +362,16 @@ class OrchestrationService:
         role: MessageRole,
         content: str,
         mcp_tool_call_ids: list[str] | None = None,
+        ui_cards: list[dict[str, Any]] | None = None,
+        ui_actions: list[dict[str, Any]] | None = None,
     ) -> ChatMessageResult:
         return self._repository.append_message(
             session_id=session_id,
             role=role,
             content=content,
             mcp_tool_call_ids=mcp_tool_call_ids or [],
+            ui_cards=ui_cards or [],
+            ui_actions=ui_actions or [],
         )
 
     def _record_llm_run(
@@ -608,6 +620,207 @@ def build_session_title(message: str) -> str:
     if len(normalized) <= 80:
         return normalized
     return f"{normalized[:77]}..."
+
+
+def build_chat_ui_cards(
+    chat_type: ChatType,
+    message: str,
+    tool_results: list[AgentToolExecutionResult],
+) -> list[dict[str, Any]]:
+    if chat_type != "farmer_bnpl":
+        return []
+
+    normalized_message = message.lower()
+    wants_credit = message_has_any(
+        normalized_message,
+        ("외상", "잔액", "한도", "결제", "구매", "limit", "credit", "bnpl", "checkout", "buy"),
+    )
+    wants_repayment = message_has_any(
+        normalized_message,
+        ("상환", "연체", "이자", "납부", "repayment", "overdue", "interest", "pay"),
+    )
+    wants_delivery = message_has_any(
+        normalized_message,
+        ("배송", "주문", "delivery", "order"),
+    )
+    wants_recommendation = message_has_any(
+        normalized_message,
+        (
+            "비료",
+            "추천",
+            "농자재",
+            "센서",
+            "스마트팜",
+            "fertilizer",
+            "recommend",
+            "sensor",
+            "product",
+        ),
+    )
+
+    cards: list[dict[str, Any]] = []
+    for result in tool_results:
+        if McpToolCallStatus(result.call_status) != McpToolCallStatus.SUCCESS:
+            continue
+        payload = result.response_payload if isinstance(result.response_payload, dict) else {}
+        if result.tool_name == "get_user_credit_limit" and (
+            wants_credit or wants_recommendation
+        ):
+            cards.append(build_credit_summary_card(payload))
+        elif wants_repayment and result.tool_name in {
+            "get_repayment_schedule",
+            "get_interest_due",
+            "get_overdue_status",
+        }:
+            repayment_card = build_repayment_summary_card(tool_results)
+            if repayment_card and not has_card_type(cards, "repayment-summary"):
+                cards.append(repayment_card)
+        elif result.tool_name == "get_latest_order_delivery_status" and wants_delivery:
+            cards.append(build_delivery_status_card(payload))
+        elif wants_recommendation and result.tool_name in {
+            "search_lowest_price_fertilizer",
+            "search_products",
+        }:
+            recommendation_card = build_recommendation_card(payload)
+            if recommendation_card is not None:
+                cards.append(recommendation_card)
+        elif result.tool_name == "prepare_bnpl_checkout_payload" and (
+            wants_credit or wants_recommendation
+        ):
+            checkout_card = build_checkout_confirmation_card(payload)
+            if checkout_card is not None:
+                cards.append(checkout_card)
+    return [card for card in cards if card]
+
+
+def build_chat_ui_actions(ui_cards: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return [
+        card["action"]
+        for card in ui_cards
+        if isinstance(card.get("action"), dict)
+    ]
+
+
+def build_credit_summary_card(payload: dict[str, Any]) -> dict[str, Any]:
+    total_limit = int(payload.get("total_limit") or 0)
+    used_amount = int(payload.get("used_amount") or 0)
+    remaining = int(payload.get("available_limit") or max(total_limit - used_amount, 0))
+    return {
+        "type": "credit-summary",
+        "limit": total_limit,
+        "used": used_amount,
+        "remaining": remaining,
+        "currency": payload.get("currency") or "KRW",
+        "action": {"label": "상환하러 가기", "route": "/wallet"},
+    }
+
+
+def build_repayment_summary_card(
+    tool_results: list[AgentToolExecutionResult],
+) -> dict[str, Any] | None:
+    schedule_payload = find_tool_payload(tool_results, "get_repayment_schedule")
+    interest_payload = find_tool_payload(tool_results, "get_interest_due")
+    overdue_payload = find_tool_payload(tool_results, "get_overdue_status")
+    if not schedule_payload and not interest_payload and not overdue_payload:
+        return None
+
+    schedule = schedule_payload.get("schedule") if schedule_payload else []
+    upcoming = next(
+        (
+            item
+            for item in schedule
+            if isinstance(item, dict) and item.get("status") != "PAID"
+        ),
+        {},
+    )
+    return {
+        "type": "repayment-summary",
+        "next_due_date": upcoming.get("due_date") or interest_payload.get("due_date"),
+        "principal_due": int(upcoming.get("principal_due") or 0),
+        "interest_due": int(
+            interest_payload.get("interest_due") or upcoming.get("interest_due") or 0
+        ),
+        "is_overdue": bool(overdue_payload.get("is_overdue", False)),
+        "overdue_amount": int(overdue_payload.get("overdue_amount") or 0),
+        "days_overdue": int(overdue_payload.get("days_overdue") or 0),
+        "currency": (
+            schedule_payload.get("currency")
+            or interest_payload.get("currency")
+            or overdue_payload.get("currency")
+            or "KRW"
+        ),
+        "action": {"label": "상환하러 가기", "route": "/wallet"},
+    }
+
+
+def build_delivery_status_card(payload: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "type": "delivery-status",
+        "order_id": payload.get("order_id"),
+        "item_name": payload.get("item_name") or "최근 주문",
+        "delivery_status": payload.get("delivery_status") or "UNKNOWN",
+        "ordered_at": payload.get("ordered_at"),
+        "action": {"label": "주문 내역 보기", "route": "/history"},
+    }
+
+
+def build_recommendation_card(payload: dict[str, Any]) -> dict[str, Any] | None:
+    items = payload.get("items")
+    if not isinstance(items, list) or not items:
+        return None
+    product = items[0]
+    if not isinstance(product, dict):
+        return None
+    return {
+        "type": "recommendation",
+        "product_id": product.get("product_id"),
+        "product_name": product.get("name"),
+        "price": int(product.get("unit_price") or 0),
+        "currency": product.get("currency") or "KRW",
+        "reason": "현재 한도와 요청 조건에 맞는 추천 상품입니다.",
+        "action": {"label": "상점에서 보기", "route": "/shop"},
+    }
+
+
+def build_checkout_confirmation_card(payload: dict[str, Any]) -> dict[str, Any] | None:
+    raw_checkout_intent_id = payload.get("checkout_intent_id")
+    checkout_intent_id = (
+        raw_checkout_intent_id.strip()
+        if isinstance(raw_checkout_intent_id, str)
+        else None
+    )
+    if not payload.get("eligible") or checkout_intent_id is None:
+        return None
+    return {
+        "type": "checkout-confirmation",
+        "checkout_intent_id": checkout_intent_id,
+        "total_amount": int(payload.get("total_amount") or 0),
+        "available_limit": int(payload.get("available_limit") or 0),
+        "currency": payload.get("currency") or "KRW",
+        "action": {"label": "외상 결제 준비하기", "route": "/cart"},
+    }
+
+
+def message_has_any(message: str, keywords: tuple[str, ...]) -> bool:
+    return any(keyword in message for keyword in keywords)
+
+
+def find_tool_payload(
+    tool_results: list[AgentToolExecutionResult],
+    tool_name: str,
+) -> dict[str, Any]:
+    for result in tool_results:
+        if (
+            result.tool_name == tool_name
+            and McpToolCallStatus(result.call_status) == McpToolCallStatus.SUCCESS
+            and isinstance(result.response_payload, dict)
+        ):
+            return result.response_payload
+    return {}
+
+
+def has_card_type(cards: list[dict[str, Any]], card_type: str) -> bool:
+    return any(card.get("type") == card_type for card in cards)
 
 
 def resolve_assistant_content(

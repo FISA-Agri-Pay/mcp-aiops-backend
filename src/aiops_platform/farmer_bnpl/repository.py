@@ -13,6 +13,7 @@ from aiops_platform.core.database import SessionLocal
 from aiops_platform.farmer_bnpl.schemas import (
     FarmerProfileResult,
     InterestDueResult,
+    LatestOrderDeliveryStatusResult,
     OverdueStatusResult,
     ProductResult,
     RepaymentScheduleItem,
@@ -34,6 +35,12 @@ class FarmerBnplRepository(Protocol):
         pass
 
     def get_overdue_status(self, user_id: str) -> OverdueStatusResult | None:
+        pass
+
+    def get_latest_order_delivery_status(
+        self,
+        user_id: str,
+    ) -> LatestOrderDeliveryStatusResult | None:
         pass
 
     def list_products(
@@ -237,6 +244,40 @@ class SqlFarmerBnplRepository:
             is_overdue=overdue_amount > 0,
             overdue_amount=overdue_amount,
             days_overdue=days_overdue,
+        )
+
+    def get_latest_order_delivery_status(
+        self,
+        user_id: str,
+    ) -> LatestOrderDeliveryStatusResult | None:
+        if not is_uuid(user_id):
+            return None
+        query = text(
+            """
+            select
+                public_id::text as order_id,
+                order_status,
+                delivery_status,
+                total_amount,
+                ordered_at::text as ordered_at
+            from core.orders
+            where user_public_id = cast(:user_id as uuid)
+            order by ordered_at desc nulls last, created_at desc
+            limit 1
+            """
+        )
+        with self._session_scope() as session:
+            row = session.execute(query, {"user_id": user_id}).mappings().first()
+        if row is None:
+            return None
+        return LatestOrderDeliveryStatusResult(
+            user_id=user_id,
+            order_id=row["order_id"],
+            item_name="최근 주문",
+            order_status=str(row["order_status"]),
+            delivery_status=str(row["delivery_status"]),
+            total_amount=to_int(row["total_amount"]),
+            ordered_at=row["ordered_at"],
         )
 
     def list_products(

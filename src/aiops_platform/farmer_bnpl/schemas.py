@@ -115,6 +115,17 @@ class OverdueStatusResult(BaseModel):
     currency: Literal["KRW"] = "KRW"
 
 
+class LatestOrderDeliveryStatusResult(BaseModel):
+    user_id: str
+    order_id: str
+    item_name: str
+    order_status: str
+    delivery_status: str
+    total_amount: int
+    currency: Literal["KRW"] = "KRW"
+    ordered_at: str
+
+
 class ProductResult(BaseModel):
     product_id: str
     name: str

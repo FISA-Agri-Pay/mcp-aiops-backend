@@ -71,6 +71,7 @@ def test_fastmcp_server_exposes_registry_tools() -> None:
             "get_repayment_schedule",
             "get_interest_due",
             "get_overdue_status",
+            "get_latest_order_delivery_status",
             "search_products",
             "search_lowest_price_fertilizer",
             "get_product_detail",

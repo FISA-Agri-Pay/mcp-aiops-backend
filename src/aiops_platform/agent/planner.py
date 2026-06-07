@@ -85,7 +85,37 @@ def plan_farmer_bnpl_tools(*, message: str, user_id: str) -> list[AgentToolPlan]
             ]
         )
 
-    purchase_keywords = ("fertilizer", "비료", "product", "농자재", "checkout", "결제", "한도")
+    delivery_keywords = ("delivery", "배송", "주문", "order")
+    if any(keyword in message for keyword in delivery_keywords):
+        plans.append(
+            AgentToolPlan(
+                server_name="farmer-bnpl-mcp",
+                tool_name="get_latest_order_delivery_status",
+                request_payload={"user_id": user_id},
+                reason="Read latest order delivery status for the farmer.",
+            )
+        )
+
+    sensor_keywords = ("sensor", "센서", "스마트팜", "smartfarm", "smart farm")
+    if any(keyword in message for keyword in sensor_keywords):
+        plans.append(
+            AgentToolPlan(
+                server_name="farmer-bnpl-mcp",
+                tool_name="search_products",
+                request_payload={"query": "sensor", "limit": 3},
+                reason="Find smart farm sensor product candidates.",
+            )
+        )
+
+    purchase_keywords = (
+        "fertilizer",
+        "비료",
+        "product",
+        "농자재",
+        "checkout",
+        "결제",
+        "한도",
+    )
     if any(keyword in message for keyword in purchase_keywords):
         default_cart_items = [
             {
