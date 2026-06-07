@@ -121,6 +121,9 @@ class McpToolDispatcher:
             ("farmer-bnpl-mcp", "get_overdue_status"): (
                 lambda payload: self._farmer_bnpl.get_overdue_status(**payload)
             ),
+            ("farmer-bnpl-mcp", "get_latest_order_delivery_status"): (
+                lambda payload: self._farmer_bnpl.get_latest_order_delivery_status(**payload)
+            ),
             ("farmer-bnpl-mcp", "search_products"): (
                 lambda payload: self._farmer_bnpl.search_products(**payload)
             ),
