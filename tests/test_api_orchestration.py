@@ -191,13 +191,17 @@ def test_admin_copilot_session_list_supports_recent_chat_ui() -> None:
 
 def test_admin_riskops_rest_api_exposes_planned_admin_surfaces() -> None:
     client = create_orchestration_test_client()
+    headers = {"X-Admin-Role": "SERVICE_ADMIN"}
 
-    queue = client.get("/admin/risk/credit-reviews", params={"limit": 10})
-    detail = client.get(f"/admin/risk/credit-reviews/{CREDIT_APP_2_ID}")
-    summary = client.post(f"/admin/risk/credit-reviews/{CREDIT_APP_2_ID}/summarize")
-    bnpl = client.get("/admin/risk/bnpl/summary")
-    overdue = client.get("/admin/risk/overdues/summary")
-    bss = client.get(f"/admin/risk/users/{FARMER_2_ID}/bss-history")
+    queue = client.get("/admin/risk/credit-reviews", params={"limit": 10}, headers=headers)
+    detail = client.get(f"/admin/risk/credit-reviews/{CREDIT_APP_2_ID}", headers=headers)
+    summary = client.post(
+        f"/admin/risk/credit-reviews/{CREDIT_APP_2_ID}/summarize",
+        headers=headers,
+    )
+    bnpl = client.get("/admin/risk/bnpl/summary", headers=headers)
+    overdue = client.get("/admin/risk/overdues/summary", headers=headers)
+    bss = client.get(f"/admin/risk/users/{FARMER_2_ID}/bss-history", headers=headers)
 
     assert queue.status_code == 200
     assert CREDIT_APP_2_ID in {item["application_id"] for item in queue.json()["items"]}
@@ -216,11 +220,13 @@ def test_admin_riskops_rest_api_exposes_planned_admin_surfaces() -> None:
 def test_admin_riskops_rest_api_blocks_invalid_admin_role_header() -> None:
     client = create_orchestration_test_client()
 
+    missing_header_response = client.get("/admin/risk/bnpl/summary")
     response = client.get(
         "/admin/risk/bnpl/summary",
         headers={"X-Admin-Role": "FARMER"},
     )
 
+    assert missing_header_response.status_code == 403
     assert response.status_code == 403
 
 

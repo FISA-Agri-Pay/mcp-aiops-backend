@@ -1,3 +1,4 @@
+import logging
 from typing import Literal
 
 from fastapi import APIRouter, Header, HTTPException, Query
@@ -19,6 +20,7 @@ from aiops_platform.api.dependencies import AdminRiskOpsServiceDep
 router = APIRouter(prefix="/admin/risk", tags=["admin-riskops"])
 
 ADMIN_ROLES = {"SERVICE_ADMIN", "RISK_ADMIN"}
+logger = logging.getLogger(__name__)
 
 
 class DisasterSimulationRequest(BaseModel):
@@ -38,10 +40,13 @@ class OverdueAlertRequest(BaseModel):
 
 
 def ensure_admin_role(x_admin_role: str | None) -> None:
-    if x_admin_role is None:
+    normalized_role = x_admin_role.strip().upper() if x_admin_role is not None else ""
+    if normalized_role in ADMIN_ROLES:
         return
-    if x_admin_role.strip().upper() in ADMIN_ROLES:
-        return
+    logger.warning(
+        "Blocked Admin RiskOps request due to missing or invalid X-Admin-Role header: %r",
+        x_admin_role,
+    )
     raise HTTPException(status_code=403, detail="admin role is required.")
 
 
