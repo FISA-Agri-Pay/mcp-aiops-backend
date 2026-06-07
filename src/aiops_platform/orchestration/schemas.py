@@ -46,6 +46,13 @@ class ChatSessionResult(BaseModel):
     updated_at: str
 
 
+class ChatSessionListResult(BaseModel):
+    status: ChatStatus | None = None
+    user_id: str | None = None
+    limit: int
+    items: list[ChatSessionResult]
+
+
 class ChatMessageResult(BaseModel):
     message_id: str
     session_id: str

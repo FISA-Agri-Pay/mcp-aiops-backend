@@ -17,6 +17,7 @@ from aiops_platform.orchestration.schemas import (
     ChatMessageResult,
     ChatMessagesResult,
     ChatSessionResult,
+    ChatStatus,
     ChatType,
     JobResult,
     JobStatus,
@@ -40,6 +41,16 @@ class OrchestrationRepository(Protocol):
     def get_chat_session(self, session_id: str, *, chat_type: ChatType) -> ChatSessionResult | None:
         pass
 
+    def list_chat_sessions(
+        self,
+        *,
+        chat_type: ChatType,
+        user_id: str | None = None,
+        status: ChatStatus | None = None,
+        limit: int = 20,
+    ) -> list[ChatSessionResult]:
+        pass
+
     def list_chat_messages(self, session_id: str) -> ChatMessagesResult:
         pass
 
@@ -54,6 +65,9 @@ class OrchestrationRepository(Protocol):
         content: str,
         mcp_tool_call_ids: list[str] | None = None,
     ) -> ChatMessageResult:
+        pass
+
+    def touch_chat_session(self, session_id: str) -> None:
         pass
 
     def create_job(
@@ -198,6 +212,71 @@ class SqlOrchestrationRepository:
             ).mappings().first()
         return build_chat_session(row) if row is not None else None
 
+    def list_chat_sessions(
+        self,
+        *,
+        chat_type: ChatType,
+        user_id: str | None = None,
+        status: ChatStatus | None = None,
+        limit: int = 20,
+    ) -> list[ChatSessionResult]:
+        query = text(
+            """
+            select
+                cs.public_id::text as session_id,
+                cs.session_type,
+                cs.session_status,
+                cs.context || jsonb_build_object(
+                    'user_id',
+                    coalesce(
+                        nullif(cs.context->>'user_id', ''),
+                        cs.user_public_id::text,
+                        'unknown'
+                    ),
+                    'title',
+                    coalesce(
+                        nullif(cs.context->>'title', ''),
+                        left(first_user_message.content, 120),
+                        'Admin Copilot chat'
+                    )
+                ) as context,
+                cs.created_at::text as created_at,
+                cs.updated_at::text as updated_at
+            from ai.chat_sessions cs
+            left join lateral (
+                select cm.content
+                from ai.chat_messages cm
+                where cm.session_public_id = cs.public_id
+                  and cm.role = 'USER'
+                order by cm.created_at
+                limit 1
+            ) first_user_message on true
+            where cs.session_type = :session_type
+              and (
+                  cast(:status as text) is null
+                  or cs.session_status = cast(:status as text)
+              )
+              and (
+                  cast(:user_id as text) is null
+                  or cs.context->>'user_id' = cast(:user_id as text)
+                  or cs.user_public_id::text = cast(:user_id as text)
+              )
+            order by cs.updated_at desc, cs.created_at desc, cs.id desc
+            limit :limit
+            """
+        )
+        with self._session_scope() as session:
+            rows = session.execute(
+                query,
+                {
+                    "session_type": db_session_type(chat_type),
+                    "user_id": user_id,
+                    "status": status,
+                    "limit": limit,
+                },
+            ).mappings().all()
+        return [build_chat_session(row) for row in rows]
+
     def list_chat_messages(self, session_id: str) -> ChatMessagesResult:
         if not is_uuid(session_id):
             return ChatMessagesResult(session_id=session_id, items=[])
@@ -286,6 +365,19 @@ class SqlOrchestrationRepository:
         with self._session_scope(commit=True) as session:
             row = session.execute(query, params).mappings().one()
         return build_chat_message(row)
+
+    def touch_chat_session(self, session_id: str) -> None:
+        if not is_uuid(session_id):
+            return
+        query = text(
+            """
+            update ai.chat_sessions
+            set updated_at = current_timestamp
+            where public_id = cast(:session_id as uuid)
+            """
+        )
+        with self._session_scope(commit=True) as session:
+            session.execute(query, {"session_id": session_id})
 
     def create_job(
         self,
