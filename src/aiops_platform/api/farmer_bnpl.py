@@ -15,4 +15,5 @@ def get_latest_order_delivery_status(
     try:
         return service.get_latest_order_delivery_status(user_id=user_id)
     except FarmerBnplValidationError as exc:
-        raise HTTPException(status_code=404, detail=str(exc)) from exc
+        status_code = 404 if "was not found" in str(exc) else 400
+        raise HTTPException(status_code=status_code, detail=str(exc)) from exc

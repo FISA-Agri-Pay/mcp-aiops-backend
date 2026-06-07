@@ -2,15 +2,22 @@ import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import text
 
+from aiops_platform.agent.schemas import AgentToolExecutionResult
 from aiops_platform.core.database import SessionLocal
 from aiops_platform.llmops.client import FakeLlmClient
 from aiops_platform.llmops.service import LlmOpsService
 from aiops_platform.main import create_app
+from aiops_platform.mcp.schemas import (
+    McpConfirmationPolicy,
+    McpExecutionPolicy,
+    McpToolCallStatus,
+    McpToolPermission,
+)
 from aiops_platform.orchestration.repository import (
     OrchestrationRepository,
     SqlOrchestrationRepository,
 )
-from aiops_platform.orchestration.service import OrchestrationService
+from aiops_platform.orchestration.service import OrchestrationService, build_chat_ui_cards
 from tests.seed_constants import CREDIT_APP_2_ID, FARMER_1_ID, FARMER_2_ID
 
 
@@ -22,6 +29,26 @@ class FailingAgentOrchestrator:
 class FailingAttachRepository(SqlOrchestrationRepository):
     def attach_llm_run_to_tool_calls(self, **kwargs: object) -> None:
         raise RuntimeError("link unavailable")
+
+
+def build_successful_farmer_tool_result(
+    *,
+    tool_name: str,
+    response_payload: dict,
+) -> AgentToolExecutionResult:
+    return AgentToolExecutionResult(
+        server_name="farmer-bnpl-mcp",
+        tool_name=tool_name,
+        tool_permission=McpToolPermission.READ,
+        confirmation_policy=McpConfirmationPolicy.NONE,
+        execution_policy=McpExecutionPolicy.ALLOWED,
+        call_status=McpToolCallStatus.SUCCESS,
+        will_execute=True,
+        requires_approval=False,
+        is_blocked=False,
+        request_payload={},
+        response_payload=response_payload,
+    )
 
 
 def create_orchestration_test_client(
@@ -82,7 +109,8 @@ def test_farmer_chat_api_creates_session_and_records_masked_tool_calls() -> None
         "credit-summary",
         "recommendation",
     }
-    assert answer["ui_cards"][0]["remaining"] == 2_550_000
+    credit_card = next(card for card in answer["ui_cards"] if card["type"] == "credit-summary")
+    assert credit_card["remaining"] == 2_550_000
 
     for result in answer["tool_results"]:
         detail_response = client.get(f"/mcp/tool-calls/{result['tool_call_id']}")
@@ -146,6 +174,74 @@ def test_farmer_chat_delivery_question_returns_delivery_card() -> None:
         assert delivery_cards[0]["delivery_status"] == "PREPARING"
     finally:
         delete_order(order_id)
+
+
+def test_farmer_chat_ui_cards_include_repayment_summary_type() -> None:
+    cards = build_chat_ui_cards(
+        "farmer_bnpl",
+        "상환 일정과 연체 여부 알려줘",
+        [
+            build_successful_farmer_tool_result(
+                tool_name="get_repayment_schedule",
+                response_payload={
+                    "currency": "KRW",
+                    "schedule": [
+                        {
+                            "due_date": "2026-06-30",
+                            "principal_due": 120000,
+                            "interest_due": 3500,
+                            "status": "DUE",
+                        }
+                    ],
+                },
+            ),
+            build_successful_farmer_tool_result(
+                tool_name="get_overdue_status",
+                response_payload={
+                    "is_overdue": False,
+                    "overdue_amount": 0,
+                    "days_overdue": 0,
+                    "currency": "KRW",
+                },
+            ),
+        ],
+    )
+
+    assert any(card["type"] == "repayment-summary" for card in cards)
+
+
+def test_farmer_chat_ui_cards_include_checkout_confirmation_type() -> None:
+    cards = build_chat_ui_cards(
+        "farmer_bnpl",
+        "비료 외상 결제 준비해줘",
+        [
+            build_successful_farmer_tool_result(
+                tool_name="prepare_bnpl_checkout_payload",
+                response_payload={
+                    "eligible": True,
+                    "checkout_intent_id": "checkout-123",
+                    "total_amount": 84000,
+                    "available_limit": 2550000,
+                    "currency": "KRW",
+                },
+            )
+        ],
+    )
+
+    checkout_card = next(card for card in cards if card["type"] == "checkout-confirmation")
+    assert checkout_card["checkout_intent_id"] == "checkout-123"
+
+
+def test_farmer_latest_delivery_api_maps_invalid_user_id_to_bad_request() -> None:
+    client = create_orchestration_test_client()
+
+    response = client.get(
+        "/farmer/orders/latest/delivery",
+        params={"user_id": "invalid user"},
+    )
+
+    assert response.status_code == 400
+    assert response.json()["detail"] == "user_id is invalid."
 
 
 def test_admin_copilot_api_creates_job_and_planned_tools() -> None:
