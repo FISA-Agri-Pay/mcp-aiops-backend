@@ -2,6 +2,7 @@ from typing import Annotated
 
 from fastapi import Depends, Request
 
+from aiops_platform.admin_riskops.service import AdminRiskOpsService
 from aiops_platform.infra_rca.service import InfraRcaService
 from aiops_platform.llmops.service import LlmOpsService
 from aiops_platform.ops_reports.service import OpsReportService
@@ -24,6 +25,10 @@ def get_ops_report_service(request: Request) -> OpsReportService:
     return request.app.state.ops_report_service
 
 
+def get_admin_riskops_service(request: Request) -> AdminRiskOpsService:
+    return request.app.state.admin_riskops_service
+
+
 OrchestrationServiceDep = Annotated[
     OrchestrationService,
     Depends(get_orchestration_service),
@@ -39,4 +44,8 @@ InfraRcaServiceDep = Annotated[
 OpsReportServiceDep = Annotated[
     OpsReportService,
     Depends(get_ops_report_service),
+]
+AdminRiskOpsServiceDep = Annotated[
+    AdminRiskOpsService,
+    Depends(get_admin_riskops_service),
 ]
