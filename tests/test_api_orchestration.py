@@ -78,6 +78,12 @@ def test_farmer_chat_api_creates_session_and_records_masked_tool_calls() -> None
     ]
     assert {result["call_status"] for result in answer["tool_results"]} == {"SUCCESS"}
     assert answer["tool_results"][0]["response_payload"]["available_limit"] == 2550000
+    assert {card["type"] for card in answer["ui_cards"]} == {
+        "credit-summary",
+        "recommendation",
+        "checkout-confirmation",
+    }
+    assert answer["ui_cards"][0]["remaining"] == 2_550_000
 
     for result in answer["tool_results"]:
         detail_response = client.get(f"/mcp/tool-calls/{result['tool_call_id']}")
@@ -90,6 +96,7 @@ def test_farmer_chat_api_creates_session_and_records_masked_tool_calls() -> None
         "USER",
         "ASSISTANT",
     ]
+    assert messages.json()["items"][1]["ui_cards"] == answer["ui_cards"]
 
     tool_calls = client.get(
         "/mcp/tool-calls",
@@ -111,6 +118,37 @@ def test_farmer_chat_api_creates_session_and_records_masked_tool_calls() -> None
     detail = client.get(f"/mcp/tool-calls/{tool_call_items[0]['tool_call_id']}")
     assert detail.status_code == 200
     assert detail.json()["server_name"] == "farmer-bnpl-mcp"
+
+
+def test_farmer_chat_delivery_question_returns_delivery_card() -> None:
+    client = create_orchestration_test_client()
+    order_id = "90000000-0000-0000-0000-000000000101"
+    insert_latest_order(order_id=order_id, user_id=FARMER_1_ID)
+    try:
+        delivery_response = client.get(
+            "/farmer/orders/latest/delivery",
+            params={"user_id": FARMER_1_ID},
+        )
+        ask_response = client.post(
+            "/farmer/chat/ask",
+            json={"user_id": FARMER_1_ID, "message": "배송 현황 조회"},
+        )
+
+        assert delivery_response.status_code == 200
+        assert delivery_response.json()["delivery_status"] == "PREPARING"
+        assert ask_response.status_code == 200
+        answer = ask_response.json()
+        assert "get_latest_order_delivery_status" in {
+            result["tool_name"] for result in answer["tool_results"]
+        }
+        delivery_cards = [
+            card for card in answer["ui_cards"] if card["type"] == "delivery-status"
+        ]
+        assert len(delivery_cards) == 1
+        assert delivery_cards[0]["order_id"] == order_id
+        assert delivery_cards[0]["delivery_status"] == "PREPARING"
+    finally:
+        delete_order(order_id)
 
 
 def test_admin_copilot_api_creates_job_and_planned_tools() -> None:
@@ -381,3 +419,62 @@ def test_missing_orchestration_resources_return_404() -> None:
     assert client.get("/jobs/missing-job").status_code == 404
     assert client.get("/mcp/tool-calls/missing-call").status_code == 404
     assert client.get("/admin/copilot/sessions/missing-session").status_code == 404
+
+
+def insert_latest_order(*, order_id: str, user_id: str) -> None:
+    with SessionLocal() as session:
+        session.execute(
+            text(
+                """
+                insert into core.orders (
+                    public_id,
+                    user_public_id,
+                    payment_request_public_id,
+                    total_amount,
+                    order_status,
+                    delivery_status,
+                    recipient_name,
+                    recipient_phone,
+                    delivery_address,
+                    delivery_zip_code,
+                    ordered_at,
+                    created_at,
+                    updated_at
+                ) values (
+                    cast(:order_id as uuid),
+                    cast(:user_id as uuid),
+                    '92000000-0000-0000-0000-000000000101',
+                    50000.00,
+                    'CONFIRMED',
+                    'PREPARING',
+                    'Sample farmer',
+                    '010-1111-2222',
+                    'jeonbuk',
+                    '55000',
+                    timestamp '2026-06-06 10:00:00',
+                    timestamp '2026-06-06 10:00:00',
+                    timestamp '2026-06-06 10:00:00'
+                )
+                on conflict (public_id) do update set
+                    delivery_status = excluded.delivery_status,
+                    ordered_at = excluded.ordered_at,
+                    updated_at = excluded.updated_at
+                """
+            ),
+            {"order_id": order_id, "user_id": user_id},
+        )
+        session.commit()
+
+
+def delete_order(order_id: str) -> None:
+    with SessionLocal() as session:
+        session.execute(
+            text(
+                """
+                delete from core.orders
+                where public_id = cast(:order_id as uuid)
+                """
+            ),
+            {"order_id": order_id},
+        )
+        session.commit()

@@ -42,6 +42,72 @@ def test_farmer_credit_and_repayment_reads_return_skeleton_values() -> None:
     assert overdue.is_overdue is False
 
 
+def test_latest_order_delivery_status_returns_latest_order() -> None:
+    order_id = "90000000-0000-0000-0000-000000000201"
+    with SessionLocal() as session:
+        session.execute(
+            text(
+                """
+                insert into core.orders (
+                    public_id,
+                    user_public_id,
+                    payment_request_public_id,
+                    total_amount,
+                    order_status,
+                    delivery_status,
+                    recipient_name,
+                    recipient_phone,
+                    delivery_address,
+                    delivery_zip_code,
+                    ordered_at,
+                    created_at,
+                    updated_at
+                ) values (
+                    cast(:order_id as uuid),
+                    cast(:user_id as uuid),
+                    '92000000-0000-0000-0000-000000000201',
+                    50000.00,
+                    'CONFIRMED',
+                    'PREPARING',
+                    'Sample farmer',
+                    '010-1111-2222',
+                    'jeonbuk',
+                    '55000',
+                    timestamp '2026-06-06 10:00:00',
+                    timestamp '2026-06-06 10:00:00',
+                    timestamp '2026-06-06 10:00:00'
+                )
+                on conflict (public_id) do update set
+                    delivery_status = excluded.delivery_status,
+                    ordered_at = excluded.ordered_at,
+                    updated_at = excluded.updated_at
+                """
+            ),
+            {"order_id": order_id, "user_id": FARMER_1_ID},
+        )
+        session.commit()
+    try:
+        delivery = FarmerBnplService().get_latest_order_delivery_status(
+            user_id=FARMER_1_ID
+        )
+
+        assert delivery.order_id == order_id
+        assert delivery.delivery_status == "PREPARING"
+        assert delivery.total_amount == 50_000
+    finally:
+        with SessionLocal() as session:
+            session.execute(
+                text(
+                    """
+                    delete from core.orders
+                    where public_id = cast(:order_id as uuid)
+                    """
+                ),
+                {"order_id": order_id},
+            )
+            session.commit()
+
+
 def test_repayment_schedule_status_uses_business_priority() -> None:
     order_id = "90000000-0000-0000-0000-000000000001"
     principal_id = "91000000-0000-0000-0000-000000000001"

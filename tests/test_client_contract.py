@@ -43,6 +43,7 @@ def test_client_contract_exposes_expected_mcp_servers_and_tools() -> None:
     farmer_tool_names = {tool["tool_name"] for tool in farmer_tools_response.json()}
     assert {
         "get_user_credit_limit",
+        "get_latest_order_delivery_status",
         "search_products",
         "prepare_bnpl_checkout_payload",
         "create_bnpl_checkout",
@@ -64,6 +65,7 @@ def test_client_contract_openapi_includes_chat_history_and_mcp_paths() -> None:
     paths = response.json()["paths"]
     for path in [
         "/farmer/chat/ask",
+        "/farmer/orders/latest/delivery",
         "/admin/copilot/sessions",
         "/admin/copilot/ask",
         "/admin/risk/credit-reviews",

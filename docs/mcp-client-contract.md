@@ -15,6 +15,7 @@
 | Agent snapshots | `GET /agent-snapshots` |
 | Operations report API | `POST /reports/ops`, `GET /reports/ops`, `GET /reports/ops/{report_id}`, `POST /reports/ops/{report_id}/send-email` |
 | Farmer chatbot | `POST /farmer/chat/ask` |
+| Farmer BNPL delivery API | `GET /farmer/orders/latest/delivery` |
 | Admin Copilot | `POST /admin/copilot/sessions`, `GET /admin/copilot/sessions`, `GET /admin/copilot/sessions/{session_id}`, `GET /admin/copilot/sessions/{session_id}/messages`, `POST /admin/copilot/ask` |
 | Job history | `GET /jobs` |
 | FastMCP transport | `/mcp-server/mcp` |
@@ -59,7 +60,9 @@
     "run_status": "SUCCESS"
   },
   "planned_tools": [],
-  "tool_results": []
+  "tool_results": [],
+  "ui_cards": [],
+  "ui_actions": []
 }
 ```
 
@@ -67,6 +70,18 @@
 LLM 실행 근거와 prompt version은 `llm_run`과 `/llm-runs/{llm_run_id}`에서 확인한다.
 Agent 실행 snapshot은 `/agent-snapshots`의 `session_id`, `llm_run_id`, `payload`로 채팅 세션과 LLM 실행 근거를 연결한다.
 외부 LLM provider를 사용할 때도 LLM은 DB를 직접 조회하지 않고, MCP tool 실행 결과와 masking된 context만 입력으로 받는다.
+
+Farmer 챗봇은 프론트 카드 UI 렌더링을 위해 `ui_cards`와 `ui_actions`를 함께 반환할 수 있다. 클라이언트는 LLM 답변 문장을 파싱하지 않고 `ui_cards[*].type` 기준으로 카드를 렌더링한다.
+
+지원 Farmer 카드 타입:
+
+| Card Type | 화면 |
+| --- | --- |
+| `credit-summary` | 외상 한도/사용액/잔여 한도 |
+| `repayment-summary` | 다음 상환일/이자/연체 상태 |
+| `recommendation` | 추천 농자재/비료/센서 |
+| `delivery-status` | 최근 주문 배송 현황 |
+| `checkout-confirmation` | 사용자 확인이 필요한 결제 준비 |
 
 ## Admin Copilot Session List
 
