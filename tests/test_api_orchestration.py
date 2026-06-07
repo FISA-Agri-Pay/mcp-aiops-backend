@@ -81,7 +81,6 @@ def test_farmer_chat_api_creates_session_and_records_masked_tool_calls() -> None
     assert {card["type"] for card in answer["ui_cards"]} == {
         "credit-summary",
         "recommendation",
-        "checkout-confirmation",
     }
     assert answer["ui_cards"][0]["remaining"] == 2_550_000
 
@@ -141,10 +140,8 @@ def test_farmer_chat_delivery_question_returns_delivery_card() -> None:
         assert "get_latest_order_delivery_status" in {
             result["tool_name"] for result in answer["tool_results"]
         }
-        delivery_cards = [
-            card for card in answer["ui_cards"] if card["type"] == "delivery-status"
-        ]
-        assert len(delivery_cards) == 1
+        delivery_cards = answer["ui_cards"]
+        assert [card["type"] for card in delivery_cards] == ["delivery-status"]
         assert delivery_cards[0]["order_id"] == order_id
         assert delivery_cards[0]["delivery_status"] == "PREPARING"
     finally:

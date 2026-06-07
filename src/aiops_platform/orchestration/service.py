@@ -314,7 +314,7 @@ class OrchestrationService:
                 llm_run.masked_output,
                 agent_run.answer,
             )
-            ui_cards = build_chat_ui_cards(session.chat_type, tool_results)
+            ui_cards = build_chat_ui_cards(session.chat_type, message, tool_results)
             ui_actions = build_chat_ui_actions(ui_cards)
         except Exception as exc:
             logger.exception("Agent orchestration failed for job %s.", job.job_id)
@@ -624,19 +624,50 @@ def build_session_title(message: str) -> str:
 
 def build_chat_ui_cards(
     chat_type: ChatType,
+    message: str,
     tool_results: list[AgentToolExecutionResult],
 ) -> list[dict[str, Any]]:
     if chat_type != "farmer_bnpl":
         return []
+
+    normalized_message = message.lower()
+    wants_credit = message_has_any(
+        normalized_message,
+        ("외상", "잔액", "한도", "결제", "구매", "limit", "credit", "bnpl", "checkout", "buy"),
+    )
+    wants_repayment = message_has_any(
+        normalized_message,
+        ("상환", "연체", "이자", "납부", "repayment", "overdue", "interest", "pay"),
+    )
+    wants_delivery = message_has_any(
+        normalized_message,
+        ("배송", "주문", "delivery", "order"),
+    )
+    wants_recommendation = message_has_any(
+        normalized_message,
+        (
+            "비료",
+            "추천",
+            "농자재",
+            "센서",
+            "스마트팜",
+            "fertilizer",
+            "recommend",
+            "sensor",
+            "product",
+        ),
+    )
 
     cards: list[dict[str, Any]] = []
     for result in tool_results:
         if McpToolCallStatus(result.call_status) != McpToolCallStatus.SUCCESS:
             continue
         payload = result.response_payload if isinstance(result.response_payload, dict) else {}
-        if result.tool_name == "get_user_credit_limit":
+        if result.tool_name == "get_user_credit_limit" and (
+            wants_credit or wants_recommendation
+        ):
             cards.append(build_credit_summary_card(payload))
-        elif result.tool_name in {
+        elif wants_repayment and result.tool_name in {
             "get_repayment_schedule",
             "get_interest_due",
             "get_overdue_status",
@@ -644,13 +675,18 @@ def build_chat_ui_cards(
             repayment_card = build_repayment_summary_card(tool_results)
             if repayment_card and not has_card_type(cards, "repayment-summary"):
                 cards.append(repayment_card)
-        elif result.tool_name == "get_latest_order_delivery_status":
+        elif result.tool_name == "get_latest_order_delivery_status" and wants_delivery:
             cards.append(build_delivery_status_card(payload))
-        elif result.tool_name in {"search_lowest_price_fertilizer", "search_products"}:
+        elif wants_recommendation and result.tool_name in {
+            "search_lowest_price_fertilizer",
+            "search_products",
+        }:
             recommendation_card = build_recommendation_card(payload)
             if recommendation_card is not None:
                 cards.append(recommendation_card)
-        elif result.tool_name == "prepare_bnpl_checkout_payload":
+        elif result.tool_name == "prepare_bnpl_checkout_payload" and (
+            wants_credit or wants_recommendation
+        ):
             checkout_card = build_checkout_confirmation_card(payload)
             if checkout_card is not None:
                 cards.append(checkout_card)
@@ -747,16 +783,26 @@ def build_recommendation_card(payload: dict[str, Any]) -> dict[str, Any] | None:
 
 
 def build_checkout_confirmation_card(payload: dict[str, Any]) -> dict[str, Any] | None:
-    if not payload.get("eligible"):
+    raw_checkout_intent_id = payload.get("checkout_intent_id")
+    checkout_intent_id = (
+        raw_checkout_intent_id.strip()
+        if isinstance(raw_checkout_intent_id, str)
+        else None
+    )
+    if not payload.get("eligible") or checkout_intent_id is None:
         return None
     return {
         "type": "checkout-confirmation",
-        "checkout_intent_id": payload.get("checkout_intent_id"),
+        "checkout_intent_id": checkout_intent_id,
         "total_amount": int(payload.get("total_amount") or 0),
         "available_limit": int(payload.get("available_limit") or 0),
         "currency": payload.get("currency") or "KRW",
         "action": {"label": "외상 결제 준비하기", "route": "/cart"},
     }
+
+
+def message_has_any(message: str, keywords: tuple[str, ...]) -> bool:
+    return any(keyword in message for keyword in keywords)
 
 
 def find_tool_payload(
