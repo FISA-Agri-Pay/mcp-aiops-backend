@@ -20,7 +20,9 @@ from aiops_platform.orchestration.schemas import (
     ChatAskResult,
     ChatMessageResult,
     ChatMessagesResult,
+    ChatSessionListResult,
     ChatSessionResult,
+    ChatStatus,
     ChatType,
     JobActionPreviewResult,
     JobListResult,
@@ -76,6 +78,29 @@ class OrchestrationService:
             raise OrchestrationNotFoundError("chat session was not found.")
         return session
 
+    def list_chat_sessions(
+        self,
+        *,
+        chat_type: ChatType,
+        user_id: str | None = None,
+        status: str | None = None,
+        limit: int = 20,
+    ) -> ChatSessionListResult:
+        clamped_limit = clamp_limit(limit)
+        normalized_status = normalize_optional_chat_status(status)
+        normalized_user_id = normalize_optional_text(user_id)
+        return ChatSessionListResult(
+            status=normalized_status,
+            user_id=normalized_user_id,
+            limit=clamped_limit,
+            items=self._repository.list_chat_sessions(
+                chat_type=chat_type,
+                user_id=normalized_user_id,
+                status=normalized_status,
+                limit=clamped_limit,
+            ),
+        )
+
     def list_chat_messages(self, session_id: str, *, chat_type: ChatType) -> ChatMessagesResult:
         self.get_chat_session(session_id, chat_type=chat_type)
         return self._repository.list_chat_messages(session_id)
@@ -118,7 +143,7 @@ class OrchestrationService:
             session_id=session_id,
             chat_type="admin_copilot",
             user_id=user_id,
-            title="Admin Copilot chat",
+            title=build_session_title(message),
         )
         return self._answer_chat(
             session=session,
@@ -526,7 +551,7 @@ class OrchestrationService:
         )
 
     def _touch_session(self, session_id: str) -> None:
-        return None
+        self._repository.touch_chat_session(session_id)
 
 
 def resolve_registered_tool(*, server_name: str, tool_name: str):
@@ -558,6 +583,31 @@ def normalize_optional_job_status(value: str | None) -> JobStatus | None:
     if normalized not in get_args(JobStatus):
         raise OrchestrationValidationError("job status is invalid.")
     return normalized
+
+
+def normalize_optional_chat_status(value: str | None) -> ChatStatus | None:
+    if value is None:
+        return None
+    normalized = value.strip().upper()
+    if not normalized:
+        return None
+    if normalized not in get_args(ChatStatus):
+        raise OrchestrationValidationError("chat session status is invalid.")
+    return normalized
+
+
+def normalize_optional_text(value: str | None) -> str | None:
+    if value is None:
+        return None
+    normalized = value.strip()
+    return normalized or None
+
+
+def build_session_title(message: str) -> str:
+    normalized = " ".join(message.split())
+    if len(normalized) <= 80:
+        return normalized
+    return f"{normalized[:77]}..."
 
 
 def resolve_assistant_content(

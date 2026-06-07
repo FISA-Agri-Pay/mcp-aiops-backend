@@ -15,7 +15,7 @@
 | Agent snapshots | `GET /agent-snapshots` |
 | Operations report API | `POST /reports/ops`, `GET /reports/ops`, `GET /reports/ops/{report_id}`, `POST /reports/ops/{report_id}/send-email` |
 | Farmer chatbot | `POST /farmer/chat/ask` |
-| Admin Copilot | `POST /admin/copilot/ask` |
+| Admin Copilot | `POST /admin/copilot/sessions`, `GET /admin/copilot/sessions`, `GET /admin/copilot/sessions/{session_id}`, `GET /admin/copilot/sessions/{session_id}/messages`, `POST /admin/copilot/ask` |
 | Job history | `GET /jobs` |
 | FastMCP transport | `/mcp-server/mcp` |
 
@@ -67,6 +67,39 @@
 LLM 실행 근거와 prompt version은 `llm_run`과 `/llm-runs/{llm_run_id}`에서 확인한다.
 Agent 실행 snapshot은 `/agent-snapshots`의 `session_id`, `llm_run_id`, `payload`로 채팅 세션과 LLM 실행 근거를 연결한다.
 외부 LLM provider를 사용할 때도 LLM은 DB를 직접 조회하지 않고, MCP tool 실행 결과와 masking된 context만 입력으로 받는다.
+
+## Admin Copilot Session List
+
+프론트의 "최근 대화 더보기"는 서버 기반 세션 목록 API를 사용한다.
+
+### `GET /admin/copilot/sessions`
+
+지원 query:
+
+| Query | 설명 |
+| --- | --- |
+| `user_id` | 관리자 사용자 ID. 인증 토큰 기반 식별이 가능하면 생략 가능 |
+| `status` | `OPEN`, `CLOSED` |
+| `limit` | 최대 조회 개수. 기본 20, 최대 100 |
+
+```json
+{
+  "limit": 20,
+  "items": [
+    {
+      "session_id": "string",
+      "chat_type": "admin_copilot",
+      "user_id": "admin-1",
+      "title": "연체 위험 고객 현황 알려줘",
+      "status": "OPEN",
+      "created_at": "2026-06-07T10:00:00+09:00",
+      "updated_at": "2026-06-07T10:15:00+09:00"
+    }
+  ]
+}
+```
+
+이 API는 신규 테이블 없이 `chat_sessions`를 조회한다. 제목은 `context.title`을 우선 사용하고, 없으면 첫 사용자 메시지 또는 기본 제목을 API 계층에서 계산한다.
 
 ## Operations Report API Contract
 

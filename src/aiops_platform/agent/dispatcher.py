@@ -139,11 +139,35 @@ class McpToolDispatcher:
             ("admin-riskops-mcp", "get_credit_review_queue"): (
                 lambda payload: self._admin_riskops.get_credit_review_queue(**payload)
             ),
+            ("admin-riskops-mcp", "get_credit_review_detail"): (
+                lambda payload: self._admin_riskops.get_credit_review_detail(**payload)
+            ),
+            ("admin-riskops-mcp", "summarize_credit_risk"): (
+                lambda payload: self._admin_riskops.summarize_credit_risk(**payload)
+            ),
             ("admin-riskops-mcp", "get_overdue_summary"): (
                 lambda payload: self._admin_riskops.get_overdue_summary()
             ),
             ("admin-riskops-mcp", "search_overdue_users"): (
                 lambda payload: self._admin_riskops.search_overdue_users(**payload)
+            ),
+            ("admin-riskops-mcp", "search_bnpl_users"): (
+                lambda payload: self._admin_riskops.search_bnpl_users(**payload)
+            ),
+            ("admin-riskops-mcp", "get_bss_score_history"): (
+                lambda payload: self._admin_riskops.get_bss_score_history(**payload)
+            ),
+            ("admin-riskops-mcp", "simulate_disaster_credit_risk"): (
+                lambda payload: self._admin_riskops.simulate_disaster_credit_risk(**payload)
+            ),
+            ("admin-riskops-mcp", "create_risk_analysis_snapshot"): (
+                lambda payload: self._admin_riskops.create_risk_analysis_snapshot(**payload)
+            ),
+            ("admin-riskops-mcp", "send_repayment_alert"): (
+                lambda payload: self._admin_riskops.send_repayment_alert(**payload)
+            ),
+            ("admin-riskops-mcp", "send_overdue_alerts"): (
+                lambda payload: self._admin_riskops.send_overdue_alerts(**payload)
             ),
             ("infraops-mcp", "query_multi_cluster_prometheus"): (
                 lambda payload: build_multi_cluster_prometheus_stub(payload)

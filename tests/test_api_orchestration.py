@@ -11,7 +11,7 @@ from aiops_platform.orchestration.repository import (
     SqlOrchestrationRepository,
 )
 from aiops_platform.orchestration.service import OrchestrationService
-from tests.seed_constants import FARMER_1_ID
+from tests.seed_constants import CREDIT_APP_2_ID, FARMER_1_ID, FARMER_2_ID
 
 
 class FailingAgentOrchestrator:
@@ -153,6 +153,81 @@ def test_admin_copilot_api_creates_job_and_planned_tools() -> None:
     assert retry.json()["will_execute"] is False
     assert retry.json()["action"] == "retry"
     assert cancel.json()["action"] == "cancel"
+
+
+def test_admin_copilot_session_list_supports_recent_chat_ui() -> None:
+    client = create_orchestration_test_client()
+
+    first = client.post(
+        "/admin/copilot/ask",
+        json={"user_id": "admin-1", "message": "심사 대기 12건 요약해줘"},
+    ).json()
+    second = client.post(
+        "/admin/copilot/ask",
+        json={"user_id": "admin-1", "message": "연체 위험 고객 현황 알려줘"},
+    ).json()
+
+    response = client.get(
+        "/admin/copilot/sessions",
+        params={"user_id": "admin-1", "status": "OPEN", "limit": 10},
+    )
+
+    assert response.status_code == 200
+    sessions = response.json()["items"]
+    assert [item["session_id"] for item in sessions[:2]] == [
+        second["session"]["session_id"],
+        first["session"]["session_id"],
+    ]
+    assert sessions[0]["title"] == "연체 위험 고객 현황 알려줘"
+    assert sessions[0]["status"] == "OPEN"
+
+    messages = client.get(f"/admin/copilot/sessions/{sessions[0]['session_id']}/messages")
+    assert messages.status_code == 200
+    assert [message["role"] for message in messages.json()["items"]] == [
+        "USER",
+        "ASSISTANT",
+    ]
+
+
+def test_admin_riskops_rest_api_exposes_planned_admin_surfaces() -> None:
+    client = create_orchestration_test_client()
+    headers = {"X-Admin-Role": "SERVICE_ADMIN"}
+
+    queue = client.get("/admin/risk/credit-reviews", params={"limit": 10}, headers=headers)
+    detail = client.get(f"/admin/risk/credit-reviews/{CREDIT_APP_2_ID}", headers=headers)
+    summary = client.post(
+        f"/admin/risk/credit-reviews/{CREDIT_APP_2_ID}/summarize",
+        headers=headers,
+    )
+    bnpl = client.get("/admin/risk/bnpl/summary", headers=headers)
+    overdue = client.get("/admin/risk/overdues/summary", headers=headers)
+    bss = client.get(f"/admin/risk/users/{FARMER_2_ID}/bss-history", headers=headers)
+
+    assert queue.status_code == 200
+    assert CREDIT_APP_2_ID in {item["application_id"] for item in queue.json()["items"]}
+    assert detail.status_code == 200
+    assert detail.json()["user_id"] == FARMER_2_ID
+    assert summary.status_code == 200
+    assert summary.json()["user_id"] == FARMER_2_ID
+    assert bnpl.status_code == 200
+    assert bnpl.json()["active_users"] == 3
+    assert overdue.status_code == 200
+    assert overdue.json()["overdue_users"] == 2
+    assert bss.status_code == 200
+    assert bss.json()["items"][0]["score"] == 740
+
+
+def test_admin_riskops_rest_api_blocks_invalid_admin_role_header() -> None:
+    client = create_orchestration_test_client()
+
+    missing_header_response = client.get("/admin/risk/bnpl/summary")
+    response = client.get(
+        "/admin/risk/bnpl/summary",
+        headers={"X-Admin-Role": "FARMER"},
+    )
+
+    assert missing_header_response.status_code == 403
+    assert response.status_code == 403
 
 
 def test_chat_session_close_blocks_follow_up_questions() -> None:

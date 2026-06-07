@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from typing import Protocol
 
 from aiops_platform.agent.schemas import AgentPlanResult, AgentToolPlan
@@ -132,6 +133,7 @@ def plan_farmer_bnpl_tools(*, message: str, user_id: str) -> list[AgentToolPlan]
 
 
 def plan_admin_copilot_tools(*, message: str) -> list[AgentToolPlan]:
+    review_limit = extract_requested_limit(message, default=10)
     plans = [
         AgentToolPlan(
             server_name="admin-riskops-mcp",
@@ -142,7 +144,7 @@ def plan_admin_copilot_tools(*, message: str) -> list[AgentToolPlan]:
         AgentToolPlan(
             server_name="admin-riskops-mcp",
             tool_name="get_credit_review_queue",
-            request_payload={"limit": 10},
+            request_payload={"limit": review_limit},
             reason="Read pending credit review workload.",
         ),
         AgentToolPlan(
@@ -177,6 +179,41 @@ def plan_admin_copilot_tools(*, message: str) -> list[AgentToolPlan]:
             ]
         )
 
+    user_keywords = ("user", "users", "customer", "고객", "사용자", "농가")
+    if any(keyword in message for keyword in user_keywords):
+        plans.append(
+            AgentToolPlan(
+                server_name="admin-riskops-mcp",
+                tool_name="search_bnpl_users",
+                request_payload={"limit": 10},
+                reason="List BNPL users for admin triage.",
+            )
+        )
+
+    if any(keyword in message for keyword in ("disaster", "재해", "홍수", "가뭄", "폭염")):
+        plans.append(
+            AgentToolPlan(
+                server_name="admin-riskops-mcp",
+                tool_name="simulate_disaster_credit_risk",
+                request_payload={
+                    "region": "gangwon",
+                    "disaster_type": "flood",
+                    "affected_crop": None,
+                },
+                reason="Preview disaster-driven BNPL credit risk.",
+            )
+        )
+
+    if any(keyword in message for keyword in ("snapshot", "스냅샷", "근거")):
+        plans.append(
+            AgentToolPlan(
+                server_name="admin-riskops-mcp",
+                tool_name="create_risk_analysis_snapshot",
+                request_payload={"target_type": "PORTFOLIO", "target_id": "portfolio"},
+                reason="Create a read-only RiskOps evidence snapshot.",
+            )
+        )
+
     return plans
 
 
@@ -190,3 +227,10 @@ def deduplicate_tool_plans(tool_plans: list[AgentToolPlan]) -> list[AgentToolPla
         seen.add(key)
         deduplicated.append(plan)
     return deduplicated
+
+
+def extract_requested_limit(message: str, *, default: int) -> int:
+    match = re.search(r"\d+", message)
+    if match is None:
+        return default
+    return min(max(int(match.group()), 1), 100)
