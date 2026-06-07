@@ -64,6 +64,8 @@ class OrchestrationRepository(Protocol):
         role: MessageRole,
         content: str,
         mcp_tool_call_ids: list[str] | None = None,
+        ui_cards: list[dict[str, Any]] | None = None,
+        ui_actions: list[dict[str, Any]] | None = None,
     ) -> ChatMessageResult:
         pass
 
@@ -330,6 +332,8 @@ class SqlOrchestrationRepository:
         role: MessageRole,
         content: str,
         mcp_tool_call_ids: list[str] | None = None,
+        ui_cards: list[dict[str, Any]] | None = None,
+        ui_actions: list[dict[str, Any]] | None = None,
     ) -> ChatMessageResult:
         query = text(
             """
@@ -360,7 +364,13 @@ class SqlOrchestrationRepository:
             "session_id": session_id,
             "role": role,
             "content": content,
-            "metadata": to_json({"mcp_tool_call_ids": mcp_tool_call_ids or []}),
+            "metadata": to_json(
+                {
+                    "mcp_tool_call_ids": mcp_tool_call_ids or [],
+                    "ui_cards": ui_cards or [],
+                    "ui_actions": ui_actions or [],
+                }
+            ),
         }
         with self._session_scope(commit=True) as session:
             row = session.execute(query, params).mappings().one()
@@ -798,6 +808,8 @@ def build_chat_message(row) -> ChatMessageResult:
         content=row["content"],
         created_at=row["created_at"],
         mcp_tool_call_ids=metadata.get("mcp_tool_call_ids", []),
+        ui_cards=metadata.get("ui_cards", []),
+        ui_actions=metadata.get("ui_actions", []),
     )
 
 
