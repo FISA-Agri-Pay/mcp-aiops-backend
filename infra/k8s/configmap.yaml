@@ -1,0 +1,59 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: mcp-aiops-backend-config
+  namespace: default
+  labels:
+    app.kubernetes.io/name: mcp-aiops-backend
+    app.kubernetes.io/part-of: aiops-platform
+data:
+  APP_ENV: "production"
+  APP_NAME: "aiops-platform"
+  APP_VERSION: "0.1.0"
+  APP_TIMEZONE: "Asia/Seoul"
+
+  FARMER_BNPL_REQUIRED_DOCUMENTS: "identity_verification,farmer_registration,farmland_document,crop_plan,insurance_certificate"
+  FARM_ADVISORY_DEFAULT_BNPL_BUDGET: "3000000"
+  FARM_ADVISORY_MAX_AREA_HECTARE: "1000"
+  FARMER_BNPL_MAX_SEARCH_LIMIT: "50"
+  FARMER_BNPL_DEFAULT_CHECKOUT_PRODUCT_ID: "10000000-0000-0000-0000-000000000002"
+  FARMER_BNPL_DEFAULT_CHECKOUT_QUANTITY: "2"
+  ADMIN_RISKOPS_MAX_SEARCH_LIMIT: "100"
+  PREDICTION_SCALING_MAX_SEARCH_LIMIT: "100"
+
+  LLM_PROVIDER: "groq"
+  LLM_MODEL: "qwen/qwen3-32b"
+  LLM_API_BASE_URL: "https://api.groq.com/openai/v1"
+  LLM_REQUIRE_API_KEY: "true"
+  LLM_MAX_TOKENS: "1600"
+  LLM_TIMEOUT_SECONDS: "60"
+  LLM_TEMPERATURE: "0.1"
+
+  PROMETHEUS_BASE_URL: "http://prometheus-server.monitoring.svc.cluster.local:9090"
+  PROMETHEUS_SOURCE_URLS: ""
+  PROMETHEUS_TIMEOUT_SECONDS: "10"
+  LOKI_BASE_URL: "http://loki.monitoring.svc.cluster.local:3100"
+  LOKI_SOURCE_URLS: ""
+  LOKI_TIMEOUT_SECONDS: "10"
+  KUBERNETES_API_BASE_URL: "https://kubernetes.default.svc"
+  KUBERNETES_BEARER_TOKEN_FILE: "/var/run/secrets/kubernetes.io/serviceaccount/token"
+  KUBERNETES_CA_CERT_FILE: "/var/run/secrets/kubernetes.io/serviceaccount/ca.crt"
+  KUBERNETES_NAMESPACE_ALLOWLIST: "default,kube-system,aiops,monitoring"
+  KUBERNETES_TIMEOUT_SECONDS: "10"
+  KAFKA_ADMIN_BASE_URL: "http://kafka-admin.kafka.svc.cluster.local:8080"
+  KAFKA_TIMEOUT_SECONDS: "10"
+  BATCH_API_BASE_URL: "http://batch-api.jobs.svc.cluster.local:8081"
+  BATCH_TIMEOUT_SECONDS: "10"
+  ELASTICSEARCH_BASE_URL: "http://elasticsearch.logging.svc.cluster.local:9200"
+  ELASTICSEARCH_INDEX_ALLOWLIST: "logs-*,filebeat-*,metricbeat-*"
+  ELASTICSEARCH_TIMEOUT_SECONDS: "10"
+  KIBANA_BASE_URL: "http://kibana.logging.svc.cluster.local:5601"
+  RCA_DEFAULT_BEFORE_MINUTES: "10"
+  RCA_DEFAULT_AFTER_MINUTES: "5"
+
+  EMAIL_PROVIDER: "smtp"
+  SMTP_PORT: "587"
+  SMTP_FROM: "aiops@example.com"
+  SMTP_USE_TLS: "true"
+  OPS_REPORT_EMAIL_RECIPIENTS: ""
+  RCA_EMAIL_RECIPIENTS: ""

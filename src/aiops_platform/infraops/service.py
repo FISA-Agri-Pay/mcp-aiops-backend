@@ -104,6 +104,8 @@ class InfraOpsService:
             kubernetes_client=KubernetesClient(
                 app_settings.kubernetes_api_base_url,
                 bearer_token=app_settings.kubernetes_bearer_token,
+                bearer_token_file=app_settings.kubernetes_bearer_token_file,
+                ca_cert_file=app_settings.kubernetes_ca_cert_file,
                 timeout_seconds=app_settings.kubernetes_timeout_seconds,
             ),
             kafka_admin_client=KafkaAdminClient(

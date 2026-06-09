@@ -47,6 +47,7 @@ def test_fastapi_app_mounts_fastmcp_transport() -> None:
     app = create_app()
 
     assert any(route.path == MCP_TRANSPORT_MOUNT_PATH for route in app.routes)
+    assert any(route.path == f"/api/v1{MCP_TRANSPORT_MOUNT_PATH}" for route in app.routes)
 
 
 def test_fastmcp_server_exposes_registry_tools() -> None:

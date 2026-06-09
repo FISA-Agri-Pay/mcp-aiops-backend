@@ -23,6 +23,8 @@ from aiops_platform.mcp.server import (
 from aiops_platform.ops_reports.service import OpsReportService
 from aiops_platform.orchestration.service import OrchestrationService
 
+EXTERNAL_API_PREFIX = "/api/v1"
+
 
 def create_app() -> FastAPI:
     mcp_asgi_app = create_mcp_server().http_app(path=MCP_TRANSPORT_PATH)
@@ -50,9 +52,11 @@ def create_app() -> FastAPI:
     app.include_router(jobs_router)
     app.include_router(llmops_router)
     app.include_router(mcp_router)
+    app.include_router(mcp_router, prefix=EXTERNAL_API_PREFIX)
     app.include_router(rca_router)
     app.include_router(reports_router)
     app.mount(MCP_TRANSPORT_MOUNT_PATH, mcp_asgi_app)
+    app.mount(f"{EXTERNAL_API_PREFIX}{MCP_TRANSPORT_MOUNT_PATH}", mcp_asgi_app)
     return app
 
 

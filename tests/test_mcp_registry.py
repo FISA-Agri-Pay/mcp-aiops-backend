@@ -25,6 +25,21 @@ def test_mcp_servers_returns_initial_registry() -> None:
     assert all(server["server_status"] == "ACTIVE" for server in servers)
 
 
+def test_external_api_prefix_exposes_mcp_registry() -> None:
+    client = TestClient(create_app())
+
+    response = client.get("/api/v1/mcp/servers")
+
+    assert response.status_code == 200
+    assert {server["server_name"] for server in response.json()} == {
+        "farmer-bnpl-mcp",
+        "farm-advisory-mcp",
+        "admin-riskops-mcp",
+        "infraops-mcp",
+        "prediction-scaling-mcp",
+    }
+
+
 def test_mcp_tools_can_be_filtered_by_server_and_permission() -> None:
     client = TestClient(create_app())
 

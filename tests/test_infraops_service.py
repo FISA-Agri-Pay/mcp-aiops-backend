@@ -129,6 +129,34 @@ def test_kubernetes_client_calls_namespaced_read_apis() -> None:
     assert http_client.calls[0]["headers"]["Authorization"] == "Bearer token"
 
 
+def test_kubernetes_client_reads_bearer_token_file(tmp_path) -> None:
+    token_file = tmp_path / "token"
+    token_file.write_text("file-token\n", encoding="utf-8")
+    http_client = FakeHttpClient({"items": []})
+    client = KubernetesClient(
+        "https://kubernetes.default.svc",
+        bearer_token_file=str(token_file),
+        http_client=http_client,
+    )
+
+    assert client.pods("default") == {"items": []}
+    assert http_client.calls[0]["headers"]["Authorization"] == "Bearer file-token"
+
+
+def test_kubernetes_client_rejects_missing_service_account_files(tmp_path) -> None:
+    with pytest.raises(InfraOpsClientError, match="bearer token file"):
+        KubernetesClient(
+            "https://kubernetes.default.svc",
+            bearer_token_file=str(tmp_path / "missing-token"),
+        )
+
+    with pytest.raises(InfraOpsClientError, match="CA certificate file"):
+        KubernetesClient(
+            "https://kubernetes.default.svc",
+            ca_cert_file=str(tmp_path / "missing-ca.crt"),
+        )
+
+
 def test_kafka_admin_client_calls_consumer_lag_api() -> None:
     http_client = FakeHttpClient({"total_lag": 3})
     client = KafkaAdminClient(

@@ -86,6 +86,11 @@ class Settings(BaseSettings):
         alias="KUBERNETES_API_BASE_URL",
     )
     kubernetes_bearer_token: str = Field(default="", alias="KUBERNETES_BEARER_TOKEN")
+    kubernetes_bearer_token_file: str = Field(
+        default="",
+        alias="KUBERNETES_BEARER_TOKEN_FILE",
+    )
+    kubernetes_ca_cert_file: str = Field(default="", alias="KUBERNETES_CA_CERT_FILE")
     kubernetes_namespace_allowlist: str = Field(
         default="default,kube-system",
         alias="KUBERNETES_NAMESPACE_ALLOWLIST",
@@ -122,12 +127,12 @@ class Settings(BaseSettings):
     )
     kibana_base_url: str = Field(default="http://localhost:5601", alias="KIBANA_BASE_URL")
     rca_default_before_minutes: int = Field(
-        default=30,
+        default=10,
         ge=0,
         alias="RCA_DEFAULT_BEFORE_MINUTES",
     )
     rca_default_after_minutes: int = Field(
-        default=10,
+        default=5,
         ge=0,
         alias="RCA_DEFAULT_AFTER_MINUTES",
     )
@@ -142,6 +147,7 @@ class Settings(BaseSettings):
         default="",
         alias="OPS_REPORT_EMAIL_RECIPIENTS",
     )
+    rca_email_recipients: str = Field(default="", alias="RCA_EMAIL_RECIPIENTS")
 
 
 @lru_cache
