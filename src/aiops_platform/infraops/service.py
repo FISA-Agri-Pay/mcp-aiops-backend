@@ -59,6 +59,7 @@ KUBERNETES_RESOURCE_NAME_PATTERN = re.compile(r"^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9
 OBSERVABILITY_SOURCE_NAME_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:-]{0,63}$")
 MAX_KUBECTL_COMMAND_PART_LENGTH = 200
 ObservabilitySourceUrls = tuple[tuple[str, str], ...]
+KubernetesSource = tuple[KubernetesClient, tuple[str, ...]]
 
 
 class InfraOpsService:
@@ -74,6 +75,7 @@ class InfraOpsService:
         kibana_client: KibanaClient,
         kubernetes_namespace_allowlist: tuple[str, ...],
         elasticsearch_index_allowlist: tuple[str, ...],
+        kubernetes_sources: dict[str, KubernetesSource] | None = None,
         prometheus_sources: tuple[tuple[str, PrometheusClient], ...] | None = None,
         loki_sources: tuple[tuple[str, LokiClient], ...] | None = None,
     ) -> None:
@@ -88,6 +90,9 @@ class InfraOpsService:
         self._elasticsearch_index_allowlist = elasticsearch_index_allowlist
         self._prometheus_sources = prometheus_sources or (("default", prometheus_client),)
         self._loki_sources = loki_sources or (("default", loki_client),)
+        self._kubernetes_sources = kubernetes_sources or {
+            "eks": (kubernetes_client, kubernetes_namespace_allowlist)
+        }
 
     @classmethod
     def from_settings(cls, app_settings: Settings | None = None) -> InfraOpsService:
@@ -132,6 +137,7 @@ class InfraOpsService:
             elasticsearch_index_allowlist=parse_allowlist(
                 app_settings.elasticsearch_index_allowlist,
             ),
+            kubernetes_sources=build_kubernetes_sources(app_settings),
             prometheus_sources=build_prometheus_sources(app_settings),
             loki_sources=build_loki_sources(app_settings),
         )
@@ -205,17 +211,33 @@ class InfraOpsService:
             sources=sources,
         )
 
-    def get_k8s_pods(self, namespace: str | None = None) -> KubernetesResourceResult:
-        return self._get_kubernetes_resource("pods", namespace=namespace)
+    def get_k8s_pods(
+        self,
+        namespace: str | None = None,
+        source: str | None = None,
+    ) -> KubernetesResourceResult:
+        return self._get_kubernetes_resource("pods", namespace=namespace, source=source)
 
-    def get_k8s_events(self, namespace: str | None = None) -> KubernetesResourceResult:
-        return self._get_kubernetes_resource("events", namespace=namespace)
+    def get_k8s_events(
+        self,
+        namespace: str | None = None,
+        source: str | None = None,
+    ) -> KubernetesResourceResult:
+        return self._get_kubernetes_resource("events", namespace=namespace, source=source)
 
-    def get_k8s_deployments(self, namespace: str | None = None) -> KubernetesResourceResult:
-        return self._get_kubernetes_resource("deployments", namespace=namespace)
+    def get_k8s_deployments(
+        self,
+        namespace: str | None = None,
+        source: str | None = None,
+    ) -> KubernetesResourceResult:
+        return self._get_kubernetes_resource("deployments", namespace=namespace, source=source)
 
-    def get_k8s_hpa(self, namespace: str | None = None) -> KubernetesResourceResult:
-        return self._get_kubernetes_resource("hpa", namespace=namespace)
+    def get_k8s_hpa(
+        self,
+        namespace: str | None = None,
+        source: str | None = None,
+    ) -> KubernetesResourceResult:
+        return self._get_kubernetes_resource("hpa", namespace=namespace, source=source)
 
     def get_kafka_consumer_lag(
         self,
@@ -622,25 +644,44 @@ class InfraOpsService:
         resource: str,
         *,
         namespace: str | None,
+        source: str | None = None,
     ) -> KubernetesResourceResult:
-        resolved_namespace = self._resolve_namespace(namespace)
+        source_name, client, namespace_allowlist = self._resolve_kubernetes_source(source)
+        resolved_namespace = self._resolve_namespace(namespace, allowlist=namespace_allowlist)
         response = {
-            "pods": self._kubernetes_client.pods,
-            "events": self._kubernetes_client.events,
-            "deployments": self._kubernetes_client.deployments,
-            "hpa": self._kubernetes_client.hpa,
+            "pods": client.pods,
+            "events": client.events,
+            "deployments": client.deployments,
+            "hpa": client.hpa,
         }[resource](resolved_namespace)
         return KubernetesResourceResult(
+            source=source_name,
             namespace=resolved_namespace,
             items=response.get("items", []),
             raw=response,
         )
 
-    def _resolve_namespace(self, namespace: str | None) -> str:
-        resolved_namespace = namespace or self._kubernetes_namespace_allowlist[0]
+    def _resolve_kubernetes_source(self, source: str | None) -> tuple[str, KubernetesClient, tuple[str, ...]]:
+        resolved_source = source.strip() if source else "eks"
+        if resolved_source not in self._kubernetes_sources:
+            available_sources = ", ".join(sorted(self._kubernetes_sources))
+            raise InfraOpsValidationError(
+                f"Kubernetes source must be one of: {available_sources}."
+            )
+        client, namespace_allowlist = self._kubernetes_sources[resolved_source]
+        return resolved_source, client, namespace_allowlist
+
+    def _resolve_namespace(
+        self,
+        namespace: str | None,
+        *,
+        allowlist: tuple[str, ...] | None = None,
+    ) -> str:
+        resolved_allowlist = allowlist or self._kubernetes_namespace_allowlist
+        resolved_namespace = namespace or resolved_allowlist[0]
         validate_namespace(
             resolved_namespace,
-            allowlist=self._kubernetes_namespace_allowlist,
+            allowlist=resolved_allowlist,
         )
         return resolved_namespace
 
@@ -710,6 +751,32 @@ def build_loki_sources(app_settings: Settings) -> tuple[tuple[str, LokiClient], 
         )
         for source_name, source_url in source_urls
     )
+
+
+def build_kubernetes_sources(app_settings: Settings) -> dict[str, KubernetesSource]:
+    sources: dict[str, KubernetesSource] = {
+        "eks": (
+            KubernetesClient(
+                app_settings.kubernetes_api_base_url,
+                bearer_token=app_settings.kubernetes_bearer_token,
+                bearer_token_file=app_settings.kubernetes_bearer_token_file,
+                ca_cert_file=app_settings.kubernetes_ca_cert_file,
+                timeout_seconds=app_settings.kubernetes_timeout_seconds,
+            ),
+            parse_allowlist(app_settings.kubernetes_namespace_allowlist),
+        )
+    }
+    if app_settings.onprem_kubernetes_api_base_url:
+        sources["onprem"] = (
+            KubernetesClient(
+                app_settings.onprem_kubernetes_api_base_url,
+                bearer_token=app_settings.onprem_kubernetes_bearer_token,
+                ca_cert_data=app_settings.onprem_kubernetes_ca_cert,
+                timeout_seconds=app_settings.kubernetes_timeout_seconds,
+            ),
+            parse_allowlist(app_settings.onprem_kubernetes_namespace_allowlist),
+        )
+    return sources
 
 
 def parse_observability_source_urls(

@@ -163,6 +163,7 @@ class KubernetesClient:
         bearer_token: str = "",
         bearer_token_file: str = "",
         ca_cert_file: str = "",
+        ca_cert_data: str = "",
         timeout_seconds: float = 10.0,
         http_client: JsonHttpClient | None = None,
     ) -> None:
@@ -175,7 +176,7 @@ class KubernetesClient:
                 bearer_token_file=bearer_token_file,
             )
         )
-        self._ssl_context = self._build_ssl_context(ca_cert_file)
+        self._ssl_context = self._build_ssl_context(ca_cert_file, ca_cert_data)
 
     def pods(self, namespace: str) -> dict[str, Any]:
         return self._get_namespaced_resource(namespace, "pods")
@@ -231,7 +232,9 @@ class KubernetesClient:
         return {"Authorization": f"Bearer {bearer_token}"}
 
     @staticmethod
-    def _build_ssl_context(ca_cert_file: str) -> ssl.SSLContext | None:
+    def _build_ssl_context(ca_cert_file: str, ca_cert_data: str = "") -> ssl.SSLContext | None:
+        if ca_cert_data:
+            return ssl.create_default_context(cadata=ca_cert_data)
         if not ca_cert_file:
             return None
         try:

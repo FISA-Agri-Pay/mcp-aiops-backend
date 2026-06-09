@@ -40,6 +40,8 @@ data:
   KUBERNETES_CA_CERT_FILE: "/var/run/secrets/kubernetes.io/serviceaccount/ca.crt"
   KUBERNETES_NAMESPACE_ALLOWLIST: "default,kube-system,aiops,monitoring"
   KUBERNETES_TIMEOUT_SECONDS: "10"
+  ONPREM_KUBERNETES_API_BASE_URL: "https://10.30.2.51:6443"
+  ONPREM_KUBERNETES_NAMESPACE_ALLOWLIST: "default,kkpp,monitoring,keda,postgres-ha,ingress-nginx"
   KAFKA_ADMIN_BASE_URL: "http://kafka-admin.kafka.svc.cluster.local:8080"
   KAFKA_TIMEOUT_SECONDS: "10"
   BATCH_API_BASE_URL: "http://batch-api.jobs.svc.cluster.local:8081"

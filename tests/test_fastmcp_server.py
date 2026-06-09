@@ -614,37 +614,71 @@ def test_fastmcp_multi_cluster_observability_tools_return_results() -> None:
 
 def test_fastmcp_kubernetes_read_tools_return_results() -> None:
     class FakeInfraOpsService:
-        def get_k8s_pods(self, namespace: str | None = None):
+        def get_k8s_pods(self, namespace: str | None = None, source: str | None = None):
             assert namespace == "default"
+            assert source == "onprem"
             return KubernetesResourceResult(
+                source="onprem",
                 namespace="default",
                 items=[{"metadata": {"name": "api-pod"}}],
                 raw={"items": [{"metadata": {"name": "api-pod"}}]},
             )
 
-        def get_k8s_events(self, namespace: str | None = None):
+        def get_k8s_events(self, namespace: str | None = None, source: str | None = None):
             assert namespace == "default"
-            return KubernetesResourceResult(namespace="default", items=[], raw={"items": []})
+            assert source == "onprem"
+            return KubernetesResourceResult(
+                source="onprem",
+                namespace="default",
+                items=[],
+                raw={"items": []},
+            )
 
-        def get_k8s_deployments(self, namespace: str | None = None):
+        def get_k8s_deployments(
+            self,
+            namespace: str | None = None,
+            source: str | None = None,
+        ):
             assert namespace == "default"
-            return KubernetesResourceResult(namespace="default", items=[], raw={"items": []})
+            assert source == "onprem"
+            return KubernetesResourceResult(
+                source="onprem",
+                namespace="default",
+                items=[],
+                raw={"items": []},
+            )
 
-        def get_k8s_hpa(self, namespace: str | None = None):
+        def get_k8s_hpa(self, namespace: str | None = None, source: str | None = None):
             assert namespace == "default"
-            return KubernetesResourceResult(namespace="default", items=[], raw={"items": []})
+            assert source == "onprem"
+            return KubernetesResourceResult(
+                source="onprem",
+                namespace="default",
+                items=[],
+                raw={"items": []},
+            )
 
     async def run() -> None:
         async with Client(create_mcp_server(infraops_service=FakeInfraOpsService())) as client:
-            pods = await client.call_tool("get_k8s_pods", {"namespace": "default"})
-            events = await client.call_tool("get_k8s_events", {"namespace": "default"})
+            pods = await client.call_tool(
+                "get_k8s_pods",
+                {"namespace": "default", "source": "onprem"},
+            )
+            events = await client.call_tool(
+                "get_k8s_events",
+                {"namespace": "default", "source": "onprem"},
+            )
             deployments = await client.call_tool(
                 "get_k8s_deployments",
-                {"namespace": "default"},
+                {"namespace": "default", "source": "onprem"},
             )
-            hpa = await client.call_tool("get_k8s_hpa", {"namespace": "default"})
+            hpa = await client.call_tool(
+                "get_k8s_hpa",
+                {"namespace": "default", "source": "onprem"},
+            )
 
         assert pods.data["items"][0]["metadata"]["name"] == "api-pod"
+        assert pods.data["source"] == "onprem"
         assert events.data["namespace"] == "default"
         assert deployments.data["namespace"] == "default"
         assert hpa.data["namespace"] == "default"

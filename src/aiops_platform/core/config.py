@@ -100,6 +100,19 @@ class Settings(BaseSettings):
         gt=0,
         alias="KUBERNETES_TIMEOUT_SECONDS",
     )
+    onprem_kubernetes_api_base_url: str = Field(
+        default="",
+        alias="ONPREM_KUBERNETES_API_BASE_URL",
+    )
+    onprem_kubernetes_bearer_token: str = Field(
+        default="",
+        alias="ONPREM_KUBERNETES_BEARER_TOKEN",
+    )
+    onprem_kubernetes_ca_cert: str = Field(default="", alias="ONPREM_KUBERNETES_CA_CERT")
+    onprem_kubernetes_namespace_allowlist: str = Field(
+        default="default,kkpp,monitoring,keda,postgres-ha,ingress-nginx",
+        alias="ONPREM_KUBERNETES_NAMESPACE_ALLOWLIST",
+    )
     kafka_admin_base_url: str = Field(
         default="http://localhost:8080",
         alias="KAFKA_ADMIN_BASE_URL",

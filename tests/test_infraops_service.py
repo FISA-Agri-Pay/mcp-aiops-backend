@@ -462,6 +462,47 @@ def test_infraops_service_maps_kubernetes_resources() -> None:
     )
 
 
+def test_infraops_service_maps_onprem_kubernetes_source() -> None:
+    eks_http_client = FakeHttpClient({"items": []})
+    onprem_http_client = FakeHttpClient({"items": [{"metadata": {"name": "onprem-pod"}}]})
+    service = make_infraops_service(
+        kubernetes_client=KubernetesClient(
+            "http://kubernetes:8001",
+            http_client=eks_http_client,
+        ),
+        kubernetes_sources={
+            "eks": (
+                KubernetesClient("http://kubernetes:8001", http_client=eks_http_client),
+                parse_allowlist("default,kube-system"),
+            ),
+            "onprem": (
+                KubernetesClient(
+                    "https://10.30.2.51:6443",
+                    bearer_token="token",
+                    http_client=onprem_http_client,
+                ),
+                parse_allowlist("kkpp,monitoring"),
+            ),
+        },
+    )
+
+    result = service.get_k8s_pods(namespace="kkpp", source="onprem")
+
+    assert result.source == "onprem"
+    assert result.namespace == "kkpp"
+    assert result.items == [{"metadata": {"name": "onprem-pod"}}]
+    assert onprem_http_client.calls[0]["url"] == (
+        "https://10.30.2.51:6443/api/v1/namespaces/kkpp/pods"
+    )
+
+
+def test_infraops_service_rejects_unknown_kubernetes_source() -> None:
+    service = make_infraops_service()
+
+    with pytest.raises(InfraOpsValidationError, match="Kubernetes source"):
+        service.get_k8s_pods(namespace="default", source="missing")
+
+
 def test_infraops_service_maps_kafka_consumer_lag() -> None:
     service = make_infraops_service(
         kafka_admin_client=KafkaAdminClient(

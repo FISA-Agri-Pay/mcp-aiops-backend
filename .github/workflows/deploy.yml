@@ -160,6 +160,8 @@ jobs:
             --namespace "${K8S_NAMESPACE}" \
             --from-literal=DATABASE_URL="${DATABASE_URL}" \
             --from-literal=LLM_API_KEY="${LLM_API_KEY}" \
+            --from-literal=ONPREM_KUBERNETES_BEARER_TOKEN="${ONPREM_KUBERNETES_BEARER_TOKEN}" \
+            --from-literal=ONPREM_KUBERNETES_CA_CERT="${ONPREM_KUBERNETES_CA_CERT}" \
             --from-literal=ELASTICSEARCH_USERNAME="${ELASTICSEARCH_USERNAME}" \
             --from-literal=ELASTICSEARCH_PASSWORD="${ELASTICSEARCH_PASSWORD}" \
             --from-literal=SMTP_HOST="${SMTP_HOST}" \
@@ -172,6 +174,8 @@ jobs:
         env:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
           LLM_API_KEY: ${{ secrets.LLM_API_KEY }}
+          ONPREM_KUBERNETES_BEARER_TOKEN: ${{ secrets.ONPREM_KUBERNETES_BEARER_TOKEN }}
+          ONPREM_KUBERNETES_CA_CERT: ${{ secrets.ONPREM_KUBERNETES_CA_CERT }}
           ELASTICSEARCH_USERNAME: ${{ secrets.ELASTICSEARCH_USERNAME }}
           ELASTICSEARCH_PASSWORD: ${{ secrets.ELASTICSEARCH_PASSWORD }}
           SMTP_HOST: ${{ secrets.SMTP_HOST }}
