@@ -122,10 +122,25 @@ jobs:
           test -n "${SMTP_FROM}" || { echo "SMTP_FROM secret is required."; exit 1; }
           test -n "${OPS_REPORT_EMAIL_RECIPIENTS}" || { echo "OPS_REPORT_EMAIL_RECIPIENTS secret is required."; exit 1; }
 
+      - name: Normalize AWS role ARN
+        env:
+          AWS_ROLE_TO_ASSUME: ${{ secrets.AWS_ROLE_TO_ASSUME }}
+        run: |
+          role="${AWS_ROLE_TO_ASSUME//$'\r'/}"
+          role="${role//$'\n'/}"
+          role="$(echo "${role}" | xargs)"
+          if [[ "${role}" == arn:* ]]; then
+            role_arn="${role}"
+          else
+            role_arn="arn:aws:iam::${AWS_ACCOUNT_ID}:role/${role}"
+          fi
+          echo "::add-mask::${role_arn}"
+          echo "AWS_ROLE_ARN=${role_arn}" >> "${GITHUB_ENV}"
+
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v4
         with:
-          role-to-assume: ${{ startsWith(secrets.AWS_ROLE_TO_ASSUME, 'arn:') && secrets.AWS_ROLE_TO_ASSUME || format('arn:aws:iam::{0}:role/{1}', env.AWS_ACCOUNT_ID, secrets.AWS_ROLE_TO_ASSUME) }}
+          role-to-assume: ${{ env.AWS_ROLE_ARN }}
           aws-region: ${{ env.AWS_REGION }}
 
       - name: Log in to Amazon ECR
