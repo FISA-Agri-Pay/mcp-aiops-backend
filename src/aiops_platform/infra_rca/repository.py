@@ -23,7 +23,10 @@ from aiops_platform.infra_rca.schemas import (
 from aiops_platform.mcp.masking import mask_payload
 from aiops_platform.mcp.policy import resolve_tool_policy
 from aiops_platform.mcp.schemas import McpToolCallStatus, McpToolPermission
-from aiops_platform.orchestration.repository import ensure_mcp_tool
+from aiops_platform.orchestration.repository import (
+    ensure_job_runs_schedule_columns,
+    ensure_mcp_tool,
+)
 
 
 class InfraRcaRepository(Protocol):
@@ -734,7 +737,8 @@ class SqlInfraRcaRepository:
             limit :limit
             """
         )
-        with self._session_scope() as session:
+        with self._session_scope(commit=True) as session:
+            ensure_job_runs_schedule_columns(session)
             rows = session.execute(
                 query,
                 {"due_at": due_at, "limit": limit},

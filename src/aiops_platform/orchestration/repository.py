@@ -443,6 +443,7 @@ class SqlOrchestrationRepository:
             "job_context": json.dumps(job_context or {}, ensure_ascii=False),
         }
         with self._session_scope(commit=True) as session:
+            ensure_job_runs_schedule_columns(session)
             row = session.execute(query, params).mappings().one()
         return build_job(row, api_job_type=job_type)
 
@@ -795,6 +796,18 @@ def ensure_mcp_tool(
         },
     ).mappings().one()
     return server_row["public_id"], tool_row["public_id"]
+
+
+def ensure_job_runs_schedule_columns(session: Session) -> None:
+    session.execute(
+        text("alter table ai.job_runs add column if not exists scheduled_at timestamp")
+    )
+    session.execute(
+        text(
+            "alter table ai.job_runs "
+            "add column if not exists job_context jsonb not null default '{}'::jsonb"
+        )
+    )
 
 
 def build_chat_session(row) -> ChatSessionResult:
