@@ -13,6 +13,7 @@ permissions:
 
 env:
   AWS_ACCOUNT_ID: ${{ vars.AWS_ACCOUNT_ID || secrets.AWS_ACCOUNT_ID || '153585581837' }}
+  AWS_ROLE_ARN: ${{ vars.AWS_ROLE_ARN || 'arn:aws:iam::153585581837:role/github-actions-mcp-aiops-deploy' }}
   AWS_REGION: ${{ vars.AWS_REGION || secrets.AWS_REGION || 'ap-northeast-2' }}
   ECR_REPOSITORY: ${{ vars.ECR_REPOSITORY || secrets.ECR_REPOSITORY || 'kkpp/mcp-aiops-backend' }}
   EKS_CLUSTER_NAME: ${{ vars.EKS_CLUSTER_NAME || secrets.EKS_CLUSTER_NAME || 'kkpp-eks' }}
@@ -104,7 +105,6 @@ jobs:
 
       - name: Validate deployment inputs
         env:
-          AWS_ROLE_TO_ASSUME: ${{ secrets.AWS_ROLE_TO_ASSUME }}
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
           LLM_API_KEY: ${{ secrets.LLM_API_KEY }}
           SMTP_HOST: ${{ secrets.SMTP_HOST }}
@@ -113,7 +113,6 @@ jobs:
           SMTP_FROM: ${{ secrets.SMTP_FROM }}
           OPS_REPORT_EMAIL_RECIPIENTS: ${{ secrets.OPS_REPORT_EMAIL_RECIPIENTS }}
         run: |
-          test -n "${AWS_ROLE_TO_ASSUME}" || { echo "AWS_ROLE_TO_ASSUME secret is required."; exit 1; }
           test -n "${DATABASE_URL}" || { echo "DATABASE_URL secret is required."; exit 1; }
           test -n "${LLM_API_KEY}" || { echo "LLM_API_KEY secret is required for external Groq LLM."; exit 1; }
           test -n "${SMTP_HOST}" || { echo "SMTP_HOST secret is required."; exit 1; }
@@ -121,21 +120,6 @@ jobs:
           test -n "${SMTP_PASSWORD}" || { echo "SMTP_PASSWORD secret is required."; exit 1; }
           test -n "${SMTP_FROM}" || { echo "SMTP_FROM secret is required."; exit 1; }
           test -n "${OPS_REPORT_EMAIL_RECIPIENTS}" || { echo "OPS_REPORT_EMAIL_RECIPIENTS secret is required."; exit 1; }
-
-      - name: Normalize AWS role ARN
-        env:
-          AWS_ROLE_TO_ASSUME: ${{ secrets.AWS_ROLE_TO_ASSUME }}
-        run: |
-          role="${AWS_ROLE_TO_ASSUME//$'\r'/}"
-          role="${role//$'\n'/}"
-          role="$(echo "${role}" | xargs)"
-          if [[ "${role}" == arn:* ]]; then
-            role_arn="${role}"
-          else
-            role_arn="arn:aws:iam::${AWS_ACCOUNT_ID}:role/${role}"
-          fi
-          echo "::add-mask::${role_arn}"
-          echo "AWS_ROLE_ARN=${role_arn}" >> "${GITHUB_ENV}"
 
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v4
