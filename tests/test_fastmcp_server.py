@@ -28,6 +28,7 @@ from aiops_platform.infraops.schemas import (
 from aiops_platform.main import create_app
 from aiops_platform.mcp.registry import list_mcp_tools
 from aiops_platform.mcp.server import (
+    BATCH_TOOL_NAMES,
     ELK_TOOL_NAMES,
     KAFKA_TOOL_NAMES,
     MCP_TRANSPORT_MOUNT_PATH,
@@ -187,6 +188,18 @@ def test_fastmcp_server_hides_kafka_tools_when_disabled(monkeypatch) -> None:
             tools = {tool.name for tool in await client.list_tools()}
 
         assert KAFKA_TOOL_NAMES.isdisjoint(tools)
+
+    asyncio.run(run())
+
+
+def test_fastmcp_server_hides_batch_tools_when_disabled(monkeypatch) -> None:
+    monkeypatch.setattr(mcp_server_settings, "infraops_batch_enabled", False)
+
+    async def run() -> None:
+        async with Client(create_mcp_server()) as client:
+            tools = {tool.name for tool in await client.list_tools()}
+
+        assert BATCH_TOOL_NAMES.isdisjoint(tools)
 
     asyncio.run(run())
 

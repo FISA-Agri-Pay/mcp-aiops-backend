@@ -527,8 +527,9 @@ class InfraOpsService:
                     topic=request.kafka_topic,
                 ).model_dump(mode="json"),
             ),
-            self._capture_source(
+            self._capture_optional_source(
                 "batch",
+                request.batch_job_name,
                 lambda: self.get_batch_run_status(
                     job_name=request.batch_job_name,
                 ).model_dump(mode="json"),
@@ -599,8 +600,9 @@ class InfraOpsService:
                     topic=request.kafka_topic,
                 ).model_dump(mode="json"),
             ),
-            self._capture_source(
+            self._capture_optional_source(
                 "batch",
+                request.batch_job_name,
                 lambda: self.get_batch_run_status(
                     job_name=request.batch_job_name,
                 ).model_dump(mode="json"),

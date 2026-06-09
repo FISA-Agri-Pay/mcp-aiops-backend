@@ -123,6 +123,7 @@ class Settings(BaseSettings):
         alias="BATCH_API_BASE_URL",
     )
     batch_timeout_seconds: float = Field(default=10.0, gt=0, alias="BATCH_TIMEOUT_SECONDS")
+    infraops_batch_enabled: bool = Field(default=True, alias="INFRAOPS_BATCH_ENABLED")
     elasticsearch_base_url: str = Field(
         default="http://localhost:9200",
         alias="ELASTICSEARCH_BASE_URL",

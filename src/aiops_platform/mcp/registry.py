@@ -35,6 +35,9 @@ ELK_TOOL_NAMES = {
 KAFKA_TOOL_NAMES = {
     "get_kafka_consumer_lag",
 }
+BATCH_TOOL_NAMES = {
+    "get_batch_run_status",
+}
 
 
 MCP_SERVERS: tuple[McpServerMetadata, ...] = (
@@ -180,12 +183,15 @@ def _filter_infraops_tools(
     *,
     include_elk: bool,
     include_kafka: bool,
+    include_batch: bool,
 ) -> list[McpToolMetadata]:
     disabled_tools: set[str] = set()
     if not include_elk:
         disabled_tools.update(ELK_TOOL_NAMES)
     if not include_kafka:
         disabled_tools.update(KAFKA_TOOL_NAMES)
+    if not include_batch:
+        disabled_tools.update(BATCH_TOOL_NAMES)
     return [tool for tool in tools if tool.tool_name not in disabled_tools]
 
 
@@ -193,10 +199,14 @@ def list_mcp_servers(
     *,
     include_elk: bool | None = None,
     include_kafka: bool | None = None,
+    include_batch: bool | None = None,
 ) -> list[McpServerMetadata]:
     resolved_include_elk = settings.infraops_elk_enabled if include_elk is None else include_elk
     resolved_include_kafka = (
         settings.infraops_kafka_enabled if include_kafka is None else include_kafka
+    )
+    resolved_include_batch = (
+        settings.infraops_batch_enabled if include_batch is None else include_batch
     )
     return [
         server.model_copy(
@@ -205,6 +215,7 @@ def list_mcp_servers(
                     server.tools,
                     include_elk=resolved_include_elk,
                     include_kafka=resolved_include_kafka,
+                    include_batch=resolved_include_batch,
                 )
             }
         )
@@ -217,10 +228,14 @@ def list_mcp_tools(
     permission: McpToolPermission | None = None,
     include_elk: bool | None = None,
     include_kafka: bool | None = None,
+    include_batch: bool | None = None,
 ) -> list[McpToolMetadata]:
     resolved_include_elk = settings.infraops_elk_enabled if include_elk is None else include_elk
     resolved_include_kafka = (
         settings.infraops_kafka_enabled if include_kafka is None else include_kafka
+    )
+    resolved_include_batch = (
+        settings.infraops_batch_enabled if include_batch is None else include_batch
     )
     tools = [
         tool
@@ -229,6 +244,7 @@ def list_mcp_tools(
             server.tools,
             include_elk=resolved_include_elk,
             include_kafka=resolved_include_kafka,
+            include_batch=resolved_include_batch,
         )
     ]
     normalized_server_name = server_name.strip() if server_name is not None else None

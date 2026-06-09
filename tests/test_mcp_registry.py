@@ -15,6 +15,9 @@ ELK_TOOL_NAMES = {
 KAFKA_TOOL_NAMES = {
     "get_kafka_consumer_lag",
 }
+BATCH_TOOL_NAMES = {
+    "get_batch_run_status",
+}
 
 
 def test_mcp_servers_returns_initial_registry() -> None:
@@ -96,6 +99,15 @@ def test_mcp_registry_can_hide_kafka_tools() -> None:
     assert KAFKA_TOOL_NAMES.isdisjoint({tool.tool_name for tool in tools})
     infraops_server = next(server for server in servers if server.server_name == "infraops-mcp")
     assert KAFKA_TOOL_NAMES.isdisjoint({tool.tool_name for tool in infraops_server.tools})
+
+
+def test_mcp_registry_can_hide_batch_tools() -> None:
+    tools = list_mcp_tools(server_name="infraops-mcp", include_batch=False)
+    servers = list_mcp_servers(include_batch=False)
+
+    assert BATCH_TOOL_NAMES.isdisjoint({tool.tool_name for tool in tools})
+    infraops_server = next(server for server in servers if server.server_name == "infraops-mcp")
+    assert BATCH_TOOL_NAMES.isdisjoint({tool.tool_name for tool in infraops_server.tools})
 
 
 def test_mcp_tools_trims_server_name_filter() -> None:

@@ -630,7 +630,7 @@ def test_infraops_service_creates_partial_rca_snapshot() -> None:
         "elasticsearch": "FAILED",
         "kubernetes": "SUCCESS",
         "kafka": "SKIPPED",
-        "batch": "SUCCESS",
+        "batch": "SKIPPED",
     }
 
 
@@ -662,9 +662,9 @@ def test_infraops_service_aggregates_daily_ops_metrics() -> None:
     assert result.report_date == "2026-06-05"
     assert result.partial is True
     assert result.metrics == {
-        "successful_sources": 3,
+        "successful_sources": 2,
         "failed_sources": 2,
-        "skipped_sources": 1,
+        "skipped_sources": 2,
         "pod_count": 1,
         "event_count": 1,
         "deployment_count": 1,

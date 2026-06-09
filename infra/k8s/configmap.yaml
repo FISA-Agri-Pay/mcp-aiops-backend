@@ -47,6 +47,7 @@ data:
   INFRAOPS_KAFKA_ENABLED: "false"
   BATCH_API_BASE_URL: "http://batch-api.jobs.svc.cluster.local:8081"
   BATCH_TIMEOUT_SECONDS: "10"
+  INFRAOPS_BATCH_ENABLED: "false"
   ELASTICSEARCH_BASE_URL: "http://elasticsearch.logging.svc.cluster.local:9200"
   ELASTICSEARCH_INDEX_ALLOWLIST: "logs-*,filebeat-*,metricbeat-*"
   ELASTICSEARCH_TIMEOUT_SECONDS: "10"
