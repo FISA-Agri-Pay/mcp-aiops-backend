@@ -50,6 +50,29 @@ jobs:
       - name: Install dependencies
         run: python -m pip install -e ".[dev]"
 
+      - name: Initialize test database
+        env:
+          DATABASE_URL: postgresql+psycopg://kkpp:kkpp@localhost:5432/kkpp
+        run: |
+          python - <<'PY'
+          import os
+          from pathlib import Path
+
+          import psycopg
+
+          database_url = os.environ["DATABASE_URL"].replace(
+              "postgresql+psycopg://",
+              "postgresql://",
+              1,
+          )
+          schema_sql = (
+              "CREATE EXTENSION IF NOT EXISTS pgcrypto;\n"
+              + Path("tests/seed/ci_schema.sql").read_text(encoding="utf-8")
+          )
+          with psycopg.connect(database_url) as connection:
+              connection.execute(schema_sql)
+          PY
+
       - name: Run tests
         env:
           DATABASE_URL: postgresql+psycopg://kkpp:kkpp@localhost:5432/kkpp
