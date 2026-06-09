@@ -176,7 +176,7 @@ GitHub Actions에 필요한 값은 아래처럼 설정합니다.
 
 | 이름 | 위치 | 설명 |
 | --- | --- | --- |
-| `AWS_ROLE_TO_ASSUME` | Secret | GitHub OIDC가 assume할 AWS IAM Role ARN |
+| `AWS_ROLE_ARN` | Variable 또는 Secret | GitHub OIDC가 assume할 AWS IAM Role ARN |
 | `AWS_REGION` | Variable 또는 Secret | 기본값: `ap-northeast-2` |
 | `ECR_REPOSITORY` | Variable 또는 Secret | 기본값: `kkpp/mcp-aiops-backend` |
 | `EKS_CLUSTER_NAME` | Variable 또는 Secret | 기본값: `kkpp-eks` |

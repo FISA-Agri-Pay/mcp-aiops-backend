@@ -38,7 +38,7 @@ data:
   KUBERNETES_API_BASE_URL: "https://kubernetes.default.svc"
   KUBERNETES_BEARER_TOKEN_FILE: "/var/run/secrets/kubernetes.io/serviceaccount/token"
   KUBERNETES_CA_CERT_FILE: "/var/run/secrets/kubernetes.io/serviceaccount/ca.crt"
-  KUBERNETES_NAMESPACE_ALLOWLIST: "default,kube-system,aiops,monitoring"
+  KUBERNETES_NAMESPACE_ALLOWLIST: "default,kube-system,monitoring,service-catalog"
   KUBERNETES_TIMEOUT_SECONDS: "10"
   ONPREM_KUBERNETES_API_BASE_URL: "https://10.30.2.51:6443"
   ONPREM_KUBERNETES_NAMESPACE_ALLOWLIST: "default,kkpp,monitoring,keda,postgres-ha,ingress-nginx"

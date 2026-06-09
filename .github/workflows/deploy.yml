@@ -9,15 +9,14 @@ on:
 
 permissions:
   contents: read
-  id-token: write
 
 env:
   AWS_ACCOUNT_ID: ${{ vars.AWS_ACCOUNT_ID || secrets.AWS_ACCOUNT_ID || '153585581837' }}
-  AWS_ROLE_ARN: ${{ vars.AWS_ROLE_ARN || 'arn:aws:iam::153585581837:role/github-actions-mcp-aiops-deploy' }}
+  AWS_ROLE_ARN: ${{ vars.AWS_ROLE_ARN || secrets.AWS_ROLE_ARN || 'arn:aws:iam::153585581837:role/github-actions-mcp-aiops-deploy' }}
   AWS_REGION: ${{ vars.AWS_REGION || secrets.AWS_REGION || 'ap-northeast-2' }}
   ECR_REPOSITORY: ${{ vars.ECR_REPOSITORY || secrets.ECR_REPOSITORY || 'kkpp/mcp-aiops-backend' }}
   EKS_CLUSTER_NAME: ${{ vars.EKS_CLUSTER_NAME || secrets.EKS_CLUSTER_NAME || 'kkpp-eks' }}
-  K8S_NAMESPACE: default
+  K8S_NAMESPACE: ${{ vars.K8S_NAMESPACE || 'default' }}
   K8S_DEPLOYMENT: ${{ vars.K8S_DEPLOYMENT || 'mcp-aiops-backend' }}
   K8S_SERVICE: ${{ vars.K8S_SERVICE || 'mcp-aiops-backend' }}
   K8S_SECRET_NAME: ${{ vars.K8S_SECRET_NAME || 'mcp-aiops-backend-secret' }}
@@ -42,10 +41,12 @@ jobs:
           --health-retries 5
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+        with:
+          persist-credentials: false
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
         with:
           python-version: "3.11"
 
@@ -99,9 +100,14 @@ jobs:
     name: Build, push, and deploy
     runs-on: ubuntu-latest
     needs: test
+    permissions:
+      contents: read
+      id-token: write
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+        with:
+          persist-credentials: false
 
       - name: Validate deployment inputs
         env:
@@ -122,14 +128,14 @@ jobs:
           test -n "${OPS_REPORT_EMAIL_RECIPIENTS}" || { echo "OPS_REPORT_EMAIL_RECIPIENTS secret is required."; exit 1; }
 
       - name: Configure AWS credentials
-        uses: aws-actions/configure-aws-credentials@v4
+        uses: aws-actions/configure-aws-credentials@ff717079ee2060e4bcee96c4779b553acc87447c
         with:
           role-to-assume: ${{ env.AWS_ROLE_ARN }}
           aws-region: ${{ env.AWS_REGION }}
 
       - name: Log in to Amazon ECR
         id: ecr-login
-        uses: aws-actions/amazon-ecr-login@v2
+        uses: aws-actions/amazon-ecr-login@fa648b43de3d4d023bcb3f89ed6940096949c419
 
       - name: Build and push image
         env:
@@ -142,17 +148,17 @@ jobs:
           echo "IMAGE_URI=${IMAGE_URI}" >> "${GITHUB_ENV}"
 
       - name: Set up kubectl
-        uses: azure/setup-kubectl@v4
+        uses: azure/setup-kubectl@c0c8b32d33a5244f1e5947304550403b63930415
 
       - name: Configure kubeconfig
         run: aws eks update-kubeconfig --region "${AWS_REGION}" --name "${EKS_CLUSTER_NAME}"
 
       - name: Apply base manifests
         run: |
-          kubectl apply -f infra/k8s/serviceaccount.yaml
-          kubectl apply -f infra/k8s/rbac.yaml
-          kubectl apply -f infra/k8s/configmap.yaml
-          kubectl apply -f infra/k8s/service.yaml
+          kubectl create namespace "${K8S_NAMESPACE}" --dry-run=client -o yaml | kubectl apply -f -
+          for manifest in serviceaccount rbac configmap service; do
+            sed "s|namespace: default|namespace: ${K8S_NAMESPACE}|g" "infra/k8s/${manifest}.yaml" | kubectl apply -f -
+          done
 
       - name: Apply runtime secret
         run: |
@@ -187,8 +193,16 @@ jobs:
 
       - name: Deploy image
         run: |
-          sed "s|REPLACE_IMAGE|${IMAGE_URI}|g" infra/k8s/deployment.yaml | kubectl apply -f -
-          sed "s|REPLACE_IMAGE|${IMAGE_URI}|g" infra/k8s/rca-due-job-cronjob.yaml | kubectl apply -f -
+          sed \
+            -e "s|REPLACE_IMAGE|${IMAGE_URI}|g" \
+            -e "s|namespace: default|namespace: ${K8S_NAMESPACE}|g" \
+            -e "s|name: mcp-aiops-backend-secret|name: ${K8S_SECRET_NAME}|g" \
+            infra/k8s/deployment.yaml | kubectl apply -f -
+          sed \
+            -e "s|REPLACE_IMAGE|${IMAGE_URI}|g" \
+            -e "s|namespace: default|namespace: ${K8S_NAMESPACE}|g" \
+            -e "s|mcp-aiops-backend.default.svc.cluster.local|${K8S_SERVICE}.${K8S_NAMESPACE}.svc.cluster.local|g" \
+            infra/k8s/rca-due-job-cronjob.yaml | kubectl apply -f -
           kubectl rollout status "deployment/${K8S_DEPLOYMENT}" \
             --namespace "${K8S_NAMESPACE}" \
             --timeout=180s

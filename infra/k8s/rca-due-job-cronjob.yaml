@@ -21,10 +21,23 @@ spec:
             app.kubernetes.io/part-of: aiops-platform
         spec:
           restartPolicy: Never
+          automountServiceAccountToken: false
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 10001
+            runAsGroup: 10001
+            fsGroup: 10001
+            seccompProfile:
+              type: RuntimeDefault
           containers:
             - name: runner
               image: REPLACE_IMAGE
               imagePullPolicy: IfNotPresent
+              securityContext:
+                allowPrivilegeEscalation: false
+                readOnlyRootFilesystem: true
+                capabilities:
+                  drop: ["ALL"]
               command:
                 - python
                 - -c
@@ -35,3 +48,9 @@ spec:
                   request = urllib.request.Request(url, method="POST")
                   with urllib.request.urlopen(request, timeout=30) as response:
                       print(response.read().decode("utf-8"))
+              volumeMounts:
+                - name: tmp
+                  mountPath: /tmp
+          volumes:
+            - name: tmp
+              emptyDir: {}

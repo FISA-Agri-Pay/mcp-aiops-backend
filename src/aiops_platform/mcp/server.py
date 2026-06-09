@@ -1,9 +1,10 @@
 import logging
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from time import perf_counter
 from typing import Any
 
 from fastmcp import FastMCP
+from fastmcp.exceptions import NotFoundError
 
 from aiops_platform.admin_riskops.service import AdminRiskOpsService
 from aiops_platform.core.config import settings
@@ -2388,15 +2389,20 @@ def create_mcp_server(
         return result
 
     if not settings.infraops_elk_enabled:
-        for tool_name in ELK_TOOL_NAMES:
-            mcp.remove_tool(tool_name)
+        _remove_tools_if_registered(mcp, ELK_TOOL_NAMES)
 
     if not settings.infraops_kafka_enabled:
-        for tool_name in KAFKA_TOOL_NAMES:
-            mcp.remove_tool(tool_name)
+        _remove_tools_if_registered(mcp, KAFKA_TOOL_NAMES)
 
     if not settings.infraops_batch_enabled:
-        for tool_name in BATCH_TOOL_NAMES:
-            mcp.remove_tool(tool_name)
+        _remove_tools_if_registered(mcp, BATCH_TOOL_NAMES)
 
     return mcp
+
+
+def _remove_tools_if_registered(mcp: FastMCP, tool_names: Sequence[str]) -> None:
+    for tool_name in tool_names:
+        try:
+            mcp.remove_tool(tool_name)
+        except NotFoundError:
+            logger.debug("MCP tool %s was already absent.", tool_name)
