@@ -12,7 +12,12 @@ from aiops_platform.farmer_bnpl.service import FarmerBnplService
 from aiops_platform.infraops.service import InfraOpsService
 from aiops_platform.mcp.audit import McpToolAuditService, elapsed_ms
 from aiops_platform.mcp.policy import resolve_tool_policy
-from aiops_platform.mcp.registry import ELK_TOOL_NAMES, list_mcp_servers, list_mcp_tools
+from aiops_platform.mcp.registry import (
+    ELK_TOOL_NAMES,
+    KAFKA_TOOL_NAMES,
+    list_mcp_servers,
+    list_mcp_tools,
+)
 from aiops_platform.mcp.schemas import (
     McpExecutionPolicy,
     McpToolCallStatus,
@@ -2383,6 +2388,10 @@ def create_mcp_server(
 
     if not settings.infraops_elk_enabled:
         for tool_name in ELK_TOOL_NAMES:
+            mcp.remove_tool(tool_name)
+
+    if not settings.infraops_kafka_enabled:
+        for tool_name in KAFKA_TOOL_NAMES:
             mcp.remove_tool(tool_name)
 
     return mcp

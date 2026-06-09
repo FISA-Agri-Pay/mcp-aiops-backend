@@ -12,6 +12,9 @@ ELK_TOOL_NAMES = {
     "get_kibana_saved_objects",
     "create_elk_snapshot",
 }
+KAFKA_TOOL_NAMES = {
+    "get_kafka_consumer_lag",
+}
 
 
 def test_mcp_servers_returns_initial_registry() -> None:
@@ -84,6 +87,15 @@ def test_mcp_registry_can_hide_elk_tools() -> None:
     assert ELK_TOOL_NAMES.isdisjoint({tool.tool_name for tool in tools})
     infraops_server = next(server for server in servers if server.server_name == "infraops-mcp")
     assert ELK_TOOL_NAMES.isdisjoint({tool.tool_name for tool in infraops_server.tools})
+
+
+def test_mcp_registry_can_hide_kafka_tools() -> None:
+    tools = list_mcp_tools(server_name="infraops-mcp", include_kafka=False)
+    servers = list_mcp_servers(include_kafka=False)
+
+    assert KAFKA_TOOL_NAMES.isdisjoint({tool.tool_name for tool in tools})
+    infraops_server = next(server for server in servers if server.server_name == "infraops-mcp")
+    assert KAFKA_TOOL_NAMES.isdisjoint({tool.tool_name for tool in infraops_server.tools})
 
 
 def test_mcp_tools_trims_server_name_filter() -> None:

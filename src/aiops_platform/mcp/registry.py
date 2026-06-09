@@ -32,6 +32,9 @@ ELK_TOOL_NAMES = {
     "get_kibana_saved_objects",
     "create_elk_snapshot",
 }
+KAFKA_TOOL_NAMES = {
+    "get_kafka_consumer_lag",
+}
 
 
 MCP_SERVERS: tuple[McpServerMetadata, ...] = (
@@ -172,24 +175,36 @@ MCP_SERVERS: tuple[McpServerMetadata, ...] = (
 )
 
 
-def _filter_elk_tools(
+def _filter_infraops_tools(
     tools: Iterable[McpToolMetadata],
     *,
     include_elk: bool,
+    include_kafka: bool,
 ) -> list[McpToolMetadata]:
-    if include_elk:
-        return list(tools)
-    return [tool for tool in tools if tool.tool_name not in ELK_TOOL_NAMES]
+    disabled_tools: set[str] = set()
+    if not include_elk:
+        disabled_tools.update(ELK_TOOL_NAMES)
+    if not include_kafka:
+        disabled_tools.update(KAFKA_TOOL_NAMES)
+    return [tool for tool in tools if tool.tool_name not in disabled_tools]
 
 
-def list_mcp_servers(*, include_elk: bool | None = None) -> list[McpServerMetadata]:
+def list_mcp_servers(
+    *,
+    include_elk: bool | None = None,
+    include_kafka: bool | None = None,
+) -> list[McpServerMetadata]:
     resolved_include_elk = settings.infraops_elk_enabled if include_elk is None else include_elk
+    resolved_include_kafka = (
+        settings.infraops_kafka_enabled if include_kafka is None else include_kafka
+    )
     return [
         server.model_copy(
             update={
-                "tools": _filter_elk_tools(
+                "tools": _filter_infraops_tools(
                     server.tools,
                     include_elk=resolved_include_elk,
+                    include_kafka=resolved_include_kafka,
                 )
             }
         )
@@ -201,12 +216,20 @@ def list_mcp_tools(
     server_name: str | None = None,
     permission: McpToolPermission | None = None,
     include_elk: bool | None = None,
+    include_kafka: bool | None = None,
 ) -> list[McpToolMetadata]:
     resolved_include_elk = settings.infraops_elk_enabled if include_elk is None else include_elk
+    resolved_include_kafka = (
+        settings.infraops_kafka_enabled if include_kafka is None else include_kafka
+    )
     tools = [
         tool
         for server in MCP_SERVERS
-        for tool in _filter_elk_tools(server.tools, include_elk=resolved_include_elk)
+        for tool in _filter_infraops_tools(
+            server.tools,
+            include_elk=resolved_include_elk,
+            include_kafka=resolved_include_kafka,
+        )
     ]
     normalized_server_name = server_name.strip() if server_name is not None else None
 
