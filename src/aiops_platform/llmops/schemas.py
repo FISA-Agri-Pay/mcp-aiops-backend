@@ -80,6 +80,9 @@ class NotificationOutboxResult(BaseModel):
     recipient: str | None = None
     notification_status: NotificationStatus
     payload: dict[str, Any] = Field(default_factory=dict)
+    related_table: str | None = None
+    related_public_id: str | None = None
+    idempotency_key: str | None = None
     attempts: int = 0
     created_at: str
     last_error: str | None = None

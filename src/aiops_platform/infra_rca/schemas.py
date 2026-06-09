@@ -112,5 +112,41 @@ class AlertWebhookResult(BaseModel):
     snapshot: ObservabilitySnapshotResult | None = None
     rca_report: RcaReportResult | None = None
     notification_id: str | None = None
+    preliminary_notification_ids: list[str] = Field(default_factory=list)
+    final_notification_ids: list[str] = Field(default_factory=list)
     duplicate: bool = False
     message: str
+
+
+class RcaReportEmailRequest(BaseModel):
+    recipients: list[str] = Field(min_length=1, max_length=20)
+    subject: str | None = None
+
+    @field_validator("recipients")
+    @classmethod
+    def normalize_recipients(cls, value: list[str]) -> list[str]:
+        recipients = [recipient.strip() for recipient in value if recipient.strip()]
+        if not recipients:
+            raise ValueError("at least one recipient is required.")
+        return recipients
+
+
+class RcaReportEmailResult(BaseModel):
+    rca_report_id: str
+    channel: Literal["EMAIL"] = "EMAIL"
+    notification_ids: list[str]
+    status: Literal["PENDING", "SENT", "FAILED"] = "PENDING"
+
+
+class DueRcaJobResult(BaseModel):
+    job: JobResult
+    incident: IncidentResult
+    snapshot: ObservabilitySnapshotResult | None = None
+    rca_report: RcaReportResult | None = None
+    final_notification_ids: list[str] = Field(default_factory=list)
+    message: str
+
+
+class DueRcaJobRunResult(BaseModel):
+    processed_count: int
+    items: list[DueRcaJobResult] = Field(default_factory=list)

@@ -4,6 +4,7 @@ import hashlib
 import json
 from collections.abc import Iterator
 from contextlib import contextmanager
+from dataclasses import dataclass
 from datetime import datetime
 from typing import Any, Protocol
 from uuid import UUID
@@ -114,6 +115,9 @@ class InfraRcaRepository(Protocol):
     ) -> RcaReportResult:
         pass
 
+    def get_rca_report(self, rca_report_id: str) -> RcaReportResult | None:
+        pass
+
     def record_mcp_tool_call(
         self,
         *,
@@ -126,6 +130,25 @@ class InfraRcaRepository(Protocol):
         last_error: str | None = None,
     ) -> str:
         pass
+
+    def list_due_rca_jobs(
+        self,
+        *,
+        due_at: datetime,
+        limit: int,
+    ) -> list[ScheduledRcaJobRecord]:
+        pass
+
+    def mark_rca_job_running(self, job_id: str) -> bool:
+        pass
+
+
+@dataclass(frozen=True)
+class ScheduledRcaJobRecord:
+    job_id: str
+    incident_id: str
+    scheduled_at: str | None
+    context: dict[str, Any]
 
 
 class SqlInfraRcaRepository:
@@ -588,6 +611,37 @@ class SqlInfraRcaRepository:
             ).mappings().one()
         return build_rca_report(row)
 
+    def get_rca_report(self, rca_report_id: str) -> RcaReportResult | None:
+        if not is_uuid(rca_report_id):
+            return None
+        query = text(
+            """
+            select
+                public_id::text as rca_report_id,
+                incident_public_id::text as incident_id,
+                llm_run_public_id::text as llm_run_id,
+                snapshot_public_id::text as snapshot_id,
+                report_status,
+                summary,
+                probable_root_cause,
+                impact,
+                timeline,
+                evidence,
+                recommended_actions,
+                confidence,
+                prompt_version,
+                created_at::text as created_at
+            from ai.rca_reports
+            where public_id = cast(:rca_report_id as uuid)
+            """
+        )
+        with self._session_scope() as session:
+            row = session.execute(
+                query,
+                {"rca_report_id": rca_report_id},
+            ).mappings().first()
+        return build_rca_report(row) if row is not None else None
+
     def record_mcp_tool_call(
         self,
         *,
@@ -657,6 +711,60 @@ class SqlInfraRcaRepository:
                 },
             ).mappings().one()
         return row["tool_call_id"]
+
+    def list_due_rca_jobs(
+        self,
+        *,
+        due_at: datetime,
+        limit: int,
+    ) -> list[ScheduledRcaJobRecord]:
+        query = text(
+            """
+            select
+                public_id::text as job_id,
+                target_public_id::text as incident_id,
+                scheduled_at::text as scheduled_at,
+                job_context
+            from ai.job_runs
+            where job_type = 'RCA'
+              and run_status = 'QUEUED'
+              and scheduled_at is not null
+              and scheduled_at <= :due_at
+            order by scheduled_at, created_at
+            limit :limit
+            """
+        )
+        with self._session_scope() as session:
+            rows = session.execute(
+                query,
+                {"due_at": due_at, "limit": limit},
+            ).mappings().all()
+        return [
+            ScheduledRcaJobRecord(
+                job_id=row["job_id"],
+                incident_id=row["incident_id"],
+                scheduled_at=row["scheduled_at"],
+                context=row["job_context"] or {},
+            )
+            for row in rows
+        ]
+
+    def mark_rca_job_running(self, job_id: str) -> bool:
+        if not is_uuid(job_id):
+            return False
+        query = text(
+            """
+            update ai.job_runs
+            set run_status = 'RUNNING',
+                started_at = current_timestamp
+            where public_id = cast(:job_id as uuid)
+              and run_status = 'QUEUED'
+            returning public_id
+            """
+        )
+        with self._session_scope(commit=True) as session:
+            row = session.execute(query, {"job_id": job_id}).first()
+        return row is not None
 
     @contextmanager
     def _session_scope(self, *, commit: bool = False) -> Iterator[Session]:

@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import smtplib
-from email.header import Header
 from email.message import EmailMessage
 from typing import Protocol
 
@@ -31,11 +30,15 @@ class SmtpEmailSender:
         if not self._settings.smtp_password:
             raise EmailDeliveryError("SMTP_PASSWORD is required.")
 
-        sender = self._settings.smtp_from.strip() or self._settings.smtp_username.strip()
+        sender = sanitize_header_value(
+            self._settings.smtp_from.strip() or self._settings.smtp_username.strip()
+        )
+        safe_recipient = sanitize_header_value(recipient)
+        safe_subject = sanitize_header_value(subject)
         message = EmailMessage()
-        message["Subject"] = Header(subject, "utf-8").encode()
+        message["Subject"] = safe_subject
         message["From"] = sender
-        message["To"] = recipient
+        message["To"] = safe_recipient
         message.set_content(
             "이 리포트는 HTML 이메일 본문으로 제공됩니다.",
             charset="utf-8",
@@ -54,3 +57,7 @@ class SmtpEmailSender:
                 smtp.send_message(message)
         except (OSError, smtplib.SMTPException) as exc:
             raise EmailDeliveryError(str(exc)) from exc
+
+
+def sanitize_header_value(value: str) -> str:
+    return " ".join(value.replace("\r", " ").replace("\n", " ").split())

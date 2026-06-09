@@ -100,6 +100,9 @@ class LlmOpsRepository(Protocol):
         payload: dict[str, Any],
         recipient: str | None = None,
         title: str | None = None,
+        related_table: str | None = None,
+        related_public_id: str | None = None,
+        idempotency_key: str | None = None,
     ) -> NotificationOutboxResult:
         pass
 
@@ -452,6 +455,9 @@ class SqlLlmOpsRepository:
         payload: dict[str, Any],
         recipient: str | None = None,
         title: str | None = None,
+        related_table: str | None = None,
+        related_public_id: str | None = None,
+        idempotency_key: str | None = None,
     ) -> NotificationOutboxResult:
         query = text(
             """
@@ -461,7 +467,10 @@ class SqlLlmOpsRepository:
                 title,
                 content,
                 message_payload,
-                send_status
+                send_status,
+                related_table,
+                related_public_id,
+                idempotency_key
             )
             values (
                 :channel,
@@ -469,14 +478,23 @@ class SqlLlmOpsRepository:
                 :title,
                 :content,
                 cast(:payload as jsonb),
-                'PENDING'
+                'PENDING',
+                :related_table,
+                cast(:related_public_id as uuid),
+                :idempotency_key
             )
+            on conflict (idempotency_key) where idempotency_key is not null
+            do update set
+                message_payload = ai.notification_outbox.message_payload
             returning
                 public_id::text as notification_id,
                 notification_channel,
                 target_recipient,
                 send_status,
                 message_payload,
+                related_table,
+                related_public_id::text as related_public_id,
+                idempotency_key,
                 retry_count,
                 created_at::text as created_at,
                 last_error
@@ -491,6 +509,9 @@ class SqlLlmOpsRepository:
                     "title": title,
                     "content": content,
                     "payload": to_json(payload),
+                    "related_table": related_table,
+                    "related_public_id": related_public_id,
+                    "idempotency_key": idempotency_key,
                 },
             ).mappings().one()
         return build_notification(row)
@@ -509,6 +530,9 @@ class SqlLlmOpsRepository:
                 target_recipient,
                 send_status,
                 message_payload,
+                related_table,
+                related_public_id::text as related_public_id,
+                idempotency_key,
                 retry_count,
                 created_at::text as created_at,
                 last_error
@@ -555,6 +579,9 @@ class SqlLlmOpsRepository:
                 target_recipient,
                 send_status,
                 message_payload,
+                related_table,
+                related_public_id::text as related_public_id,
+                idempotency_key,
                 retry_count,
                 created_at::text as created_at,
                 last_error
@@ -720,6 +747,9 @@ def build_notification(row) -> NotificationOutboxResult:
         recipient=row["target_recipient"],
         notification_status=row["send_status"],
         payload=row["message_payload"] or {},
+        related_table=row["related_table"] if "related_table" in row else None,
+        related_public_id=row["related_public_id"] if "related_public_id" in row else None,
+        idempotency_key=row["idempotency_key"] if "idempotency_key" in row else None,
         attempts=row["retry_count"] or 0,
         created_at=row["created_at"],
         last_error=row["last_error"],

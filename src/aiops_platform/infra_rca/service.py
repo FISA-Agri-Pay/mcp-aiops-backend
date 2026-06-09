@@ -1,33 +1,48 @@
 from __future__ import annotations
 
 import hashlib
+import html
 import logging
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from aiops_platform.core.config import settings
-from aiops_platform.infra_rca.repository import InfraRcaRepository, SqlInfraRcaRepository
+from aiops_platform.infra_rca.repository import (
+    InfraRcaRepository,
+    ScheduledRcaJobRecord,
+    SqlInfraRcaRepository,
+)
 from aiops_platform.infra_rca.schemas import (
     AlertmanagerAlert,
     AlertmanagerWebhookRequest,
     AlertWebhookResult,
+    DueRcaJobResult,
+    DueRcaJobRunResult,
     IncidentResult,
     ObservabilitySnapshotResult,
+    RcaReportEmailRequest,
+    RcaReportEmailResult,
     RcaReportResult,
 )
 from aiops_platform.infraops.service import InfraOpsService
 from aiops_platform.llmops.service import LlmOpsService
 from aiops_platform.mcp.masking import mask_payload
+from aiops_platform.ops_reports.email_delivery import EmailSender, SmtpEmailSender
 from aiops_platform.orchestration.repository import (
     OrchestrationRepository,
     SqlOrchestrationRepository,
 )
+from aiops_platform.orchestration.schemas import JobResult
 from aiops_platform.prediction_scaling.service import (
     PredictionScalingService,
 )
 
 
 class InfraRcaValidationError(ValueError):
+    pass
+
+
+class InfraRcaNotFoundError(LookupError):
     pass
 
 
@@ -43,6 +58,8 @@ class InfraRcaService:
         llmops_service: LlmOpsService | None = None,
         infraops_service: InfraOpsService | None = None,
         prediction_scaling_service: PredictionScalingService | None = None,
+        email_sender: EmailSender | None = None,
+        email_recipients: list[str] | None = None,
     ) -> None:
         self._repository = repository or SqlInfraRcaRepository()
         self._orchestration_repository = (
@@ -53,6 +70,8 @@ class InfraRcaService:
         self._prediction_scaling_service = (
             prediction_scaling_service or PredictionScalingService()
         )
+        self._email_sender = email_sender or SmtpEmailSender()
+        self._email_recipients = email_recipients
 
     def handle_alertmanager_webhook(
         self,
@@ -105,24 +124,84 @@ class InfraRcaService:
                 message="Duplicate firing alert was recorded; RCA generation was skipped.",
             )
 
+        preliminary_notification_ids, _ = self._send_rca_notifications(
+            stage="preliminary",
+            incident=incident,
+            rca_report=None,
+            subject=build_preliminary_subject(incident),
+            html_body=build_preliminary_email_html(
+                incident=incident,
+                starts_at=starts_at,
+            ),
+        )
         job = self._orchestration_repository.create_job(
             job_type="rca",
             entity_type="incidents",
             entity_id=incident.incident_id,
-            status="RUNNING",
+            status="QUEUED",
+            scheduled_at=resolve_rca_run_after(starts_at).isoformat(sep=" "),
+            job_context={
+                "incident": incident.model_dump(mode="json"),
+                "alert": incident_alert.model_dump(mode="json"),
+                "labels": labels,
+                "alert_starts_at": (
+                    starts_at or datetime.now(UTC).replace(tzinfo=None)
+                ).isoformat(sep=" "),
+                "window_start": resolve_rca_window_start(starts_at).isoformat(sep=" "),
+                "window_end": resolve_rca_run_after(starts_at).isoformat(sep=" "),
+            },
+        )
+        return AlertWebhookResult(
+            incident=incident,
+            alert=incident_alert,
+            job=job,
+            preliminary_notification_ids=preliminary_notification_ids,
+            duplicate=duplicate,
+            message=(
+                "Alertmanager webhook was recorded and RCA generation was "
+                "scheduled after the evidence window closes."
+            ),
+        )
+
+    def run_due_rca_jobs(
+        self,
+        *,
+        due_at: datetime | None = None,
+        limit: int = 10,
+    ) -> DueRcaJobRunResult:
+        clamped_limit = min(max(limit, 1), 50)
+        due_at = due_at or datetime.now(UTC).replace(tzinfo=None)
+        jobs = self._repository.list_due_rca_jobs(
+            due_at=due_at,
+            limit=clamped_limit,
+        )
+        items = []
+        for job in jobs:
+            if not self._repository.mark_rca_job_running(job.job_id):
+                continue
+            items.append(self._run_scheduled_rca_job(job))
+        return DueRcaJobRunResult(processed_count=len(items), items=items)
+
+    def _run_scheduled_rca_job(self, job: ScheduledRcaJobRecord) -> DueRcaJobResult:
+        incident = IncidentResult.model_validate(job.context["incident"])
+        alert = dict(job.context.get("alert") or {})
+        labels = dict(job.context.get("labels") or {})
+        starts_at = parse_stored_datetime(
+            job.context.get("alert_starts_at"),
+            fallback=datetime.now(UTC).replace(tzinfo=None),
         )
         try:
             snapshot = self._create_rca_snapshot(
                 incident=incident,
-                alert=incident_alert.model_dump(mode="json"),
+                alert=alert,
                 labels=labels,
-                starts_at=starts_at or datetime.now(UTC).replace(tzinfo=None),
+                starts_at=starts_at,
                 job_id=job.job_id,
             )
             evidence = build_evidence(snapshot)
             llm_run = self._llmops_service.run_rca_completion(
                 incident=incident.model_dump(mode="json"),
-                alert=incident_alert.model_dump(mode="json"),
+                alert=alert,
                 snapshot=snapshot.model_dump(mode="json"),
                 evidence=evidence,
                 job_id=job.job_id,
@@ -137,7 +216,7 @@ class InfraRcaService:
                     status="FAILED",
                     error_message=f"RCA LLM run failed: {llm_run.run_status}",
                 )
-                notification = self._llmops_service.create_notification(
+                self._llmops_service.create_notification(
                     channel="dashboard",
                     title="RCA generation failed",
                     content=f"RCA LLM run finished with {llm_run.run_status}.",
@@ -151,17 +230,11 @@ class InfraRcaService:
                     },
                     recipient="infra-admin",
                 )
-                return AlertWebhookResult(
+                return DueRcaJobResult(
                     incident=failed_incident or incident,
-                    alert=incident_alert,
-                    job=failed_job or job,
+                    job=failed_job or build_running_job(job),
                     snapshot=snapshot,
-                    notification_id=notification.notification_id,
-                    duplicate=duplicate,
-                    message=(
-                        "Alertmanager webhook was recorded, but RCA LLM "
-                        "generation failed."
-                    ),
+                    message="Due RCA job ran, but LLM generation failed.",
                 )
             rca_report = self._create_rca_report(
                 incident=incident,
@@ -178,7 +251,7 @@ class InfraRcaService:
                 job_id=job.job_id,
                 status="SUCCEEDED",
             )
-            notification = self._llmops_service.create_notification(
+            self._llmops_service.create_notification(
                 channel="dashboard",
                 title="RCA report is ready",
                 content=rca_report.summary or "RCA report is ready for review.",
@@ -189,15 +262,20 @@ class InfraRcaService:
                 },
                 recipient="infra-admin",
             )
-            return AlertWebhookResult(
+            final_notification_ids, _ = self._send_rca_notifications(
+                stage="final",
                 incident=analyzed_incident or incident,
-                alert=incident_alert,
-                job=finished_job or job,
+                rca_report=rca_report,
+                subject=build_final_subject(rca_report, analyzed_incident or incident),
+                html_body=build_final_email_html(rca_report),
+            )
+            return DueRcaJobResult(
+                incident=analyzed_incident or incident,
+                job=finished_job or build_running_job(job),
                 snapshot=snapshot,
                 rca_report=rca_report,
-                notification_id=notification.notification_id,
-                duplicate=duplicate,
-                message="Alertmanager webhook was recorded and RCA was generated.",
+                final_notification_ids=final_notification_ids,
+                message="Due RCA job generated the final RCA report.",
             )
         except Exception as exc:
             failed_job = self._orchestration_repository.finish_job(
@@ -205,13 +283,149 @@ class InfraRcaService:
                 status="FAILED",
                 error_message=f"RCA generation failed: {exc.__class__.__name__}",
             )
-            return AlertWebhookResult(
+            return DueRcaJobResult(
                 incident=incident,
-                alert=incident_alert,
-                job=failed_job or job,
-                duplicate=duplicate,
-                message="Alertmanager webhook was recorded, but RCA generation failed.",
+                job=failed_job or build_running_job(job),
+                message="Due RCA job failed.",
             )
+
+    def send_rca_report_email(
+        self,
+        rca_report_id: str,
+        request: RcaReportEmailRequest,
+    ) -> RcaReportEmailResult:
+        rca_report = self._repository.get_rca_report(rca_report_id)
+        if rca_report is None:
+            raise InfraRcaNotFoundError("RCA report was not found.")
+        subject = request.subject or build_final_subject(rca_report, None)
+        html_body = build_final_email_html(rca_report)
+        notification_ids, delivery_statuses = self._send_rca_notifications(
+            stage="final",
+            incident=None,
+            rca_report=rca_report,
+            subject=subject,
+            html_body=html_body,
+            recipients=request.recipients,
+        )
+        status = (
+            "SENT"
+            if delivery_statuses and all(status == "SENT" for status in delivery_statuses)
+            else "FAILED"
+        )
+        return RcaReportEmailResult(
+            rca_report_id=rca_report_id,
+            notification_ids=notification_ids,
+            status=status,
+        )
+
+    def _send_rca_notifications(
+        self,
+        *,
+        stage: str,
+        incident: IncidentResult | None,
+        rca_report: RcaReportResult | None,
+        subject: str,
+        html_body: str,
+        recipients: list[str] | None = None,
+    ) -> tuple[list[str], list[str]]:
+        target_recipients = recipients or self._resolve_email_recipients()
+        notification_ids = []
+        delivery_statuses = []
+        for recipient in target_recipients:
+            related_table = "rca_reports" if rca_report is not None else "incidents"
+            if rca_report is None and incident is None:
+                logger.warning("RCA notification skipped because target entity is missing.")
+                delivery_statuses.append("FAILED")
+                continue
+            related_public_id = (
+                rca_report.rca_report_id if rca_report is not None else incident.incident_id
+            )
+            idempotency_key = f"rca:{related_public_id}:{stage}:{recipient}"
+            try:
+                notification = self._llmops_service.create_notification(
+                    channel="email",
+                    title=subject,
+                    content=html_body,
+                    payload={
+                        "notification_stage": stage,
+                        "incident_id": incident.incident_id if incident is not None else None,
+                        "rca_report_id": (
+                            rca_report.rca_report_id if rca_report is not None else None
+                        ),
+                        "subject": subject,
+                        "html_body": html_body,
+                    },
+                    recipient=recipient,
+                    related_table=related_table,
+                    related_public_id=related_public_id,
+                    idempotency_key=idempotency_key,
+                )
+            except Exception as exc:
+                logger.warning(
+                    "RCA %s notification creation failed for %s: %s",
+                    stage,
+                    recipient,
+                    exc,
+                    exc_info=True,
+                )
+                delivery_statuses.append("FAILED")
+                continue
+            notification_ids.append(notification.notification_id)
+            if notification.notification_status == "SENT":
+                delivery_statuses.append("SENT")
+                continue
+            try:
+                self._email_sender.send_html(
+                    recipient=recipient,
+                    subject=subject,
+                    html_body=html_body,
+                )
+                self._safe_update_notification_status(
+                    notification.notification_id,
+                    status="SENT",
+                    last_error=None,
+                )
+                delivery_statuses.append("SENT")
+            except Exception as exc:
+                logger.warning(
+                    "RCA %s email delivery failed for %s: %s",
+                    stage,
+                    recipient,
+                    exc,
+                    exc_info=True,
+                )
+                self._safe_update_notification_status(
+                    notification.notification_id,
+                    status="FAILED",
+                    last_error=f"{exc.__class__.__name__}: {exc}",
+                )
+                delivery_statuses.append("FAILED")
+        return notification_ids, delivery_statuses
+
+    def _safe_update_notification_status(
+        self,
+        notification_id: str,
+        *,
+        status: str,
+        last_error: str | None,
+    ) -> None:
+        try:
+            self._llmops_service.update_notification_status(
+                notification_id,
+                status=status,
+                last_error=last_error,
+            )
+        except Exception:
+            logger.exception("Failed to update RCA notification status.")
+
+    def _resolve_email_recipients(self) -> list[str]:
+        if self._email_recipients is not None:
+            return self._email_recipients
+        configured = (
+            settings.rca_email_recipients.strip()
+            or settings.ops_report_email_recipients.strip()
+        )
+        return parse_recipients(configured)
 
     def _create_rca_snapshot(
         self,
@@ -566,6 +780,125 @@ def extract_rca_summary(answer: str) -> str:
     if impact:
         return impact
     return first_sentence(answer)
+
+
+def parse_recipients(value: str) -> list[str]:
+    return [recipient.strip() for recipient in value.split(",") if recipient.strip()]
+
+
+def resolve_rca_window_start(starts_at: datetime | None) -> datetime:
+    anchor = starts_at or datetime.now(UTC).replace(tzinfo=None)
+    return anchor - timedelta(minutes=settings.rca_default_before_minutes)
+
+
+def resolve_rca_run_after(starts_at: datetime | None) -> datetime:
+    anchor = starts_at or datetime.now(UTC).replace(tzinfo=None)
+    return anchor + timedelta(minutes=settings.rca_default_after_minutes)
+
+
+def parse_stored_datetime(value: Any, *, fallback: datetime) -> datetime:
+    if isinstance(value, datetime):
+        return value
+    if isinstance(value, str) and value.strip():
+        return parse_alert_timestamp(value) or fallback
+    return fallback
+
+
+def build_running_job(job: ScheduledRcaJobRecord) -> JobResult:
+    now = datetime.now(UTC).replace(tzinfo=None).isoformat(sep=" ")
+    return JobResult(
+        job_id=job.job_id,
+        job_type="rca",
+        status="RUNNING",
+        entity_type="incidents",
+        entity_id=job.incident_id,
+        created_at=now,
+        updated_at=now,
+    )
+
+
+def build_preliminary_subject(incident: IncidentResult) -> str:
+    alert_name = incident.alert_name or "Alertmanager alert"
+    return f"[AIOps] RCA analysis started: {alert_name}"
+
+
+def build_final_subject(
+    rca_report: RcaReportResult,
+    incident: IncidentResult | None,
+) -> str:
+    alert_name = incident.alert_name if incident is not None else None
+    target = alert_name or rca_report.summary or rca_report.rca_report_id
+    return f"[AIOps] Final RCA report: {target}"
+
+
+def build_preliminary_email_html(
+    *,
+    incident: IncidentResult,
+    starts_at: datetime | None,
+) -> str:
+    started_at = starts_at.isoformat() if starts_at is not None else incident.starts_at
+    rows = [
+        ("Incident", incident.incident_id),
+        ("Alert", incident.alert_name or ""),
+        ("Severity", incident.severity),
+        ("Namespace", incident.namespace or ""),
+        ("Workload", incident.workload or ""),
+        ("Service", incident.service_name or ""),
+        ("Started At", started_at or ""),
+    ]
+    return (
+        "<html><body>"
+        "<h2>AIOps preliminary RCA notification</h2>"
+        "<p>Alertmanager firing alert was received. RCA evidence collection and "
+        "LLM analysis have started.</p>"
+        f"{render_table(rows)}"
+        "</body></html>"
+    )
+
+
+def build_final_email_html(rca_report: RcaReportResult) -> str:
+    rows = [
+        ("RCA Report", rca_report.rca_report_id),
+        ("Incident", rca_report.incident_id),
+        ("Status", rca_report.status),
+        ("Summary", rca_report.summary or ""),
+        ("Probable Root Cause", rca_report.probable_root_cause or ""),
+        ("Impact", rca_report.impact or ""),
+        ("Confidence", str(rca_report.confidence or "")),
+    ]
+    actions = "".join(
+        f"<li>{html.escape(str(action.get('action') or action))}</li>"
+        for action in rca_report.recommended_actions
+    )
+    evidence = "".join(
+        f"<li>{html.escape(str(item.get('source') or item.get('summary') or item))}</li>"
+        for item in rca_report.evidence[:10]
+    )
+    return (
+        "<html><body>"
+        "<h2>AIOps final RCA report</h2>"
+        f"{render_table(rows)}"
+        "<h3>Recommended actions</h3>"
+        f"<ul>{actions or '<li>No recommended actions were generated.</li>'}</ul>"
+        "<h3>Evidence</h3>"
+        f"<ul>{evidence or '<li>No evidence items were generated.</li>'}</ul>"
+        "</body></html>"
+    )
+
+
+def render_table(rows: list[tuple[str, str]]) -> str:
+    rendered_rows = "".join(
+        "<tr>"
+        f"<th>{html.escape(label)}</th>"
+        f"<td>{html.escape(value)}</td>"
+        "</tr>"
+        for label, value in rows
+    )
+    return (
+        "<table border=\"1\" cellpadding=\"6\" cellspacing=\"0\">"
+        f"<tbody>{rendered_rows}</tbody>"
+        "</table>"
+    )
 
 
 def extract_labeled_section(answer: str, label: str, *, fallback: str) -> str:
