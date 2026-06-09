@@ -1,6 +1,17 @@
 from fastapi.testclient import TestClient
 
 from aiops_platform.main import create_app
+from aiops_platform.mcp.registry import list_mcp_servers, list_mcp_tools
+
+
+ELK_TOOL_NAMES = {
+    "query_elasticsearch",
+    "search_elasticsearch_logs",
+    "get_elasticsearch_cluster_health",
+    "get_elasticsearch_index_health",
+    "get_kibana_saved_objects",
+    "create_elk_snapshot",
+}
 
 
 def test_mcp_servers_returns_initial_registry() -> None:
@@ -63,14 +74,16 @@ def test_mcp_tools_include_elk_registry_entries() -> None:
 
     assert response.status_code == 200
     tool_names = {tool["tool_name"] for tool in response.json()}
-    assert {
-        "query_elasticsearch",
-        "search_elasticsearch_logs",
-        "get_elasticsearch_cluster_health",
-        "get_elasticsearch_index_health",
-        "get_kibana_saved_objects",
-        "create_elk_snapshot",
-    }.issubset(tool_names)
+    assert ELK_TOOL_NAMES.issubset(tool_names)
+
+
+def test_mcp_registry_can_hide_elk_tools() -> None:
+    tools = list_mcp_tools(server_name="infraops-mcp", include_elk=False)
+    servers = list_mcp_servers(include_elk=False)
+
+    assert ELK_TOOL_NAMES.isdisjoint({tool.tool_name for tool in tools})
+    infraops_server = next(server for server in servers if server.server_name == "infraops-mcp")
+    assert ELK_TOOL_NAMES.isdisjoint({tool.tool_name for tool in infraops_server.tools})
 
 
 def test_mcp_tools_trims_server_name_filter() -> None:

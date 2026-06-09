@@ -29,8 +29,8 @@ data:
   LLM_TIMEOUT_SECONDS: "60"
   LLM_TEMPERATURE: "0.1"
 
-  PROMETHEUS_BASE_URL: "http://prometheus-server.monitoring.svc.cluster.local:9090"
-  PROMETHEUS_SOURCE_URLS: ""
+  PROMETHEUS_BASE_URL: "http://10.30.2.103:9090"
+  PROMETHEUS_SOURCE_URLS: "onprem=http://10.30.2.103:9090"
   PROMETHEUS_TIMEOUT_SECONDS: "10"
   LOKI_BASE_URL: "http://loki.monitoring.svc.cluster.local:3100"
   LOKI_SOURCE_URLS: ""
@@ -48,6 +48,7 @@ data:
   ELASTICSEARCH_INDEX_ALLOWLIST: "logs-*,filebeat-*,metricbeat-*"
   ELASTICSEARCH_TIMEOUT_SECONDS: "10"
   KIBANA_BASE_URL: "http://kibana.logging.svc.cluster.local:5601"
+  INFRAOPS_ELK_ENABLED: "false"
   RCA_DEFAULT_BEFORE_MINUTES: "10"
   RCA_DEFAULT_AFTER_MINUTES: "5"
 

@@ -1,5 +1,6 @@
 from collections.abc import Iterable
 
+from aiops_platform.core.config import settings
 from aiops_platform.mcp.schemas import McpServerMetadata, McpToolMetadata, McpToolPermission
 
 ToolDefinition = tuple[str, McpToolPermission]
@@ -23,6 +24,14 @@ WRITE = McpToolPermission.WRITE
 USER_CONFIRMED_WRITE = McpToolPermission.USER_CONFIRMED_WRITE
 OPS_WRITE = McpToolPermission.OPS_WRITE
 DESTRUCTIVE = McpToolPermission.DESTRUCTIVE
+ELK_TOOL_NAMES = {
+    "query_elasticsearch",
+    "search_elasticsearch_logs",
+    "get_elasticsearch_cluster_health",
+    "get_elasticsearch_index_health",
+    "get_kibana_saved_objects",
+    "create_elk_snapshot",
+}
 
 
 MCP_SERVERS: tuple[McpServerMetadata, ...] = (
@@ -163,15 +172,42 @@ MCP_SERVERS: tuple[McpServerMetadata, ...] = (
 )
 
 
-def list_mcp_servers() -> list[McpServerMetadata]:
-    return list(MCP_SERVERS)
+def _filter_elk_tools(
+    tools: Iterable[McpToolMetadata],
+    *,
+    include_elk: bool,
+) -> list[McpToolMetadata]:
+    if include_elk:
+        return list(tools)
+    return [tool for tool in tools if tool.tool_name not in ELK_TOOL_NAMES]
+
+
+def list_mcp_servers(*, include_elk: bool | None = None) -> list[McpServerMetadata]:
+    resolved_include_elk = settings.infraops_elk_enabled if include_elk is None else include_elk
+    return [
+        server.model_copy(
+            update={
+                "tools": _filter_elk_tools(
+                    server.tools,
+                    include_elk=resolved_include_elk,
+                )
+            }
+        )
+        for server in MCP_SERVERS
+    ]
 
 
 def list_mcp_tools(
     server_name: str | None = None,
     permission: McpToolPermission | None = None,
+    include_elk: bool | None = None,
 ) -> list[McpToolMetadata]:
-    tools = [tool for server in MCP_SERVERS for tool in server.tools]
+    resolved_include_elk = settings.infraops_elk_enabled if include_elk is None else include_elk
+    tools = [
+        tool
+        for server in MCP_SERVERS
+        for tool in _filter_elk_tools(server.tools, include_elk=resolved_include_elk)
+    ]
     normalized_server_name = server_name.strip() if server_name is not None else None
 
     if normalized_server_name:

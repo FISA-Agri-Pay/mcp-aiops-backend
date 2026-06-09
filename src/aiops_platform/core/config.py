@@ -126,6 +126,7 @@ class Settings(BaseSettings):
         alias="ELASTICSEARCH_TIMEOUT_SECONDS",
     )
     kibana_base_url: str = Field(default="http://localhost:5601", alias="KIBANA_BASE_URL")
+    infraops_elk_enabled: bool = Field(default=True, alias="INFRAOPS_ELK_ENABLED")
     rca_default_before_minutes: int = Field(
         default=10,
         ge=0,

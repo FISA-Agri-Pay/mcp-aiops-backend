@@ -27,7 +27,12 @@ from aiops_platform.infraops.schemas import (
 )
 from aiops_platform.main import create_app
 from aiops_platform.mcp.registry import list_mcp_tools
-from aiops_platform.mcp.server import MCP_TRANSPORT_MOUNT_PATH, create_mcp_server
+from aiops_platform.mcp.server import (
+    ELK_TOOL_NAMES,
+    MCP_TRANSPORT_MOUNT_PATH,
+    create_mcp_server,
+    settings as mcp_server_settings,
+)
 from tests.seed_constants import (
     CREDIT_APP_2_ID,
     CREDIT_APP_3_ID,
@@ -157,6 +162,18 @@ def test_fastmcp_server_exposes_all_registry_tools() -> None:
 
         registry_tools = {tool.tool_name for tool in list_mcp_tools()}
         assert exposed_tools == registry_tools
+
+    asyncio.run(run())
+
+
+def test_fastmcp_server_hides_elk_tools_when_disabled(monkeypatch) -> None:
+    monkeypatch.setattr(mcp_server_settings, "infraops_elk_enabled", False)
+
+    async def run() -> None:
+        async with Client(create_mcp_server()) as client:
+            tools = {tool.name for tool in await client.list_tools()}
+
+        assert ELK_TOOL_NAMES.isdisjoint(tools)
 
     asyncio.run(run())
 

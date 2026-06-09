@@ -6,12 +6,13 @@ from typing import Any
 from fastmcp import FastMCP
 
 from aiops_platform.admin_riskops.service import AdminRiskOpsService
+from aiops_platform.core.config import settings
 from aiops_platform.farm_advisory.service import FarmAdvisoryService
 from aiops_platform.farmer_bnpl.service import FarmerBnplService
 from aiops_platform.infraops.service import InfraOpsService
 from aiops_platform.mcp.audit import McpToolAuditService, elapsed_ms
 from aiops_platform.mcp.policy import resolve_tool_policy
-from aiops_platform.mcp.registry import list_mcp_servers, list_mcp_tools
+from aiops_platform.mcp.registry import ELK_TOOL_NAMES, list_mcp_servers, list_mcp_tools
 from aiops_platform.mcp.schemas import (
     McpExecutionPolicy,
     McpToolCallStatus,
@@ -2358,5 +2359,9 @@ def create_mcp_server(
             started_at=started_at,
         )
         return result
+
+    if not settings.infraops_elk_enabled:
+        for tool_name in ELK_TOOL_NAMES:
+            mcp.remove_tool(tool_name)
 
     return mcp
