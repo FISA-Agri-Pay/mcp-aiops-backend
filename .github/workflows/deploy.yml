@@ -10,11 +10,10 @@ permissions:
   contents: read
 
 env:
-  AWS_ACCOUNT_ID: ${{ vars.AWS_ACCOUNT_ID || secrets.AWS_ACCOUNT_ID || '153585581837' }}
-  AWS_ROLE_ARN: ${{ vars.AWS_ROLE_ARN || secrets.AWS_ROLE_ARN || 'arn:aws:iam::153585581837:role/github-actions-mcp-aiops-deploy' }}
-  AWS_REGION: ${{ vars.AWS_REGION || secrets.AWS_REGION || 'ap-northeast-2' }}
-  ECR_REPOSITORY: ${{ vars.ECR_REPOSITORY || secrets.ECR_REPOSITORY || 'kkpp/mcp-aiops-backend' }}
-  EKS_CLUSTER_NAME: ${{ vars.EKS_CLUSTER_NAME || secrets.EKS_CLUSTER_NAME || 'kkpp-eks' }}
+  AWS_ROLE_ARN: ${{ vars.AWS_ROLE_ARN || secrets.AWS_ROLE_ARN || secrets.AWS_ROLE_TO_ASSUME }}
+  AWS_REGION: ${{ vars.AWS_REGION || secrets.AWS_REGION }}
+  ECR_REPOSITORY: ${{ vars.ECR_REPOSITORY || secrets.ECR_REPOSITORY }}
+  EKS_CLUSTER_NAME: ${{ vars.EKS_CLUSTER_NAME || secrets.EKS_CLUSTER_NAME }}
   K8S_NAMESPACE: ${{ vars.K8S_NAMESPACE || 'default' }}
   K8S_DEPLOYMENT: ${{ vars.K8S_DEPLOYMENT || 'mcp-aiops-backend' }}
   K8S_SERVICE: ${{ vars.K8S_SERVICE || 'mcp-aiops-backend' }}
@@ -110,6 +109,10 @@ jobs:
 
       - name: Validate deployment inputs
         env:
+          AWS_ROLE_ARN: ${{ env.AWS_ROLE_ARN }}
+          AWS_REGION: ${{ env.AWS_REGION }}
+          ECR_REPOSITORY: ${{ env.ECR_REPOSITORY }}
+          EKS_CLUSTER_NAME: ${{ env.EKS_CLUSTER_NAME }}
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
           LLM_API_KEY: ${{ secrets.LLM_API_KEY }}
           SMTP_HOST: ${{ secrets.SMTP_HOST }}
@@ -118,6 +121,10 @@ jobs:
           SMTP_FROM: ${{ secrets.SMTP_FROM }}
           OPS_REPORT_EMAIL_RECIPIENTS: ${{ secrets.OPS_REPORT_EMAIL_RECIPIENTS }}
         run: |
+          test -n "${AWS_ROLE_ARN}" || { echo "AWS_ROLE_ARN variable/secret or AWS_ROLE_TO_ASSUME secret is required."; exit 1; }
+          test -n "${AWS_REGION}" || { echo "AWS_REGION variable or secret is required."; exit 1; }
+          test -n "${ECR_REPOSITORY}" || { echo "ECR_REPOSITORY variable or secret is required."; exit 1; }
+          test -n "${EKS_CLUSTER_NAME}" || { echo "EKS_CLUSTER_NAME variable or secret is required."; exit 1; }
           test -n "${DATABASE_URL}" || { echo "DATABASE_URL secret is required."; exit 1; }
           test -n "${LLM_API_KEY}" || { echo "LLM_API_KEY secret is required for external Groq LLM."; exit 1; }
           test -n "${SMTP_HOST}" || { echo "SMTP_HOST secret is required."; exit 1; }

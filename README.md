@@ -180,10 +180,10 @@ GitHub Actions에 필요한 값은 아래처럼 설정합니다.
 
 | 이름 | 위치 | 설명 |
 | --- | --- | --- |
-| `AWS_ROLE_ARN` | Variable 또는 Secret | GitHub OIDC가 assume할 AWS IAM Role ARN |
-| `AWS_REGION` | Variable 또는 Secret | 기본값: `ap-northeast-2` |
-| `ECR_REPOSITORY` | Variable 또는 Secret | 기본값: `kkpp/mcp-aiops-backend` |
-| `EKS_CLUSTER_NAME` | Variable 또는 Secret | 기본값: `kkpp-eks` |
+| `AWS_ROLE_ARN` | Variable 또는 Secret | GitHub OIDC가 assume할 AWS IAM Role ARN. 기존 `AWS_ROLE_TO_ASSUME` Secret도 호환 |
+| `AWS_REGION` | Variable 또는 Secret | AWS 리전 |
+| `ECR_REPOSITORY` | Variable 또는 Secret | ECR 리포지토리 이름 |
+| `EKS_CLUSTER_NAME` | Variable 또는 Secret | EKS 클러스터 이름 |
 | `DATABASE_URL` | Secret | 운영 PostgreSQL/RDS 연결 문자열 |
 | `LLM_API_KEY` | Secret | Groq 외부 LLM API key. `infra/k8s/configmap.yaml`은 `LLM_PROVIDER=groq`, `LLM_MODEL=qwen/qwen3-32b`, `LLM_API_BASE_URL=https://api.groq.com/openai/v1` 기준 |
 | `ELASTICSEARCH_USERNAME` | Secret | Elasticsearch/OpenSearch 사용자명 |
