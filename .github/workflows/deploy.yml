@@ -205,7 +205,6 @@ jobs:
           kubectl rollout status "deployment/${K8S_DEPLOYMENT}" \
             --namespace "${K8S_NAMESPACE}" \
             --timeout=180s
-          kubectl apply -f infra/k8s/ingress.yaml
 
       - name: Smoke test service
         run: |

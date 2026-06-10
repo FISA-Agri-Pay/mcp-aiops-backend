@@ -148,7 +148,9 @@ infra/k8s/kustomization.yaml
 `secret.example.yaml`은 예시 파일입니다. 실제 운영 secret은 Git에 커밋하지 않고,
 GitHub Actions 또는 `kubectl create secret`으로 생성합니다.
 
-`infra/k8s/ingress.yaml`은 기존 `default/service-catalog-ingress`에 MCP 경로를 추가합니다.
+공용 Ingress는 service-catalog 또는 infra IaC에서 단일 소유로 관리합니다.
+MCP 배포 파이프라인은 `default/service-catalog-ingress`를 apply하지 않고,
+`infra/k8s/ingress.yaml`은 service-catalog Ingress에 추가해야 하는 MCP 경로 참고본으로만 유지합니다.
 MCP는 `default` namespace의 `ClusterIP` Service로 배포되고, 기존 `kkpp-catalog-api`
 ALB가 path rule로 catalog pod와 MCP pod를 구분합니다.
 
