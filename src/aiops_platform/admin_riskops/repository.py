@@ -50,10 +50,16 @@ class SqlAdminRiskOpsRepository:
         return self._fetch_users(include_all_applications=False)
 
     def _fetch_users(self, *, include_all_applications: bool) -> list[RiskOpsUserRecord]:
-        document_columns = self._fetch_farmer_document_columns()
+        application_columns = self._fetch_table_columns("credit_limit_applications")
+        document_columns = self._fetch_table_columns("farmer_documents")
+        farmer_profile_columns = self._fetch_table_columns("farmer_profiles")
+        application_user_join = build_application_user_join(application_columns)
         documents_cte, documents_join = build_documents_query_parts(document_columns)
+        farmer_profiles_join, field_area_select = build_farmer_profile_query_parts(
+            farmer_profile_columns
+        )
         if include_all_applications:
-            applications_cte = """
+            applications_cte = f"""
                 applications as (
                     select distinct on (u.public_id)
                         cla.id as application_pk,
@@ -66,7 +72,7 @@ class SqlAdminRiskOpsRepository:
                         u.name as farmer_name,
                         u.address as user_address
                     from core.credit_limit_applications cla
-                    join core.users u on u.id = cla.user_id
+                    join core.users u on {application_user_join}
                     order by u.public_id, cla.applied_at desc nulls last, cla.created_at desc
                 )
             """
@@ -85,7 +91,7 @@ class SqlAdminRiskOpsRepository:
             """
             credit_limit_join = "cl.user_public_id = app.user_public_id"
         else:
-            applications_cte = """
+            applications_cte = f"""
                 applications as (
                     select
                         cla.id as application_pk,
@@ -98,7 +104,7 @@ class SqlAdminRiskOpsRepository:
                         u.name as farmer_name,
                         u.address as user_address
                     from core.credit_limit_applications cla
-                    join core.users u on u.id = cla.user_id
+                    join core.users u on {application_user_join}
                     where cla.status = 'PENDING'
                 )
             """
@@ -153,11 +159,11 @@ class SqlAdminRiskOpsRepository:
                 app.application_status,
                 app.applied_at::text as application_submitted_at,
                 lb.score as bss_score,
-                fp.field_aream2 as field_aream2,
+                {field_area_select} as field_aream2,
                 coalesce(documents.submitted_documents, array[]::varchar[]) as submitted_documents
             from applications app
             left join credit_limits cl on {credit_limit_join}
-            left join core.farmer_profiles fp on fp.user_id = app.user_pk
+            {farmer_profiles_join}
             left join overdue o on o.user_public_id = app.user_public_id
             left join latest_bss lb on lb.user_public_id = app.user_public_id
             {documents_join}
@@ -168,17 +174,20 @@ class SqlAdminRiskOpsRepository:
             rows = session.execute(query).mappings().all()
         return [build_user_record(row) for row in rows]
 
-    def _fetch_farmer_document_columns(self) -> set[str]:
+    def _fetch_table_columns(self, table_name: str) -> set[str]:
         query = text(
             """
             select column_name
             from information_schema.columns
             where table_schema = 'core'
-              and table_name = 'farmer_documents'
+              and table_name = :table_name
             """
         )
         with self._session_scope() as session:
-            return {str(row[0]) for row in session.execute(query).all()}
+            return {
+                str(row[0])
+                for row in session.execute(query, {"table_name": table_name}).all()
+            }
 
     @contextmanager
     def _session_scope(self) -> Iterator[Session]:
@@ -218,6 +227,31 @@ def build_user_record(row) -> RiskOpsUserRecord:
         farmland_area_hectare=field_area_to_hectare(row["field_aream2"]),
         missing_documents=missing_documents(row["submitted_documents"] or []),
     )
+
+
+def build_application_user_join(columns: set[str]) -> str:
+    if "user_id" in columns:
+        return "u.id = cla.user_id"
+    if "user_public_id" in columns:
+        return "u.public_id = cla.user_public_id"
+    return "false"
+
+
+def build_farmer_profile_query_parts(columns: set[str]) -> tuple[str, str]:
+    if "user_id" in columns:
+        join = "left join core.farmer_profiles fp on fp.user_id = app.user_pk"
+    elif "user_public_id" in columns:
+        join = "left join core.farmer_profiles fp on fp.user_public_id = app.user_public_id"
+    else:
+        join = "left join core.farmer_profiles fp on false"
+
+    if "field_aream2" in columns:
+        field_area_select = "fp.field_aream2"
+    elif "field_area_m2" in columns:
+        field_area_select = "fp.field_area_m2"
+    else:
+        field_area_select = "null"
+    return join, field_area_select
 
 
 def build_documents_query_parts(columns: set[str]) -> tuple[str, str]:
