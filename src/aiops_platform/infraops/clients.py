@@ -203,6 +203,15 @@ class KubernetesClient:
             ssl_context=self._ssl_context,
         )
 
+    def create_job(self, namespace: str, job_manifest: Mapping[str, Any]) -> dict[str, Any]:
+        return self._http_client.post_json(
+            urljoin(self._base_url, f"apis/batch/v1/namespaces/{namespace}/jobs"),
+            json_body=job_manifest,
+            headers=self._headers,
+            timeout=self._timeout_seconds,
+            ssl_context=self._ssl_context,
+        )
+
     def _get_namespaced_resource(self, namespace: str, resource: str) -> dict[str, Any]:
         return self._http_client.get_json(
             urljoin(self._base_url, f"api/v1/namespaces/{namespace}/{resource}"),

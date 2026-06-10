@@ -22,7 +22,11 @@ from aiops_platform.ops_reports.schemas import (
     ReportIncidentResult,
     ReportMetricSummaryResult,
 )
-from aiops_platform.ops_reports.service import OpsReportService, OpsReportValidationError
+from aiops_platform.ops_reports.service import (
+    OpsReportService,
+    OpsReportValidationError,
+    compact_report_metric_inputs,
+)
 from aiops_platform.orchestration.schemas import JobResult
 from aiops_platform.prediction_scaling.schemas import (
     PredictionErrorMetricsResult,
@@ -61,6 +65,7 @@ def test_daily_ops_report_includes_rca_prediction_and_scaling_evidence() -> None
     assert result.rca_refs
     assert {summary.source_type for summary in result.metric_summaries} >= {
         "ONPREM_PROMETHEUS",
+        "AWS_LOKI",
         "KEDA",
         "SCALING",
         "PREDICTION_ERROR",
@@ -86,6 +91,54 @@ def test_ops_report_llm_failure_marks_report_and_job_failed() -> None:
     assert result.job.status == "FAILED"
     assert result.llm_run is not None
     assert result.llm_run.run_status == "VALIDATION_FAILED"
+
+
+def test_ops_report_compacts_observability_metrics_for_llm_input() -> None:
+    metric_inputs = [
+        {
+            "source_type": "ONPREM_PROMETHEUS",
+            "metric_name": "daily_prometheus_metrics",
+            "summary_values": {
+                "source": "prometheus",
+                "status": "SUCCESS",
+                "data": {
+                    "status": "success",
+                    "data": {
+                        "resultType": "vector",
+                        "result": [
+                            {
+                                "metric": {
+                                    "__name__": "up",
+                                    "job": "kubelet",
+                                    "namespace": "kube-system",
+                                    "pod": "pod-a",
+                                    "extra_label": "should-not-be-copied",
+                                },
+                                "value": [1781017560, "1"],
+                            },
+                            {
+                                "metric": {"__name__": "up", "job": "node-exporter"},
+                                "value": [1781017560, "1"],
+                            },
+                        ],
+                    },
+                },
+            },
+        }
+    ]
+
+    compacted = compact_report_metric_inputs(metric_inputs)
+
+    summary = compacted[0]["summary_values"]
+    assert summary["source"] == "prometheus"
+    assert summary["status"] == "SUCCESS"
+    assert summary["data_summary"]["result_count"] == 2
+    assert summary["data_summary"]["sample"][0]["metric"] == {
+        "__name__": "up",
+        "job": "kubelet",
+        "namespace": "kube-system",
+        "pod": "pod-a",
+    }
 
 
 def test_send_ops_report_email_creates_notification_outbox_records() -> None:
@@ -206,7 +259,24 @@ class FakeInfraOpsService:
                 "report_date": kwargs.get("report_date"),
                 "partial": False,
                 "metrics": {"avg_rps": 42, "p95_latency_ms": 120},
-                "sources": [{"source": "prometheus", "status": "SUCCESS"}],
+                "sources": [
+                    {"source": "prometheus", "status": "SUCCESS"},
+                    {
+                        "source": "loki",
+                        "status": "SUCCESS",
+                        "data": {
+                            "status": "success",
+                            "data": {
+                                "result": [
+                                    {
+                                        "stream": {"namespace": "default", "app": "api"},
+                                        "values": [["1781017560000000000", "timeout error"]],
+                                    }
+                                ]
+                            },
+                        },
+                    },
+                ],
             }
         )
 

@@ -3,7 +3,12 @@ from uuid import uuid4
 import pytest
 from sqlalchemy import text
 
-from aiops_platform.admin_riskops.repository import RiskOpsUserRecord
+from aiops_platform.admin_riskops.repository import (
+    RiskOpsUserRecord,
+    build_application_user_join,
+    build_documents_query_parts,
+    build_farmer_profile_query_parts,
+)
 from aiops_platform.admin_riskops.service import (
     AdminRiskOpsService,
     AdminRiskOpsValidationError,
@@ -96,6 +101,37 @@ def test_bnpl_summary_counts_user_once_with_multiple_applications() -> None:
                 {"application_id": extra_application_id},
             )
             session.commit()
+
+
+def test_document_query_parts_support_legacy_and_public_application_columns() -> None:
+    legacy_cte, legacy_join = build_documents_query_parts({"application_id"})
+    public_cte, public_join = build_documents_query_parts({"application_public_id"})
+
+    assert "application_id::text as application_ref" in legacy_cte
+    assert "app.application_pk::text" in legacy_join
+    assert "application_public_id::text as application_ref" in public_cte
+    assert "app.application_public_id::text" in public_join
+
+
+def test_user_and_farmer_profile_query_parts_support_legacy_and_public_columns() -> None:
+    assert build_application_user_join({"user_id"}) == "u.id = cla.user_id"
+    assert build_application_user_join({"user_public_id"}) == (
+        "u.public_id = cla.user_public_id"
+    )
+
+    legacy_join, legacy_field_area = build_farmer_profile_query_parts(
+        {"user_id", "field_aream2"}
+    )
+    public_join, public_field_area = build_farmer_profile_query_parts(
+        {"user_public_id", "field_area_m2"}
+    )
+
+    assert legacy_join == "left join core.farmer_profiles fp on fp.user_id = app.user_pk"
+    assert legacy_field_area == "fp.field_aream2"
+    assert public_join == (
+        "left join core.farmer_profiles fp on fp.user_public_id = app.user_public_id"
+    )
+    assert public_field_area == "fp.field_area_m2"
 
 
 def test_user_search_risk_summary_and_bss_history() -> None:

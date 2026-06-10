@@ -37,6 +37,36 @@ subjects:
 apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
 metadata:
+  name: mcp-aiops-backend-job-runner
+  namespace: default
+  labels:
+    app.kubernetes.io/name: mcp-aiops-backend
+    app.kubernetes.io/part-of: aiops-platform
+rules:
+  - apiGroups: ["batch"]
+    resources: ["jobs"]
+    verbs: ["create", "get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: mcp-aiops-backend-job-runner
+  namespace: default
+  labels:
+    app.kubernetes.io/name: mcp-aiops-backend
+    app.kubernetes.io/part-of: aiops-platform
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: mcp-aiops-backend-job-runner
+subjects:
+  - kind: ServiceAccount
+    name: mcp-aiops-backend
+    namespace: default
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
   name: mcp-aiops-backend-readonly
   namespace: kube-system
   labels:

@@ -128,6 +128,9 @@ MCP Tool이 바라보는 운영 인프라 주소는 Kubernetes `ConfigMap`과 `S
 | Agent/Copilot | LLM endpoint | `LLM_PROVIDER`, `LLM_MODEL`, `LLM_API_BASE_URL`, `LLM_API_KEY`, `LLM_REQUIRE_API_KEY` |
 | Ops report | SMTP | `SMTP_HOST`, `SMTP_PORT`, `SMTP_USERNAME`, `SMTP_PASSWORD`, `SMTP_FROM`, `SMTP_USE_TLS` |
 
+`INFRAOPS_ELK_ENABLED=false`는 Elasticsearch/OpenSearch와 Kibana/OpenSearch Dashboards만 비활성화합니다.
+Loki는 ELK의 Logstash가 아니므로 RCA와 운영 리포트의 로그 근거 수집에 계속 사용합니다.
+
 ### Kubernetes 매니페스트
 
 EKS 배포용 기본 파일은 `infra/k8s`에 있습니다.
@@ -139,14 +142,19 @@ infra/k8s/configmap.yaml
 infra/k8s/secret.example.yaml
 infra/k8s/deployment.yaml
 infra/k8s/service.yaml
-infra/k8s/rca-due-job-cronjob.yaml
 infra/k8s/kustomization.yaml
 ```
 
 `secret.example.yaml`은 예시 파일입니다. 실제 운영 secret은 Git에 커밋하지 않고,
 GitHub Actions 또는 `kubectl create secret`으로 생성합니다.
 
-`infra/k8s/ingress.yaml`은 기존 `default/service-catalog-ingress`에 MCP 경로를 추가합니다.
+공용 Ingress는 service-catalog 또는 infra IaC에서 단일 소유로 관리합니다.
+MCP 배포 파이프라인은 `default/service-catalog-ingress`를 apply하지 않고,
+`infra/k8s/ingress.yaml`은 service-catalog Ingress에 추가해야 하는 MCP 경로 참고본으로만 유지합니다.
+운영 반영 대상 리소스는 `default/service-catalog-ingress`이며, 아래 경로는 service-catalog
+Ingress manifest 또는 infra IaC PR에 병합되어야 실제 외부 경로로 동작합니다:
+`/api/alerts`, `/alerts/webhook`, `/reports/ops`, `/api/v1/mcp`, `/api/v1/mcp-server`.
+MCP PR 본문에는 이 service-catalog/infra PR 또는 배포 job 링크를 함께 남겨 경로 반영 이력을 추적합니다.
 MCP는 `default` namespace의 `ClusterIP` Service로 배포되고, 기존 `kkpp-catalog-api`
 ALB가 path rule로 catalog pod와 MCP pod를 구분합니다.
 
@@ -176,10 +184,10 @@ GitHub Actions에 필요한 값은 아래처럼 설정합니다.
 
 | 이름 | 위치 | 설명 |
 | --- | --- | --- |
-| `AWS_ROLE_ARN` | Variable 또는 Secret | GitHub OIDC가 assume할 AWS IAM Role ARN |
-| `AWS_REGION` | Variable 또는 Secret | 기본값: `ap-northeast-2` |
-| `ECR_REPOSITORY` | Variable 또는 Secret | 기본값: `kkpp/mcp-aiops-backend` |
-| `EKS_CLUSTER_NAME` | Variable 또는 Secret | 기본값: `kkpp-eks` |
+| `AWS_ROLE_ARN` | Variable 또는 Secret | GitHub OIDC가 assume할 AWS IAM Role 전체 ARN. 역할 이름만 넣으면 안 됩니다. 기존 `AWS_ROLE_TO_ASSUME` Secret도 전체 ARN이면 호환 |
+| `AWS_REGION` | Variable 또는 Secret | AWS 리전 |
+| `ECR_REPOSITORY` | Variable 또는 Secret | ECR 리포지토리 이름 |
+| `EKS_CLUSTER_NAME` | Variable 또는 Secret | EKS 클러스터 이름 |
 | `DATABASE_URL` | Secret | 운영 PostgreSQL/RDS 연결 문자열 |
 | `LLM_API_KEY` | Secret | Groq 외부 LLM API key. `infra/k8s/configmap.yaml`은 `LLM_PROVIDER=groq`, `LLM_MODEL=qwen/qwen3-32b`, `LLM_API_BASE_URL=https://api.groq.com/openai/v1` 기준 |
 | `ELASTICSEARCH_USERNAME` | Secret | Elasticsearch/OpenSearch 사용자명 |
@@ -214,8 +222,8 @@ POST /api/v1/mcp-server/mcp
 
 Alertmanager webhook은 `POST /api/alerts`로 수신합니다. 신규 firing alert는 즉시 preliminary RCA email을 만들고,
 최종 RCA는 alert `startsAt` 기준 `10분 전 ~ 5분 후` 증거 윈도우가 닫힌 뒤 생성됩니다.
-EKS에서는 `mcp-aiops-rca-due-job-runner` CronJob이 1분마다 `POST /rca/jobs/run-due`를 호출해
-`scheduled_at`이 지난 RCA job만 처리합니다.
+EKS에서는 webhook을 받은 백엔드가 `mcp-aiops-rca-due-job-runner` Kubernetes Job을 동적으로 생성합니다.
+해당 Job은 `scheduled_at`까지 대기한 뒤 `POST /rca/jobs/run-due`를 호출해 due 상태의 RCA job만 처리합니다.
 
 CloudFront에서 MCP 외부 접근이 필요하면 `/api/v1/mcp*`, `/api/v1/mcp-server*`
 behavior를 기존 `catalog-api-alb` origin으로 추가합니다.

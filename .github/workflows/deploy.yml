@@ -3,19 +3,17 @@ name: Deploy MCP backend to EKS
 on:
   push:
     branches:
-      - main
-      - feat/#47-mcp-tool-infra-eks-pipeline
+      - "**"
   workflow_dispatch:
 
 permissions:
   contents: read
 
 env:
-  AWS_ACCOUNT_ID: ${{ vars.AWS_ACCOUNT_ID || secrets.AWS_ACCOUNT_ID || '153585581837' }}
-  AWS_ROLE_ARN: ${{ vars.AWS_ROLE_ARN || secrets.AWS_ROLE_ARN || 'arn:aws:iam::153585581837:role/github-actions-mcp-aiops-deploy' }}
-  AWS_REGION: ${{ vars.AWS_REGION || secrets.AWS_REGION || 'ap-northeast-2' }}
-  ECR_REPOSITORY: ${{ vars.ECR_REPOSITORY || secrets.ECR_REPOSITORY || 'kkpp/mcp-aiops-backend' }}
-  EKS_CLUSTER_NAME: ${{ vars.EKS_CLUSTER_NAME || secrets.EKS_CLUSTER_NAME || 'kkpp-eks' }}
+  AWS_ROLE_ARN: ${{ vars.AWS_ROLE_ARN || secrets.AWS_ROLE_ARN || secrets.AWS_ROLE_TO_ASSUME }}
+  AWS_REGION: ${{ vars.AWS_REGION || secrets.AWS_REGION }}
+  ECR_REPOSITORY: ${{ vars.ECR_REPOSITORY || secrets.ECR_REPOSITORY }}
+  EKS_CLUSTER_NAME: ${{ vars.EKS_CLUSTER_NAME || secrets.EKS_CLUSTER_NAME }}
   K8S_NAMESPACE: ${{ vars.K8S_NAMESPACE || 'default' }}
   K8S_DEPLOYMENT: ${{ vars.K8S_DEPLOYMENT || 'mcp-aiops-backend' }}
   K8S_SERVICE: ${{ vars.K8S_SERVICE || 'mcp-aiops-backend' }}
@@ -111,6 +109,10 @@ jobs:
 
       - name: Validate deployment inputs
         env:
+          AWS_ROLE_ARN: ${{ env.AWS_ROLE_ARN }}
+          AWS_REGION: ${{ env.AWS_REGION }}
+          ECR_REPOSITORY: ${{ env.ECR_REPOSITORY }}
+          EKS_CLUSTER_NAME: ${{ env.EKS_CLUSTER_NAME }}
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
           LLM_API_KEY: ${{ secrets.LLM_API_KEY }}
           SMTP_HOST: ${{ secrets.SMTP_HOST }}
@@ -119,6 +121,14 @@ jobs:
           SMTP_FROM: ${{ secrets.SMTP_FROM }}
           OPS_REPORT_EMAIL_RECIPIENTS: ${{ secrets.OPS_REPORT_EMAIL_RECIPIENTS }}
         run: |
+          test -n "${AWS_ROLE_ARN}" || { echo "AWS_ROLE_ARN variable/secret or AWS_ROLE_TO_ASSUME secret is required."; exit 1; }
+          case "${AWS_ROLE_ARN}" in
+            arn:aws:iam::*:role/*) ;;
+            *) echo "AWS_ROLE_ARN must be a full IAM Role ARN, not just a role name."; exit 1 ;;
+          esac
+          test -n "${AWS_REGION}" || { echo "AWS_REGION variable or secret is required."; exit 1; }
+          test -n "${ECR_REPOSITORY}" || { echo "ECR_REPOSITORY variable or secret is required."; exit 1; }
+          test -n "${EKS_CLUSTER_NAME}" || { echo "EKS_CLUSTER_NAME variable or secret is required."; exit 1; }
           test -n "${DATABASE_URL}" || { echo "DATABASE_URL secret is required."; exit 1; }
           test -n "${LLM_API_KEY}" || { echo "LLM_API_KEY secret is required for external Groq LLM."; exit 1; }
           test -n "${SMTP_HOST}" || { echo "SMTP_HOST secret is required."; exit 1; }
@@ -200,15 +210,12 @@ jobs:
             -e "s|namespace: default|namespace: ${K8S_NAMESPACE}|g" \
             -e "s|name: mcp-aiops-backend-secret|name: ${K8S_SECRET_NAME}|g" \
             infra/k8s/deployment.yaml | kubectl apply -f -
-          sed \
-            -e "s|REPLACE_IMAGE|${IMAGE_URI}|g" \
-            -e "s|namespace: default|namespace: ${K8S_NAMESPACE}|g" \
-            -e "s|mcp-aiops-backend.default.svc.cluster.local|${K8S_SERVICE}.${K8S_NAMESPACE}.svc.cluster.local|g" \
-            infra/k8s/rca-due-job-cronjob.yaml | kubectl apply -f -
+          kubectl delete cronjob mcp-aiops-rca-due-job-runner \
+            --namespace "${K8S_NAMESPACE}" \
+            --ignore-not-found
           kubectl rollout status "deployment/${K8S_DEPLOYMENT}" \
             --namespace "${K8S_NAMESPACE}" \
             --timeout=180s
-          kubectl apply -f infra/k8s/ingress.yaml
 
       - name: Smoke test service
         run: |

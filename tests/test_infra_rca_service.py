@@ -6,6 +6,7 @@ from typing import Any
 import pytest
 from fastapi.testclient import TestClient
 
+from aiops_platform.infra_rca.job_runner import build_rca_job_manifest
 from aiops_platform.infra_rca.repository import ScheduledRcaJobRecord
 from aiops_platform.infra_rca.schemas import (
     AlertmanagerAlert,
@@ -99,6 +100,95 @@ def test_alertmanager_webhook_generates_rca_report() -> None:
     }
     assert result.rca_report is not None
     assert result.rca_report.status == "COMPLETED"
+
+
+def test_alertmanager_webhook_schedules_kubernetes_rca_runner() -> None:
+    repository = FakeInfraRcaRepository()
+    runner = FakeRcaJobRunner()
+    service = InfraRcaService(
+        repository=repository,
+        orchestration_repository=FakeOrchestrationRepository(repository),
+        llmops_service=FakeLlmOpsService(),
+        infraops_service=FakeInfraOpsService(),
+        prediction_scaling_service=FakePredictionScalingService(),
+        email_recipients=[],
+        rca_job_runner=runner,
+    )
+
+    webhook_result = service.handle_alertmanager_webhook(
+        AlertmanagerWebhookRequest.model_validate(ALERT_PAYLOAD)
+    )
+
+    assert webhook_result.job is not None
+    assert runner.scheduled_jobs == [
+        {
+            "job_id": webhook_result.job.job_id,
+            "scheduled_at": datetime(2026, 6, 6, 1, 5),
+        }
+    ]
+
+
+def test_duplicate_firing_alert_does_not_schedule_kubernetes_rca_runner() -> None:
+    repository = FakeInfraRcaRepository()
+    runner = FakeRcaJobRunner()
+    service = InfraRcaService(
+        repository=repository,
+        orchestration_repository=FakeOrchestrationRepository(repository),
+        llmops_service=FakeLlmOpsService(),
+        infraops_service=FakeInfraOpsService(),
+        prediction_scaling_service=FakePredictionScalingService(),
+        email_recipients=[],
+        rca_job_runner=runner,
+    )
+
+    service.handle_alertmanager_webhook(AlertmanagerWebhookRequest.model_validate(ALERT_PAYLOAD))
+    service.handle_alertmanager_webhook(AlertmanagerWebhookRequest.model_validate(ALERT_PAYLOAD))
+
+    assert len(runner.scheduled_jobs) == 1
+
+
+def test_rca_runner_failure_does_not_fail_webhook() -> None:
+    repository = FakeInfraRcaRepository()
+    service = InfraRcaService(
+        repository=repository,
+        orchestration_repository=FakeOrchestrationRepository(repository),
+        llmops_service=FakeLlmOpsService(),
+        infraops_service=FakeInfraOpsService(),
+        prediction_scaling_service=FakePredictionScalingService(),
+        email_recipients=[],
+        rca_job_runner=FailingRcaJobRunner(),
+    )
+
+    result = service.handle_alertmanager_webhook(
+        AlertmanagerWebhookRequest.model_validate(ALERT_PAYLOAD)
+    )
+
+    assert result.job is not None
+    assert result.job.status == "QUEUED"
+    assert "runner trigger failed" in result.message
+
+
+def test_build_rca_job_manifest_waits_until_scheduled_time() -> None:
+    manifest = build_rca_job_manifest(
+        job_id="00000000-0000-0000-0000-000000000101",
+        scheduled_at=datetime(2026, 6, 6, 1, 5),
+        namespace="default",
+        image="example.com/backend:sha",
+        service_name="mcp-aiops-backend",
+        limit=20,
+        ttl_seconds_after_finished=600,
+        active_deadline_buffer_seconds=300,
+    )
+
+    assert manifest["metadata"]["name"] == (
+        "mcp-aiops-rca-run-00000000-0000-0000-0000-000000000101"
+    )
+    assert manifest["spec"]["ttlSecondsAfterFinished"] == 600
+    container = manifest["spec"]["template"]["spec"]["containers"][0]
+    assert container["image"] == "example.com/backend:sha"
+    script = container["command"][2]
+    assert "time.sleep(delay_seconds)" in script
+    assert "http://mcp-aiops-backend.default.svc.cluster.local/rca/jobs/run-due?limit=20" in script
 
 
 def test_alertmanager_webhook_sends_preliminary_and_final_rca_email() -> None:
@@ -395,6 +485,19 @@ class FailingPredictionScalingService:
 
     def get_scaling_events(self, **kwargs: object) -> ScalingEventResult:
         raise RuntimeError("scaling events unavailable")
+
+
+class FakeRcaJobRunner:
+    def __init__(self) -> None:
+        self.scheduled_jobs: list[dict[str, object]] = []
+
+    def schedule_due_rca_job(self, *, job_id: str, scheduled_at: datetime) -> None:
+        self.scheduled_jobs.append({"job_id": job_id, "scheduled_at": scheduled_at})
+
+
+class FailingRcaJobRunner:
+    def schedule_due_rca_job(self, *, job_id: str, scheduled_at: datetime) -> None:
+        raise RuntimeError("kubernetes unavailable")
 
 
 class FakeOrchestrationRepository:

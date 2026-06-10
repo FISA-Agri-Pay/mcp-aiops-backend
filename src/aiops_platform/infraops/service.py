@@ -78,6 +78,7 @@ class InfraOpsService:
         kubernetes_sources: dict[str, KubernetesSource] | None = None,
         prometheus_sources: tuple[tuple[str, PrometheusClient], ...] | None = None,
         loki_sources: tuple[tuple[str, LokiClient], ...] | None = None,
+        elasticsearch_enabled: bool = True,
     ) -> None:
         self._prometheus_client = prometheus_client
         self._loki_client = loki_client
@@ -93,6 +94,7 @@ class InfraOpsService:
         self._kubernetes_sources = kubernetes_sources or {
             "eks": (kubernetes_client, kubernetes_namespace_allowlist)
         }
+        self._elasticsearch_enabled = elasticsearch_enabled
 
     @classmethod
     def from_settings(cls, app_settings: Settings | None = None) -> InfraOpsService:
@@ -140,6 +142,7 @@ class InfraOpsService:
             kubernetes_sources=build_kubernetes_sources(app_settings),
             prometheus_sources=build_prometheus_sources(app_settings),
             loki_sources=build_loki_sources(app_settings),
+            elasticsearch_enabled=app_settings.infraops_elk_enabled,
         )
 
     def query_prometheus(self, query: str, time: str | None = None) -> PrometheusQueryResult:
@@ -496,7 +499,7 @@ class InfraOpsService:
                     limit=request.loki_limit,
                 ).model_dump(mode="json"),
             ),
-            self._capture_source(
+            self._capture_elasticsearch_source(
                 "elasticsearch",
                 lambda: self.create_elk_snapshot(
                     index_pattern=request.index_pattern,
@@ -547,6 +550,8 @@ class InfraOpsService:
         namespace: str | None = None,
         index_pattern: str | None = None,
         prometheus_query: str = "up",
+        loki_query: str = '{job=~".+"}',
+        loki_limit: int = 100,
         kafka_consumer_group: str | None = None,
         kafka_topic: str | None = None,
         batch_job_name: str | None = None,
@@ -556,6 +561,8 @@ class InfraOpsService:
             namespace=namespace,
             index_pattern=index_pattern,
             prometheus_query=prometheus_query,
+            loki_query=loki_query,
+            loki_limit=loki_limit,
             kafka_consumer_group=kafka_consumer_group,
             kafka_topic=kafka_topic,
             batch_job_name=batch_job_name,
@@ -566,10 +573,17 @@ class InfraOpsService:
                 lambda: self.query_prometheus(request.prometheus_query).model_dump(mode="json"),
             ),
             self._capture_source(
+                "loki",
+                lambda: self.query_loki(
+                    query=request.loki_query,
+                    limit=request.loki_limit,
+                ).model_dump(mode="json"),
+            ),
+            self._capture_elasticsearch_source(
                 "elasticsearch_cluster",
                 lambda: self.get_elasticsearch_cluster_health().model_dump(mode="json"),
             ),
-            self._capture_source(
+            self._capture_elasticsearch_source(
                 "elasticsearch_indices",
                 lambda: self.get_elasticsearch_index_health(
                     index_pattern=request.index_pattern,
@@ -708,6 +722,15 @@ class InfraOpsService:
                 source=source,
                 status="SKIPPED",
                 error="Required input was not provided.",
+            )
+        return self._capture_source(source, loader)
+
+    def _capture_elasticsearch_source(self, source: str, loader) -> InfraOpsSourceResult:
+        if not self._elasticsearch_enabled:
+            return InfraOpsSourceResult(
+                source=source,
+                status="SKIPPED",
+                error="Elasticsearch/OpenSearch integration is disabled.",
             )
         return self._capture_source(source, loader)
 

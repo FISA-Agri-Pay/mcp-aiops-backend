@@ -129,6 +129,29 @@ def test_kubernetes_client_calls_namespaced_read_apis() -> None:
     assert http_client.calls[0]["headers"]["Authorization"] == "Bearer token"
 
 
+def test_kubernetes_client_creates_namespaced_job() -> None:
+    http_client = FakeHttpClient({"metadata": {"name": "rca-job"}})
+    client = KubernetesClient(
+        "http://kubernetes:8001",
+        bearer_token="token",
+        timeout_seconds=3,
+        http_client=http_client,
+    )
+    manifest = {
+        "apiVersion": "batch/v1",
+        "kind": "Job",
+        "metadata": {"name": "rca-job"},
+    }
+
+    assert client.create_job("default", manifest) == {"metadata": {"name": "rca-job"}}
+    assert http_client.calls[0]["method"] == "POST"
+    assert http_client.calls[0]["url"] == (
+        "http://kubernetes:8001/apis/batch/v1/namespaces/default/jobs"
+    )
+    assert http_client.calls[0]["json_body"] == manifest
+    assert http_client.calls[0]["headers"]["Authorization"] == "Bearer token"
+
+
 def test_kubernetes_client_reads_bearer_token_file(tmp_path) -> None:
     token_file = tmp_path / "token"
     token_file.write_text("file-token\n", encoding="utf-8")
@@ -640,6 +663,10 @@ def test_infraops_service_aggregates_daily_ops_metrics() -> None:
             "http://prometheus:9090",
             http_client=FakeHttpClient({"status": "success", "data": {"result": []}}),
         ),
+        loki_client=LokiClient(
+            "http://loki:3100",
+            http_client=FakeHttpClient({"status": "success", "data": {"result": []}}),
+        ),
         elasticsearch_client=ElasticsearchClient(
             "http://elasticsearch:9200",
             http_client=FailingHttpClient(),
@@ -662,7 +689,7 @@ def test_infraops_service_aggregates_daily_ops_metrics() -> None:
     assert result.report_date == "2026-06-05"
     assert result.partial is True
     assert result.metrics == {
-        "successful_sources": 2,
+        "successful_sources": 3,
         "failed_sources": 2,
         "skipped_sources": 2,
         "pod_count": 1,
@@ -670,6 +697,40 @@ def test_infraops_service_aggregates_daily_ops_metrics() -> None:
         "deployment_count": 1,
         "hpa_count": 1,
     }
+    assert {source.source for source in result.sources} >= {"prometheus", "loki"}
+
+
+def test_infraops_service_skips_elasticsearch_when_disabled_but_keeps_loki() -> None:
+    service = make_infraops_service(
+        prometheus_client=PrometheusClient(
+            "http://prometheus:9090",
+            http_client=FakeHttpClient({"status": "success", "data": {"result": []}}),
+        ),
+        loki_client=LokiClient(
+            "http://loki:3100",
+            http_client=FakeHttpClient({"status": "success", "data": {"result": []}}),
+        ),
+        elasticsearch_client=ElasticsearchClient(
+            "http://elasticsearch:9200",
+            http_client=FailingHttpClient(),
+        ),
+        kubernetes_client=KubernetesClient(
+            "http://kubernetes:8001",
+            http_client=FakeHttpClient({"items": []}),
+        ),
+        batch_client=BatchClient(
+            "http://batch-api:8081",
+            http_client=FakeHttpClient({"runs": []}),
+        ),
+        elasticsearch_enabled=False,
+    )
+
+    result = service.aggregate_daily_ops_metrics(report_date="2026-06-05")
+
+    statuses = {source.source: source.status for source in result.sources}
+    assert statuses["loki"] == "SUCCESS"
+    assert statuses["elasticsearch_cluster"] == "SKIPPED"
+    assert statuses["elasticsearch_indices"] == "SKIPPED"
 
 
 def test_infraops_service_returns_search_skeletons() -> None:

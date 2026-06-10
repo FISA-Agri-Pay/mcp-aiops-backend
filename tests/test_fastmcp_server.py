@@ -1085,12 +1085,16 @@ def test_fastmcp_rca_and_daily_report_tools_return_results() -> None:
             namespace: str | None = None,
             index_pattern: str | None = None,
             prometheus_query: str = "up",
+            loki_query: str = '{job=~".+"}',
+            loki_limit: int = 100,
             kafka_consumer_group: str | None = None,
             kafka_topic: str | None = None,
             batch_job_name: str | None = None,
         ):
             assert report_date == "2026-06-05"
             assert namespace == "default"
+            assert loki_query == '{job=~".+"}'
+            assert loki_limit == 100
             return DailyOpsMetricsResult(
                 report_date=report_date,
                 partial=False,
