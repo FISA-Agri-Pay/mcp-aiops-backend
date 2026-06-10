@@ -151,6 +151,10 @@ GitHub Actions 또는 `kubectl create secret`으로 생성합니다.
 공용 Ingress는 service-catalog 또는 infra IaC에서 단일 소유로 관리합니다.
 MCP 배포 파이프라인은 `default/service-catalog-ingress`를 apply하지 않고,
 `infra/k8s/ingress.yaml`은 service-catalog Ingress에 추가해야 하는 MCP 경로 참고본으로만 유지합니다.
+운영 반영 대상 리소스는 `default/service-catalog-ingress`이며, 아래 경로는 service-catalog
+Ingress manifest 또는 infra IaC PR에 병합되어야 실제 외부 경로로 동작합니다:
+`/api/alerts`, `/alerts/webhook`, `/reports/ops`, `/api/v1/mcp`, `/api/v1/mcp-server`.
+MCP PR 본문에는 이 service-catalog/infra PR 또는 배포 job 링크를 함께 남겨 경로 반영 이력을 추적합니다.
 MCP는 `default` namespace의 `ClusterIP` Service로 배포되고, 기존 `kkpp-catalog-api`
 ALB가 path rule로 catalog pod와 MCP pod를 구분합니다.
 

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -10,6 +11,8 @@ from sqlalchemy import text
 from sqlalchemy.orm import Session
 
 from aiops_platform.core.database import SessionLocal
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -234,6 +237,11 @@ def build_application_user_join(columns: set[str]) -> str:
         return "u.id = cla.user_id"
     if "user_public_id" in columns:
         return "u.public_id = cla.user_public_id"
+    logger.warning(
+        "build_application_user_join schema mismatch: expected one of "
+        "user_id, user_public_id; available columns=%s",
+        sorted(columns),
+    )
     return "false"
 
 
@@ -243,6 +251,11 @@ def build_farmer_profile_query_parts(columns: set[str]) -> tuple[str, str]:
     elif "user_public_id" in columns:
         join = "left join core.farmer_profiles fp on fp.user_public_id = app.user_public_id"
     else:
+        logger.warning(
+            "build_farmer_profile_query_parts schema mismatch: expected one of "
+            "user_id, user_public_id; available columns=%s",
+            sorted(columns),
+        )
         join = "left join core.farmer_profiles fp on false"
 
     if "field_aream2" in columns:
@@ -281,6 +294,11 @@ def build_documents_query_parts(columns: set[str]) -> tuple[str, str]:
             """,
             "left join documents on documents.application_ref = app.application_public_id::text",
         )
+    logger.warning(
+        "build_documents_query_parts schema mismatch: expected one of "
+        "application_id, application_public_id; available columns=%s",
+        sorted(columns),
+    )
     return (
         """
         documents as (
