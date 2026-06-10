@@ -53,6 +53,13 @@ spec:
                 name: service-catalog-service
                 port:
                   number: 80
+          - path: /api/v1/aiops
+            pathType: Prefix
+            backend:
+              service:
+                name: mcp-aiops-backend
+                port:
+                  number: 80
           - path: /api/v1/mcp
             pathType: Prefix
             backend:

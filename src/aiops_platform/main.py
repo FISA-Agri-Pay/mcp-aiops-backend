@@ -45,6 +45,7 @@ def create_app() -> FastAPI:
     app.state.admin_riskops_service = AdminRiskOpsService()
     app.state.farmer_bnpl_service = FarmerBnplService()
     app.include_router(admin_router)
+    app.include_router(admin_router, prefix=f"{EXTERNAL_API_PREFIX}/aiops")
     app.include_router(admin_risk_router)
     app.include_router(farmer_router)
     app.include_router(farmer_bnpl_router)
