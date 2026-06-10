@@ -423,6 +423,9 @@ class LlmOpsService:
         payload: dict[str, Any] | None = None,
         recipient: str | None = None,
         title: str | None = None,
+        related_table: str | None = None,
+        related_public_id: str | None = None,
+        idempotency_key: str | None = None,
     ) -> NotificationOutboxResult:
         normalized_channel = normalize_notification_channel(channel)
         return self._repository.create_notification(
@@ -431,6 +434,9 @@ class LlmOpsService:
             payload=mask_payload(payload or {}) or {},
             recipient=recipient,
             title=title,
+            related_table=related_table,
+            related_public_id=related_public_id,
+            idempotency_key=idempotency_key,
         )
 
     def list_notifications(

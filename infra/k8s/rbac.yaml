@@ -1,0 +1,143 @@
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: mcp-aiops-backend-readonly
+  namespace: default
+  labels:
+    app.kubernetes.io/name: mcp-aiops-backend
+    app.kubernetes.io/part-of: aiops-platform
+rules:
+  - apiGroups: [""]
+    resources: ["pods", "events"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["apps"]
+    resources: ["deployments"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["autoscaling"]
+    resources: ["horizontalpodautoscalers"]
+    verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: mcp-aiops-backend-readonly
+  namespace: default
+  labels:
+    app.kubernetes.io/name: mcp-aiops-backend
+    app.kubernetes.io/part-of: aiops-platform
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: mcp-aiops-backend-readonly
+subjects:
+  - kind: ServiceAccount
+    name: mcp-aiops-backend
+    namespace: default
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: mcp-aiops-backend-readonly
+  namespace: kube-system
+  labels:
+    app.kubernetes.io/name: mcp-aiops-backend
+    app.kubernetes.io/part-of: aiops-platform
+rules:
+  - apiGroups: [""]
+    resources: ["pods", "events"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["apps"]
+    resources: ["deployments"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["autoscaling"]
+    resources: ["horizontalpodautoscalers"]
+    verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: mcp-aiops-backend-readonly
+  namespace: kube-system
+  labels:
+    app.kubernetes.io/name: mcp-aiops-backend
+    app.kubernetes.io/part-of: aiops-platform
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: mcp-aiops-backend-readonly
+subjects:
+  - kind: ServiceAccount
+    name: mcp-aiops-backend
+    namespace: default
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: mcp-aiops-backend-readonly
+  namespace: monitoring
+  labels:
+    app.kubernetes.io/name: mcp-aiops-backend
+    app.kubernetes.io/part-of: aiops-platform
+rules:
+  - apiGroups: [""]
+    resources: ["pods", "events"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["apps"]
+    resources: ["deployments"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["autoscaling"]
+    resources: ["horizontalpodautoscalers"]
+    verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: mcp-aiops-backend-readonly
+  namespace: monitoring
+  labels:
+    app.kubernetes.io/name: mcp-aiops-backend
+    app.kubernetes.io/part-of: aiops-platform
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: mcp-aiops-backend-readonly
+subjects:
+  - kind: ServiceAccount
+    name: mcp-aiops-backend
+    namespace: default
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: mcp-aiops-backend-readonly
+  namespace: service-catalog
+  labels:
+    app.kubernetes.io/name: mcp-aiops-backend
+    app.kubernetes.io/part-of: aiops-platform
+rules:
+  - apiGroups: [""]
+    resources: ["pods", "events"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["apps"]
+    resources: ["deployments"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["autoscaling"]
+    resources: ["horizontalpodautoscalers"]
+    verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: mcp-aiops-backend-readonly
+  namespace: service-catalog
+  labels:
+    app.kubernetes.io/name: mcp-aiops-backend
+    app.kubernetes.io/part-of: aiops-platform
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: mcp-aiops-backend-readonly
+subjects:
+  - kind: ServiceAccount
+    name: mcp-aiops-backend
+    namespace: default

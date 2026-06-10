@@ -6,6 +6,7 @@ from typing import Any
 import pytest
 from fastapi.testclient import TestClient
 
+from aiops_platform.infra_rca.repository import ScheduledRcaJobRecord
 from aiops_platform.infra_rca.schemas import (
     AlertmanagerAlert,
     AlertmanagerWebhookRequest,
@@ -13,6 +14,7 @@ from aiops_platform.infra_rca.schemas import (
     IncidentAlertResult,
     IncidentResult,
     ObservabilitySnapshotResult,
+    RcaReportEmailRequest,
     RcaReportResult,
     SnapshotItemResult,
 )
@@ -67,23 +69,28 @@ def test_alertmanager_webhook_generates_rca_report() -> None:
     repository = FakeInfraRcaRepository()
     service = InfraRcaService(
         repository=repository,
-        orchestration_repository=FakeOrchestrationRepository(),
+        orchestration_repository=FakeOrchestrationRepository(repository),
         llmops_service=FakeLlmOpsService(),
         infraops_service=FakeInfraOpsService(),
         prediction_scaling_service=FakePredictionScalingService(),
+        email_recipients=[],
     )
 
-    result = service.handle_alertmanager_webhook(
+    webhook_result = service.handle_alertmanager_webhook(
         AlertmanagerWebhookRequest.model_validate(ALERT_PAYLOAD)
     )
+    assert webhook_result.job is not None
+    assert webhook_result.job.status == "QUEUED"
+    assert webhook_result.rca_report is None
+    result = service.run_due_rca_jobs().items[0]
 
     assert result.incident.alert_name == "HighCPUUsage"
     assert result.incident.severity == "CRITICAL"
     assert result.job is not None
     assert result.job.status == "SUCCEEDED"
     assert result.snapshot is not None
-    assert result.snapshot.time_start.startswith("2026-06-06 00:30:00")
-    assert result.snapshot.time_end.startswith("2026-06-06 01:10:00")
+    assert result.snapshot.time_start.startswith("2026-06-06 00:50:00")
+    assert result.snapshot.time_end.startswith("2026-06-06 01:05:00")
     assert {item.source_type for item in result.snapshot.items} >= {
         "PROMETHEUS",
         "KUBERNETES",
@@ -92,7 +99,65 @@ def test_alertmanager_webhook_generates_rca_report() -> None:
     }
     assert result.rca_report is not None
     assert result.rca_report.status == "COMPLETED"
-    assert result.notification_id == "notification-1"
+
+
+def test_alertmanager_webhook_sends_preliminary_and_final_rca_email() -> None:
+    repository = FakeInfraRcaRepository()
+    llmops_service = FakeLlmOpsService()
+    email_sender = FakeEmailSender()
+    service = InfraRcaService(
+        repository=repository,
+        orchestration_repository=FakeOrchestrationRepository(repository),
+        llmops_service=llmops_service,
+        infraops_service=FakeInfraOpsService(),
+        prediction_scaling_service=FakePredictionScalingService(),
+        email_sender=email_sender,
+        email_recipients=["ops@example.com"],
+    )
+
+    webhook_result = service.handle_alertmanager_webhook(
+        AlertmanagerWebhookRequest.model_validate(ALERT_PAYLOAD)
+    )
+    result = service.run_due_rca_jobs().items[0]
+
+    assert webhook_result.preliminary_notification_ids == ["notification-1"]
+    assert result.final_notification_ids == ["notification-3"]
+    stages = [
+        notification.payload["notification_stage"]
+        for notification in llmops_service.notifications
+        if "notification_stage" in notification.payload
+    ]
+    assert stages == ["preliminary", "final"]
+    assert [message["recipient"] for message in email_sender.sent_messages] == [
+        "ops@example.com",
+        "ops@example.com",
+    ]
+
+
+def test_send_rca_report_email_sends_existing_report() -> None:
+    repository = FakeInfraRcaRepository()
+    llmops_service = FakeLlmOpsService()
+    email_sender = FakeEmailSender()
+    service = InfraRcaService(
+        repository=repository,
+        orchestration_repository=FakeOrchestrationRepository(repository),
+        llmops_service=llmops_service,
+        infraops_service=FakeInfraOpsService(),
+        prediction_scaling_service=FakePredictionScalingService(),
+        email_sender=email_sender,
+        email_recipients=[],
+    )
+    service.handle_alertmanager_webhook(AlertmanagerWebhookRequest.model_validate(ALERT_PAYLOAD))
+    service.run_due_rca_jobs()
+
+    result = service.send_rca_report_email(
+        "rca-report-1",
+        RcaReportEmailRequest(recipients=["ops@example.com"]),
+    )
+
+    assert result.status == "SENT"
+    assert result.notification_ids == ["notification-2"]
+    assert email_sender.sent_messages[0]["recipient"] == "ops@example.com"
 
 
 def test_resolved_alert_records_incident_without_rca() -> None:
@@ -107,6 +172,7 @@ def test_resolved_alert_records_incident_without_rca() -> None:
         llmops_service=FakeLlmOpsService(),
         infraops_service=FakeInfraOpsService(),
         prediction_scaling_service=FakePredictionScalingService(),
+        email_recipients=[],
     )
 
     result = service.handle_alertmanager_webhook(
@@ -123,10 +189,11 @@ def test_duplicate_firing_alert_skips_second_rca_generation() -> None:
     repository = FakeInfraRcaRepository()
     service = InfraRcaService(
         repository=repository,
-        orchestration_repository=FakeOrchestrationRepository(),
+        orchestration_repository=FakeOrchestrationRepository(repository),
         llmops_service=FakeLlmOpsService(),
         infraops_service=FakeInfraOpsService(),
         prediction_scaling_service=FakePredictionScalingService(),
+        email_recipients=[],
     )
 
     first = service.handle_alertmanager_webhook(
@@ -138,11 +205,13 @@ def test_duplicate_firing_alert_skips_second_rca_generation() -> None:
 
     assert first.duplicate is False
     assert first.job is not None
-    assert first.rca_report is not None
+    assert first.job.status == "QUEUED"
+    assert first.rca_report is None
     assert second.duplicate is True
     assert second.job is None
     assert second.rca_report is None
     assert "Duplicate" in second.message
+    service.run_due_rca_jobs()
     assert repository.created_rca_reports == 1
 
 
@@ -150,15 +219,17 @@ def test_prediction_scaling_failure_is_recorded_as_partial_evidence() -> None:
     repository = FakeInfraRcaRepository()
     service = InfraRcaService(
         repository=repository,
-        orchestration_repository=FakeOrchestrationRepository(),
+        orchestration_repository=FakeOrchestrationRepository(repository),
         llmops_service=FakeLlmOpsService(),
         infraops_service=FakeInfraOpsService(),
         prediction_scaling_service=FailingPredictionScalingService(),
+        email_recipients=[],
     )
 
-    result = service.handle_alertmanager_webhook(
+    service.handle_alertmanager_webhook(
         AlertmanagerWebhookRequest.model_validate(ALERT_PAYLOAD)
     )
+    result = service.run_due_rca_jobs().items[0]
 
     assert result.job is not None
     assert result.job.status == "SUCCEEDED"
@@ -174,22 +245,23 @@ def test_llm_failure_does_not_create_rca_report() -> None:
     repository = FakeInfraRcaRepository()
     service = InfraRcaService(
         repository=repository,
-        orchestration_repository=FakeOrchestrationRepository(),
+        orchestration_repository=FakeOrchestrationRepository(repository),
         llmops_service=FailingLlmOpsService(),
         infraops_service=FakeInfraOpsService(),
         prediction_scaling_service=FakePredictionScalingService(),
+        email_recipients=[],
     )
 
-    result = service.handle_alertmanager_webhook(
+    service.handle_alertmanager_webhook(
         AlertmanagerWebhookRequest.model_validate(ALERT_PAYLOAD)
     )
+    result = service.run_due_rca_jobs().items[0]
 
     assert result.incident.status == "INVESTIGATING"
     assert result.job is not None
     assert result.job.status == "FAILED"
     assert result.rca_report is None
     assert result.snapshot is not None
-    assert result.notification_id == "notification-1"
     assert "LLM generation failed" in result.message
     assert repository.created_rca_reports == 0
 
@@ -235,6 +307,17 @@ def test_alertmanager_webhook_api_uses_configured_service() -> None:
     client = TestClient(app)
 
     response = client.post("/alerts/webhook", json=ALERT_PAYLOAD)
+
+    assert response.status_code == 200
+    assert response.json()["incident"]["incident_id"] == "incident-1"
+
+
+def test_alertmanager_api_alert_alias_uses_configured_service() -> None:
+    app = create_app()
+    app.state.infra_rca_service = FakeEndpointRcaService()
+    client = TestClient(app)
+
+    response = client.post("/api/alerts", json=ALERT_PAYLOAD)
 
     assert response.status_code == 200
     assert response.json()["incident"]["incident_id"] == "incident-1"
@@ -315,9 +398,31 @@ class FailingPredictionScalingService:
 
 
 class FakeOrchestrationRepository:
-    def create_job(self, *, job_type: str, entity_type: str, entity_id: str, status: str):
+    def __init__(self, rca_repository: FakeInfraRcaRepository | None = None) -> None:
+        self._rca_repository = rca_repository
+
+    def create_job(
+        self,
+        *,
+        job_type: str,
+        entity_type: str,
+        entity_id: str,
+        status: str,
+        scheduled_at: str | None = None,
+        job_context: dict[str, Any] | None = None,
+    ):
+        job_id = "00000000-0000-0000-0000-000000000101"
+        if self._rca_repository is not None and job_context is not None:
+            self._rca_repository.scheduled_jobs.append(
+                ScheduledRcaJobRecord(
+                    job_id=job_id,
+                    incident_id=entity_id,
+                    scheduled_at=scheduled_at,
+                    context=job_context,
+                )
+            )
         return JobResult(
-            job_id="00000000-0000-0000-0000-000000000101",
+            job_id=job_id,
             job_type=job_type,
             status=status,
             entity_type=entity_type,
@@ -340,6 +445,10 @@ class FakeOrchestrationRepository:
 
 
 class FakeLlmOpsService:
+    def __init__(self) -> None:
+        self.notifications: list[NotificationOutboxResult] = []
+        self.status_updates: list[dict[str, object]] = []
+
     def run_rca_completion(self, **kwargs: object) -> LlmRunResult:
         return LlmRunResult(
             llm_run_id="00000000-0000-0000-0000-000000000201",
@@ -359,15 +468,46 @@ class FakeLlmOpsService:
         )
 
     def create_notification(self, **kwargs: object) -> NotificationOutboxResult:
-        return NotificationOutboxResult(
-            notification_id="notification-1",
-            channel="DASHBOARD",
-            recipient="infra-admin",
+        notification = NotificationOutboxResult(
+            notification_id=f"notification-{len(self.notifications) + 1}",
+            channel=str(kwargs.get("channel") or "DASHBOARD").upper(),
+            recipient=kwargs.get("recipient"),
             notification_status="PENDING",
-            payload={},
+            payload=kwargs.get("payload") or {},
+            related_table=kwargs.get("related_table"),
+            related_public_id=kwargs.get("related_public_id"),
+            idempotency_key=kwargs.get("idempotency_key"),
             attempts=0,
             created_at="2026-06-06T01:00:02",
         )
+        self.notifications.append(notification)
+        return notification
+
+    def update_notification_status(
+        self,
+        notification_id: str,
+        *,
+        status: str,
+        last_error: str | None = None,
+    ) -> NotificationOutboxResult:
+        self.status_updates.append(
+            {
+                "notification_id": notification_id,
+                "status": status,
+                "last_error": last_error,
+            }
+        )
+        notification = next(
+            item for item in self.notifications if item.notification_id == notification_id
+        )
+        updated = notification.model_copy(
+            update={"notification_status": status, "last_error": last_error}
+        )
+        self.notifications = [
+            updated if item.notification_id == notification_id else item
+            for item in self.notifications
+        ]
+        return updated
 
 
 class FailingLlmOpsService(FakeLlmOpsService):
@@ -397,7 +537,9 @@ class FakeInfraRcaRepository:
         self.duplicate = duplicate
         self.created_rca_reports = 0
         self.incident: IncidentResult | None = None
+        self.rca_report: RcaReportResult | None = None
         self.seen_fingerprints: set[str] = set()
+        self.scheduled_jobs: list[ScheduledRcaJobRecord] = []
 
     def upsert_incident(self, **kwargs: object) -> IncidentResult:
         self.incident = IncidentResult(
@@ -472,8 +614,8 @@ class FakeInfraRcaRepository:
             snapshot_id=snapshot_id,
             incident_id="incident-1",
             snapshot_type="RCA",
-            time_start="2026-06-06 00:30:00",
-            time_end="2026-06-06 01:10:00",
+            time_start="2026-06-06 00:50:00",
+            time_end="2026-06-06 01:05:00",
             status=status,
             summary=summary,
             items=[],
@@ -482,7 +624,7 @@ class FakeInfraRcaRepository:
 
     def create_rca_report(self, **kwargs: object) -> RcaReportResult:
         self.created_rca_reports += 1
-        return RcaReportResult(
+        self.rca_report = RcaReportResult(
             rca_report_id="rca-report-1",
             incident_id=kwargs["incident_id"],
             llm_run_id=kwargs["llm_run_id"],
@@ -498,9 +640,21 @@ class FakeInfraRcaRepository:
             prompt_version=kwargs["prompt_version"],
             created_at="2026-06-06T01:00:01",
         )
+        return self.rca_report
+
+    def get_rca_report(self, rca_report_id: str) -> RcaReportResult | None:
+        if self.rca_report is not None and self.rca_report.rca_report_id == rca_report_id:
+            return self.rca_report
+        return None
 
     def record_mcp_tool_call(self, **kwargs: object) -> str:
         return f"tool-call-{kwargs['tool_name']}"
+
+    def list_due_rca_jobs(self, **kwargs: object) -> list[ScheduledRcaJobRecord]:
+        return self.scheduled_jobs[: int(kwargs["limit"])]
+
+    def mark_rca_job_running(self, job_id: str) -> bool:
+        return any(job.job_id == job_id for job in self.scheduled_jobs)
 
 
 class FakeEndpointRcaService:
@@ -534,6 +688,20 @@ class FakeEndpointRcaService:
             incident=incident,
             alert=alert,
             message="ok",
+        )
+
+
+class FakeEmailSender:
+    def __init__(self) -> None:
+        self.sent_messages: list[dict[str, str]] = []
+
+    def send_html(self, *, recipient: str, subject: str, html_body: str) -> None:
+        self.sent_messages.append(
+            {
+                "recipient": recipient,
+                "subject": subject,
+                "html_body": html_body,
+            }
         )
 
 

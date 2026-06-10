@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import base64
 import json
+import ssl
 from collections.abc import Mapping
+from pathlib import Path
 from typing import Any
 from urllib.error import HTTPError, URLError
 from urllib.parse import quote, urlencode, urljoin, urlparse
@@ -21,6 +23,7 @@ class JsonHttpClient:
         params: Mapping[str, str] | None = None,
         headers: Mapping[str, str] | None = None,
         timeout: float = 10.0,
+        ssl_context: ssl.SSLContext | None = None,
     ) -> Any:
         return self._request_json(
             "GET",
@@ -28,6 +31,7 @@ class JsonHttpClient:
             params=params,
             headers=headers,
             timeout=timeout,
+            ssl_context=ssl_context,
         )
 
     def post_json(
@@ -38,6 +42,7 @@ class JsonHttpClient:
         params: Mapping[str, str] | None = None,
         headers: Mapping[str, str] | None = None,
         timeout: float = 10.0,
+        ssl_context: ssl.SSLContext | None = None,
     ) -> Any:
         request_headers = {"Content-Type": "application/json", **dict(headers or {})}
         return self._request_json(
@@ -47,6 +52,7 @@ class JsonHttpClient:
             headers=request_headers,
             timeout=timeout,
             data=json.dumps(json_body).encode("utf-8"),
+            ssl_context=ssl_context,
         )
 
     def _request_json(
@@ -58,6 +64,7 @@ class JsonHttpClient:
         headers: Mapping[str, str] | None = None,
         timeout: float = 10.0,
         data: bytes | None = None,
+        ssl_context: ssl.SSLContext | None = None,
     ) -> Any:
         request_url = url
         if params:
@@ -74,7 +81,7 @@ class JsonHttpClient:
             method=method,
         )
         try:
-            with urlopen(request, timeout=timeout) as response:
+            with urlopen(request, timeout=timeout, context=ssl_context) as response:
                 body = response.read().decode("utf-8")
         except HTTPError as exc:
             detail = exc.read().decode("utf-8", errors="replace")
@@ -154,13 +161,22 @@ class KubernetesClient:
         base_url: str,
         *,
         bearer_token: str = "",
+        bearer_token_file: str = "",
+        ca_cert_file: str = "",
+        ca_cert_data: str = "",
         timeout_seconds: float = 10.0,
         http_client: JsonHttpClient | None = None,
     ) -> None:
         self._base_url = base_url.rstrip("/") + "/"
         self._timeout_seconds = timeout_seconds
         self._http_client = http_client or JsonHttpClient()
-        self._headers = self._build_headers(bearer_token)
+        self._headers = self._build_headers(
+            bearer_token=self._resolve_bearer_token(
+                bearer_token=bearer_token,
+                bearer_token_file=bearer_token_file,
+            )
+        )
+        self._ssl_context = self._build_ssl_context(ca_cert_file, ca_cert_data)
 
     def pods(self, namespace: str) -> dict[str, Any]:
         return self._get_namespaced_resource(namespace, "pods")
@@ -173,6 +189,7 @@ class KubernetesClient:
             urljoin(self._base_url, f"apis/apps/v1/namespaces/{namespace}/deployments"),
             headers=self._headers,
             timeout=self._timeout_seconds,
+            ssl_context=self._ssl_context,
         )
 
     def hpa(self, namespace: str) -> dict[str, Any]:
@@ -183,6 +200,7 @@ class KubernetesClient:
             ),
             headers=self._headers,
             timeout=self._timeout_seconds,
+            ssl_context=self._ssl_context,
         )
 
     def _get_namespaced_resource(self, namespace: str, resource: str) -> dict[str, Any]:
@@ -190,13 +208,41 @@ class KubernetesClient:
             urljoin(self._base_url, f"api/v1/namespaces/{namespace}/{resource}"),
             headers=self._headers,
             timeout=self._timeout_seconds,
+            ssl_context=self._ssl_context,
         )
+
+    @staticmethod
+    def _resolve_bearer_token(*, bearer_token: str, bearer_token_file: str) -> str:
+        if bearer_token:
+            return bearer_token
+        if not bearer_token_file:
+            return ""
+
+        try:
+            return Path(bearer_token_file).read_text(encoding="utf-8").strip()
+        except OSError as exc:
+            raise InfraOpsClientError(
+                f"Failed to read Kubernetes bearer token file: {bearer_token_file}"
+            ) from exc
 
     @staticmethod
     def _build_headers(bearer_token: str) -> dict[str, str]:
         if not bearer_token:
             return {}
         return {"Authorization": f"Bearer {bearer_token}"}
+
+    @staticmethod
+    def _build_ssl_context(ca_cert_file: str, ca_cert_data: str = "") -> ssl.SSLContext | None:
+        if ca_cert_data:
+            return ssl.create_default_context(cadata=ca_cert_data)
+        if not ca_cert_file:
+            return None
+        try:
+            return ssl.create_default_context(cafile=ca_cert_file)
+        except OSError as exc:
+            raise InfraOpsClientError(
+                f"Failed to read Kubernetes CA certificate file: {ca_cert_file}"
+            ) from exc
 
 
 class KafkaAdminClient:

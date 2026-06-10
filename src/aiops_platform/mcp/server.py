@@ -1,17 +1,25 @@
 import logging
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from time import perf_counter
 from typing import Any
 
 from fastmcp import FastMCP
+from fastmcp.exceptions import NotFoundError
 
 from aiops_platform.admin_riskops.service import AdminRiskOpsService
+from aiops_platform.core.config import settings
 from aiops_platform.farm_advisory.service import FarmAdvisoryService
 from aiops_platform.farmer_bnpl.service import FarmerBnplService
 from aiops_platform.infraops.service import InfraOpsService
 from aiops_platform.mcp.audit import McpToolAuditService, elapsed_ms
 from aiops_platform.mcp.policy import resolve_tool_policy
-from aiops_platform.mcp.registry import list_mcp_servers, list_mcp_tools
+from aiops_platform.mcp.registry import (
+    BATCH_TOOL_NAMES,
+    ELK_TOOL_NAMES,
+    KAFKA_TOOL_NAMES,
+    list_mcp_servers,
+    list_mcp_tools,
+)
 from aiops_platform.mcp.schemas import (
     McpExecutionPolicy,
     McpToolCallStatus,
@@ -1549,13 +1557,18 @@ def create_mcp_server(
         tags={"infraops", "kubernetes", "read"},
         annotations={"readOnlyHint": True, "openWorldHint": False},
     )
-    def get_k8s_pods_tool(namespace: str | None = None) -> dict[str, Any]:
+    def get_k8s_pods_tool(
+        namespace: str | None = None,
+        source: str | None = None,
+    ) -> dict[str, Any]:
         started_at = perf_counter()
         tool = _resolve_registered_tool("infraops-mcp", "get_k8s_pods")
-        request_payload = {"namespace": namespace}
+        request_payload = {"namespace": namespace, "source": source}
 
         try:
-            result = infraops.get_k8s_pods(namespace=namespace).model_dump(mode="json")
+            result = infraops.get_k8s_pods(namespace=namespace, source=source).model_dump(
+                mode="json"
+            )
         except Exception as exc:
             _record_tool_audit(
                 audit_service=audit_service,
@@ -1584,13 +1597,18 @@ def create_mcp_server(
         tags={"infraops", "kubernetes", "read"},
         annotations={"readOnlyHint": True, "openWorldHint": False},
     )
-    def get_k8s_events_tool(namespace: str | None = None) -> dict[str, Any]:
+    def get_k8s_events_tool(
+        namespace: str | None = None,
+        source: str | None = None,
+    ) -> dict[str, Any]:
         started_at = perf_counter()
         tool = _resolve_registered_tool("infraops-mcp", "get_k8s_events")
-        request_payload = {"namespace": namespace}
+        request_payload = {"namespace": namespace, "source": source}
 
         try:
-            result = infraops.get_k8s_events(namespace=namespace).model_dump(mode="json")
+            result = infraops.get_k8s_events(namespace=namespace, source=source).model_dump(
+                mode="json"
+            )
         except Exception as exc:
             _record_tool_audit(
                 audit_service=audit_service,
@@ -1619,13 +1637,19 @@ def create_mcp_server(
         tags={"infraops", "kubernetes", "read"},
         annotations={"readOnlyHint": True, "openWorldHint": False},
     )
-    def get_k8s_deployments_tool(namespace: str | None = None) -> dict[str, Any]:
+    def get_k8s_deployments_tool(
+        namespace: str | None = None,
+        source: str | None = None,
+    ) -> dict[str, Any]:
         started_at = perf_counter()
         tool = _resolve_registered_tool("infraops-mcp", "get_k8s_deployments")
-        request_payload = {"namespace": namespace}
+        request_payload = {"namespace": namespace, "source": source}
 
         try:
-            result = infraops.get_k8s_deployments(namespace=namespace).model_dump(mode="json")
+            result = infraops.get_k8s_deployments(
+                namespace=namespace,
+                source=source,
+            ).model_dump(mode="json")
         except Exception as exc:
             _record_tool_audit(
                 audit_service=audit_service,
@@ -1654,13 +1678,18 @@ def create_mcp_server(
         tags={"infraops", "kubernetes", "read"},
         annotations={"readOnlyHint": True, "openWorldHint": False},
     )
-    def get_k8s_hpa_tool(namespace: str | None = None) -> dict[str, Any]:
+    def get_k8s_hpa_tool(
+        namespace: str | None = None,
+        source: str | None = None,
+    ) -> dict[str, Any]:
         started_at = perf_counter()
         tool = _resolve_registered_tool("infraops-mcp", "get_k8s_hpa")
-        request_payload = {"namespace": namespace}
+        request_payload = {"namespace": namespace, "source": source}
 
         try:
-            result = infraops.get_k8s_hpa(namespace=namespace).model_dump(mode="json")
+            result = infraops.get_k8s_hpa(namespace=namespace, source=source).model_dump(
+                mode="json"
+            )
         except Exception as exc:
             _record_tool_audit(
                 audit_service=audit_service,
@@ -2359,4 +2388,21 @@ def create_mcp_server(
         )
         return result
 
+    if not settings.infraops_elk_enabled:
+        _remove_tools_if_registered(mcp, ELK_TOOL_NAMES)
+
+    if not settings.infraops_kafka_enabled:
+        _remove_tools_if_registered(mcp, KAFKA_TOOL_NAMES)
+
+    if not settings.infraops_batch_enabled:
+        _remove_tools_if_registered(mcp, BATCH_TOOL_NAMES)
+
     return mcp
+
+
+def _remove_tools_if_registered(mcp: FastMCP, tool_names: Sequence[str]) -> None:
+    for tool_name in tool_names:
+        try:
+            mcp.remove_tool(tool_name)
+        except NotFoundError:
+            logger.debug("MCP tool %s was already absent.", tool_name)

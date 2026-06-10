@@ -1,0 +1,16 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: mcp-aiops-backend
+  namespace: default
+  labels:
+    app.kubernetes.io/name: mcp-aiops-backend
+    app.kubernetes.io/part-of: aiops-platform
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: mcp-aiops-backend
+  ports:
+    - name: http
+      port: 80
+      targetPort: http

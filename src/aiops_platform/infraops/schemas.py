@@ -49,6 +49,7 @@ class MultiClusterLokiQueryResult(BaseModel):
 
 
 class KubernetesResourceResult(BaseModel):
+    source: str = "default"
     namespace: str
     items: list[dict[str, Any]]
     raw: dict[str, Any]

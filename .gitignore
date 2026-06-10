@@ -4,6 +4,7 @@
 !.env.example
 !.env.*.example
 MCP_기반_농업_BNPL_AIOps_최종_기획서_v1.3.md
+MCP_기반_농업_BNPL_AIOps_최종_기획서_v1.4.md
 *.pem
 *.key
 *.crt
@@ -72,6 +73,7 @@ logs/
 *.tmp
 tmp/
 temp/
+.codex-cloudfront-*.json
 reports/
 test-results/
 .playwright-mcp/

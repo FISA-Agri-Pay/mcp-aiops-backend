@@ -86,6 +86,11 @@ class Settings(BaseSettings):
         alias="KUBERNETES_API_BASE_URL",
     )
     kubernetes_bearer_token: str = Field(default="", alias="KUBERNETES_BEARER_TOKEN")
+    kubernetes_bearer_token_file: str = Field(
+        default="",
+        alias="KUBERNETES_BEARER_TOKEN_FILE",
+    )
+    kubernetes_ca_cert_file: str = Field(default="", alias="KUBERNETES_CA_CERT_FILE")
     kubernetes_namespace_allowlist: str = Field(
         default="default,kube-system",
         alias="KUBERNETES_NAMESPACE_ALLOWLIST",
@@ -94,6 +99,19 @@ class Settings(BaseSettings):
         default=10.0,
         gt=0,
         alias="KUBERNETES_TIMEOUT_SECONDS",
+    )
+    onprem_kubernetes_api_base_url: str = Field(
+        default="",
+        alias="ONPREM_KUBERNETES_API_BASE_URL",
+    )
+    onprem_kubernetes_bearer_token: str = Field(
+        default="",
+        alias="ONPREM_KUBERNETES_BEARER_TOKEN",
+    )
+    onprem_kubernetes_ca_cert: str = Field(default="", alias="ONPREM_KUBERNETES_CA_CERT")
+    onprem_kubernetes_namespace_allowlist: str = Field(
+        default="default,kkpp,monitoring,keda,postgres-ha,ingress-nginx",
+        alias="ONPREM_KUBERNETES_NAMESPACE_ALLOWLIST",
     )
     kafka_admin_base_url: str = Field(
         default="http://localhost:8080",
@@ -105,6 +123,7 @@ class Settings(BaseSettings):
         alias="BATCH_API_BASE_URL",
     )
     batch_timeout_seconds: float = Field(default=10.0, gt=0, alias="BATCH_TIMEOUT_SECONDS")
+    infraops_batch_enabled: bool = Field(default=True, alias="INFRAOPS_BATCH_ENABLED")
     elasticsearch_base_url: str = Field(
         default="http://localhost:9200",
         alias="ELASTICSEARCH_BASE_URL",
@@ -121,13 +140,15 @@ class Settings(BaseSettings):
         alias="ELASTICSEARCH_TIMEOUT_SECONDS",
     )
     kibana_base_url: str = Field(default="http://localhost:5601", alias="KIBANA_BASE_URL")
+    infraops_elk_enabled: bool = Field(default=True, alias="INFRAOPS_ELK_ENABLED")
+    infraops_kafka_enabled: bool = Field(default=True, alias="INFRAOPS_KAFKA_ENABLED")
     rca_default_before_minutes: int = Field(
-        default=30,
+        default=10,
         ge=0,
         alias="RCA_DEFAULT_BEFORE_MINUTES",
     )
     rca_default_after_minutes: int = Field(
-        default=10,
+        default=5,
         ge=0,
         alias="RCA_DEFAULT_AFTER_MINUTES",
     )
@@ -142,6 +163,7 @@ class Settings(BaseSettings):
         default="",
         alias="OPS_REPORT_EMAIL_RECIPIENTS",
     )
+    rca_email_recipients: str = Field(default="", alias="RCA_EMAIL_RECIPIENTS")
 
 
 @lru_cache

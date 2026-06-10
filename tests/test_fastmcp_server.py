@@ -27,7 +27,14 @@ from aiops_platform.infraops.schemas import (
 )
 from aiops_platform.main import create_app
 from aiops_platform.mcp.registry import list_mcp_tools
-from aiops_platform.mcp.server import MCP_TRANSPORT_MOUNT_PATH, create_mcp_server
+from aiops_platform.mcp.server import (
+    BATCH_TOOL_NAMES,
+    ELK_TOOL_NAMES,
+    KAFKA_TOOL_NAMES,
+    MCP_TRANSPORT_MOUNT_PATH,
+    create_mcp_server,
+    settings as mcp_server_settings,
+)
 from tests.seed_constants import (
     CREDIT_APP_2_ID,
     CREDIT_APP_3_ID,
@@ -47,6 +54,7 @@ def test_fastapi_app_mounts_fastmcp_transport() -> None:
     app = create_app()
 
     assert any(route.path == MCP_TRANSPORT_MOUNT_PATH for route in app.routes)
+    assert any(route.path == f"/api/v1{MCP_TRANSPORT_MOUNT_PATH}" for route in app.routes)
 
 
 def test_fastmcp_server_exposes_registry_tools() -> None:
@@ -156,6 +164,42 @@ def test_fastmcp_server_exposes_all_registry_tools() -> None:
 
         registry_tools = {tool.tool_name for tool in list_mcp_tools()}
         assert exposed_tools == registry_tools
+
+    asyncio.run(run())
+
+
+def test_fastmcp_server_hides_elk_tools_when_disabled(monkeypatch) -> None:
+    monkeypatch.setattr(mcp_server_settings, "infraops_elk_enabled", False)
+
+    async def run() -> None:
+        async with Client(create_mcp_server()) as client:
+            tools = {tool.name for tool in await client.list_tools()}
+
+        assert ELK_TOOL_NAMES.isdisjoint(tools)
+
+    asyncio.run(run())
+
+
+def test_fastmcp_server_hides_kafka_tools_when_disabled(monkeypatch) -> None:
+    monkeypatch.setattr(mcp_server_settings, "infraops_kafka_enabled", False)
+
+    async def run() -> None:
+        async with Client(create_mcp_server()) as client:
+            tools = {tool.name for tool in await client.list_tools()}
+
+        assert KAFKA_TOOL_NAMES.isdisjoint(tools)
+
+    asyncio.run(run())
+
+
+def test_fastmcp_server_hides_batch_tools_when_disabled(monkeypatch) -> None:
+    monkeypatch.setattr(mcp_server_settings, "infraops_batch_enabled", False)
+
+    async def run() -> None:
+        async with Client(create_mcp_server()) as client:
+            tools = {tool.name for tool in await client.list_tools()}
+
+        assert BATCH_TOOL_NAMES.isdisjoint(tools)
 
     asyncio.run(run())
 
@@ -596,37 +640,71 @@ def test_fastmcp_multi_cluster_observability_tools_return_results() -> None:
 
 def test_fastmcp_kubernetes_read_tools_return_results() -> None:
     class FakeInfraOpsService:
-        def get_k8s_pods(self, namespace: str | None = None):
+        def get_k8s_pods(self, namespace: str | None = None, source: str | None = None):
             assert namespace == "default"
+            assert source == "onprem"
             return KubernetesResourceResult(
+                source="onprem",
                 namespace="default",
                 items=[{"metadata": {"name": "api-pod"}}],
                 raw={"items": [{"metadata": {"name": "api-pod"}}]},
             )
 
-        def get_k8s_events(self, namespace: str | None = None):
+        def get_k8s_events(self, namespace: str | None = None, source: str | None = None):
             assert namespace == "default"
-            return KubernetesResourceResult(namespace="default", items=[], raw={"items": []})
+            assert source == "onprem"
+            return KubernetesResourceResult(
+                source="onprem",
+                namespace="default",
+                items=[],
+                raw={"items": []},
+            )
 
-        def get_k8s_deployments(self, namespace: str | None = None):
+        def get_k8s_deployments(
+            self,
+            namespace: str | None = None,
+            source: str | None = None,
+        ):
             assert namespace == "default"
-            return KubernetesResourceResult(namespace="default", items=[], raw={"items": []})
+            assert source == "onprem"
+            return KubernetesResourceResult(
+                source="onprem",
+                namespace="default",
+                items=[],
+                raw={"items": []},
+            )
 
-        def get_k8s_hpa(self, namespace: str | None = None):
+        def get_k8s_hpa(self, namespace: str | None = None, source: str | None = None):
             assert namespace == "default"
-            return KubernetesResourceResult(namespace="default", items=[], raw={"items": []})
+            assert source == "onprem"
+            return KubernetesResourceResult(
+                source="onprem",
+                namespace="default",
+                items=[],
+                raw={"items": []},
+            )
 
     async def run() -> None:
         async with Client(create_mcp_server(infraops_service=FakeInfraOpsService())) as client:
-            pods = await client.call_tool("get_k8s_pods", {"namespace": "default"})
-            events = await client.call_tool("get_k8s_events", {"namespace": "default"})
+            pods = await client.call_tool(
+                "get_k8s_pods",
+                {"namespace": "default", "source": "onprem"},
+            )
+            events = await client.call_tool(
+                "get_k8s_events",
+                {"namespace": "default", "source": "onprem"},
+            )
             deployments = await client.call_tool(
                 "get_k8s_deployments",
-                {"namespace": "default"},
+                {"namespace": "default", "source": "onprem"},
             )
-            hpa = await client.call_tool("get_k8s_hpa", {"namespace": "default"})
+            hpa = await client.call_tool(
+                "get_k8s_hpa",
+                {"namespace": "default", "source": "onprem"},
+            )
 
         assert pods.data["items"][0]["metadata"]["name"] == "api-pod"
+        assert pods.data["source"] == "onprem"
         assert events.data["namespace"] == "default"
         assert deployments.data["namespace"] == "default"
         assert hpa.data["namespace"] == "default"

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import logging
 from collections.abc import Iterator
 from contextlib import contextmanager
@@ -79,6 +80,8 @@ class OrchestrationRepository(Protocol):
         entity_type: str,
         entity_id: str,
         status: JobStatus,
+        scheduled_at: str | None = None,
+        job_context: dict[str, Any] | None = None,
     ) -> JobResult:
         pass
 
@@ -396,6 +399,8 @@ class SqlOrchestrationRepository:
         entity_type: str,
         entity_id: str,
         status: JobStatus,
+        scheduled_at: str | None = None,
+        job_context: dict[str, Any] | None = None,
     ) -> JobResult:
         query = text(
             """
@@ -404,14 +409,18 @@ class SqlOrchestrationRepository:
                 run_status,
                 target_table,
                 target_public_id,
-                idempotency_key
+                idempotency_key,
+                scheduled_at,
+                job_context
             )
             values (
                 :db_job_type,
                 :status,
                 :entity_type,
                 :entity_id,
-                :idempotency_key
+                :idempotency_key,
+                cast(:scheduled_at as timestamp),
+                cast(:job_context as jsonb)
             )
             returning
                 public_id::text as job_id,
@@ -430,8 +439,11 @@ class SqlOrchestrationRepository:
             "entity_type": entity_type,
             "entity_id": entity_id if is_uuid(entity_id) else None,
             "idempotency_key": None,
+            "scheduled_at": scheduled_at,
+            "job_context": json.dumps(job_context or {}, ensure_ascii=False),
         }
         with self._session_scope(commit=True) as session:
+            ensure_job_runs_schedule_columns(session)
             row = session.execute(query, params).mappings().one()
         return build_job(row, api_job_type=job_type)
 
@@ -784,6 +796,18 @@ def ensure_mcp_tool(
         },
     ).mappings().one()
     return server_row["public_id"], tool_row["public_id"]
+
+
+def ensure_job_runs_schedule_columns(session: Session) -> None:
+    session.execute(
+        text("alter table ai.job_runs add column if not exists scheduled_at timestamp")
+    )
+    session.execute(
+        text(
+            "alter table ai.job_runs "
+            "add column if not exists job_context jsonb not null default '{}'::jsonb"
+        )
+    )
 
 
 def build_chat_session(row) -> ChatSessionResult:

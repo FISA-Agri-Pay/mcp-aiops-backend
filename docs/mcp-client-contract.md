@@ -20,6 +20,14 @@
 | Job history | `GET /jobs` |
 | FastMCP transport | `/mcp-server/mcp` |
 
+CloudFront/ALB 외부 경로는 `/api/v1` prefix를 사용합니다.
+
+```text
+GET /api/v1/mcp/servers
+GET /api/v1/mcp/tools
+POST /api/v1/mcp-server/mcp
+```
+
 ## MCP Servers
 
 | Server | Client Surface | 주요 역할 |

@@ -129,6 +129,34 @@ def test_kubernetes_client_calls_namespaced_read_apis() -> None:
     assert http_client.calls[0]["headers"]["Authorization"] == "Bearer token"
 
 
+def test_kubernetes_client_reads_bearer_token_file(tmp_path) -> None:
+    token_file = tmp_path / "token"
+    token_file.write_text("file-token\n", encoding="utf-8")
+    http_client = FakeHttpClient({"items": []})
+    client = KubernetesClient(
+        "https://kubernetes.default.svc",
+        bearer_token_file=str(token_file),
+        http_client=http_client,
+    )
+
+    assert client.pods("default") == {"items": []}
+    assert http_client.calls[0]["headers"]["Authorization"] == "Bearer file-token"
+
+
+def test_kubernetes_client_rejects_missing_service_account_files(tmp_path) -> None:
+    with pytest.raises(InfraOpsClientError, match="bearer token file"):
+        KubernetesClient(
+            "https://kubernetes.default.svc",
+            bearer_token_file=str(tmp_path / "missing-token"),
+        )
+
+    with pytest.raises(InfraOpsClientError, match="CA certificate file"):
+        KubernetesClient(
+            "https://kubernetes.default.svc",
+            ca_cert_file=str(tmp_path / "missing-ca.crt"),
+        )
+
+
 def test_kafka_admin_client_calls_consumer_lag_api() -> None:
     http_client = FakeHttpClient({"total_lag": 3})
     client = KafkaAdminClient(
@@ -434,6 +462,47 @@ def test_infraops_service_maps_kubernetes_resources() -> None:
     )
 
 
+def test_infraops_service_maps_onprem_kubernetes_source() -> None:
+    eks_http_client = FakeHttpClient({"items": []})
+    onprem_http_client = FakeHttpClient({"items": [{"metadata": {"name": "onprem-pod"}}]})
+    service = make_infraops_service(
+        kubernetes_client=KubernetesClient(
+            "http://kubernetes:8001",
+            http_client=eks_http_client,
+        ),
+        kubernetes_sources={
+            "eks": (
+                KubernetesClient("http://kubernetes:8001", http_client=eks_http_client),
+                parse_allowlist("default,kube-system"),
+            ),
+            "onprem": (
+                KubernetesClient(
+                    "https://10.30.2.51:6443",
+                    bearer_token="token",
+                    http_client=onprem_http_client,
+                ),
+                parse_allowlist("kkpp,monitoring"),
+            ),
+        },
+    )
+
+    result = service.get_k8s_pods(namespace="kkpp", source="onprem")
+
+    assert result.source == "onprem"
+    assert result.namespace == "kkpp"
+    assert result.items == [{"metadata": {"name": "onprem-pod"}}]
+    assert onprem_http_client.calls[0]["url"] == (
+        "https://10.30.2.51:6443/api/v1/namespaces/kkpp/pods"
+    )
+
+
+def test_infraops_service_rejects_unknown_kubernetes_source() -> None:
+    service = make_infraops_service()
+
+    with pytest.raises(InfraOpsValidationError, match="Kubernetes source"):
+        service.get_k8s_pods(namespace="default", source="missing")
+
+
 def test_infraops_service_maps_kafka_consumer_lag() -> None:
     service = make_infraops_service(
         kafka_admin_client=KafkaAdminClient(
@@ -561,7 +630,7 @@ def test_infraops_service_creates_partial_rca_snapshot() -> None:
         "elasticsearch": "FAILED",
         "kubernetes": "SUCCESS",
         "kafka": "SKIPPED",
-        "batch": "SUCCESS",
+        "batch": "SKIPPED",
     }
 
 
@@ -593,9 +662,9 @@ def test_infraops_service_aggregates_daily_ops_metrics() -> None:
     assert result.report_date == "2026-06-05"
     assert result.partial is True
     assert result.metrics == {
-        "successful_sources": 3,
+        "successful_sources": 2,
         "failed_sources": 2,
-        "skipped_sources": 1,
+        "skipped_sources": 2,
         "pod_count": 1,
         "event_count": 1,
         "deployment_count": 1,
