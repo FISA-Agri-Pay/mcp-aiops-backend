@@ -122,6 +122,10 @@ jobs:
           OPS_REPORT_EMAIL_RECIPIENTS: ${{ secrets.OPS_REPORT_EMAIL_RECIPIENTS }}
         run: |
           test -n "${AWS_ROLE_ARN}" || { echo "AWS_ROLE_ARN variable/secret or AWS_ROLE_TO_ASSUME secret is required."; exit 1; }
+          case "${AWS_ROLE_ARN}" in
+            arn:aws:iam::*:role/*) ;;
+            *) echo "AWS_ROLE_ARN must be a full IAM Role ARN, not just a role name."; exit 1 ;;
+          esac
           test -n "${AWS_REGION}" || { echo "AWS_REGION variable or secret is required."; exit 1; }
           test -n "${ECR_REPOSITORY}" || { echo "ECR_REPOSITORY variable or secret is required."; exit 1; }
           test -n "${EKS_CLUSTER_NAME}" || { echo "EKS_CLUSTER_NAME variable or secret is required."; exit 1; }

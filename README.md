@@ -180,7 +180,7 @@ GitHub Actions에 필요한 값은 아래처럼 설정합니다.
 
 | 이름 | 위치 | 설명 |
 | --- | --- | --- |
-| `AWS_ROLE_ARN` | Variable 또는 Secret | GitHub OIDC가 assume할 AWS IAM Role ARN. 기존 `AWS_ROLE_TO_ASSUME` Secret도 호환 |
+| `AWS_ROLE_ARN` | Variable 또는 Secret | GitHub OIDC가 assume할 AWS IAM Role 전체 ARN. 역할 이름만 넣으면 안 됩니다. 기존 `AWS_ROLE_TO_ASSUME` Secret도 전체 ARN이면 호환 |
 | `AWS_REGION` | Variable 또는 Secret | AWS 리전 |
 | `ECR_REPOSITORY` | Variable 또는 Secret | ECR 리포지토리 이름 |
 | `EKS_CLUSTER_NAME` | Variable 또는 Secret | EKS 클러스터 이름 |
