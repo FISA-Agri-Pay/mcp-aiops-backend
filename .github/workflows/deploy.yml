@@ -156,6 +156,8 @@ jobs:
       - name: Apply base manifests
         run: |
           kubectl create namespace "${K8S_NAMESPACE}" --dry-run=client -o yaml | kubectl apply -f -
+          kubectl delete clusterrolebinding mcp-aiops-backend-readonly --ignore-not-found
+          kubectl delete clusterrole mcp-aiops-backend-readonly --ignore-not-found
           for manifest in serviceaccount rbac configmap service; do
             sed "s|namespace: default|namespace: ${K8S_NAMESPACE}|g" "infra/k8s/${manifest}.yaml" | kubectl apply -f -
           done
