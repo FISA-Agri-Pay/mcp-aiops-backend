@@ -3,7 +3,10 @@ from uuid import uuid4
 import pytest
 from sqlalchemy import text
 
-from aiops_platform.admin_riskops.repository import RiskOpsUserRecord
+from aiops_platform.admin_riskops.repository import (
+    RiskOpsUserRecord,
+    build_documents_query_parts,
+)
 from aiops_platform.admin_riskops.service import (
     AdminRiskOpsService,
     AdminRiskOpsValidationError,
@@ -96,6 +99,16 @@ def test_bnpl_summary_counts_user_once_with_multiple_applications() -> None:
                 {"application_id": extra_application_id},
             )
             session.commit()
+
+
+def test_document_query_parts_support_legacy_and_public_application_columns() -> None:
+    legacy_cte, legacy_join = build_documents_query_parts({"application_id"})
+    public_cte, public_join = build_documents_query_parts({"application_public_id"})
+
+    assert "application_id::text as application_ref" in legacy_cte
+    assert "app.application_pk::text" in legacy_join
+    assert "application_public_id::text as application_ref" in public_cte
+    assert "app.application_public_id::text" in public_join
 
 
 def test_user_search_risk_summary_and_bss_history() -> None:

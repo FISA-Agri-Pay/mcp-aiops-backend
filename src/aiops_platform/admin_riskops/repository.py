@@ -50,6 +50,8 @@ class SqlAdminRiskOpsRepository:
         return self._fetch_users(include_all_applications=False)
 
     def _fetch_users(self, *, include_all_applications: bool) -> list[RiskOpsUserRecord]:
+        document_columns = self._fetch_farmer_document_columns()
+        documents_cte, documents_join = build_documents_query_parts(document_columns)
         if include_all_applications:
             applications_cte = """
                 applications as (
@@ -132,13 +134,7 @@ class SqlAdminRiskOpsRepository:
                 group by user_public_id
             ),
             {credit_limits_cte},
-            documents as (
-                select
-                    application_id,
-                    array_agg(document_type order by document_type) as submitted_documents
-                from core.farmer_documents
-                group by application_id
-            ),
+            {documents_cte},
             {applications_cte}
             select
                 app.user_public_id::text as user_id,
@@ -164,13 +160,25 @@ class SqlAdminRiskOpsRepository:
             left join core.farmer_profiles fp on fp.user_id = app.user_pk
             left join overdue o on o.user_public_id = app.user_public_id
             left join latest_bss lb on lb.user_public_id = app.user_public_id
-            left join documents on documents.application_id = app.application_pk
+            {documents_join}
             order by app.applied_at desc nulls last, app.application_created_at desc
             """
         )
         with self._session_scope() as session:
             rows = session.execute(query).mappings().all()
         return [build_user_record(row) for row in rows]
+
+    def _fetch_farmer_document_columns(self) -> set[str]:
+        query = text(
+            """
+            select column_name
+            from information_schema.columns
+            where table_schema = 'core'
+              and table_name = 'farmer_documents'
+            """
+        )
+        with self._session_scope() as session:
+            return {str(row[0]) for row in session.execute(query).all()}
 
     @contextmanager
     def _session_scope(self) -> Iterator[Session]:
@@ -209,6 +217,46 @@ def build_user_record(row) -> RiskOpsUserRecord:
         bss_score=bss_score,
         farmland_area_hectare=field_area_to_hectare(row["field_aream2"]),
         missing_documents=missing_documents(row["submitted_documents"] or []),
+    )
+
+
+def build_documents_query_parts(columns: set[str]) -> tuple[str, str]:
+    if "application_id" in columns:
+        return (
+            """
+            documents as (
+                select
+                    application_id::text as application_ref,
+                    array_agg(document_type order by document_type) as submitted_documents
+                from core.farmer_documents
+                group by application_id
+            )
+            """,
+            "left join documents on documents.application_ref = app.application_pk::text",
+        )
+    if "application_public_id" in columns:
+        return (
+            """
+            documents as (
+                select
+                    application_public_id::text as application_ref,
+                    array_agg(document_type order by document_type) as submitted_documents
+                from core.farmer_documents
+                group by application_public_id
+            )
+            """,
+            "left join documents on documents.application_ref = app.application_public_id::text",
+        )
+    return (
+        """
+        documents as (
+            select
+                null::text as application_ref,
+                array[]::varchar[] as submitted_documents
+            where false
+        )
+        """,
+        "left join documents on false",
     )
 
 
