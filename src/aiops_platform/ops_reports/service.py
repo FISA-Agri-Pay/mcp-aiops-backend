@@ -112,6 +112,7 @@ class OpsReportService:
                 rca_reports=rca_reports,
                 metric_inputs=metric_inputs,
             )
+            compact_metric_inputs = compact_report_metric_inputs(metric_inputs)
             llm_run = self._llmops_service.run_ops_report_completion(
                 report_type=request.report_type,
                 period={
@@ -121,7 +122,7 @@ class OpsReportService:
                 },
                 incidents=[incident.model_dump(mode="json") for incident in incidents],
                 rca_reports=[rca.model_dump(mode="json") for rca in rca_reports],
-                metric_summaries=metric_inputs,
+                metric_summaries=compact_metric_inputs,
                 job_id=job.job_id,
             )
             report_status = "COMPLETED" if llm_run.run_status == "SUCCESS" else "FAILED"
@@ -141,7 +142,7 @@ class OpsReportService:
                 sections=build_report_sections(
                     incidents=incidents,
                     rca_reports=rca_reports,
-                    metric_inputs=metric_inputs,
+                    metric_inputs=compact_metric_inputs,
                     llm_output=llm_output,
                 ),
                 metrics=metrics,
@@ -651,6 +652,120 @@ def build_infra_metric_inputs(response_payload: dict[str, Any]) -> list[dict[str
             }
         )
     return items
+
+
+def compact_report_metric_inputs(metric_inputs: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return [
+        {
+            "source_type": metric_input.get("source_type"),
+            "metric_name": metric_input.get("metric_name"),
+            "summary_values": compact_summary_values(metric_input.get("summary_values")),
+        }
+        for metric_input in metric_inputs
+    ]
+
+
+def compact_summary_values(value: Any) -> Any:
+    if isinstance(value, list):
+        return {
+            "type": "list",
+            "count": len(value),
+            "sample": [compact_summary_values(item) for item in value[:3]],
+        }
+    if not isinstance(value, dict):
+        return value
+
+    if "sources" in value:
+        return {
+            "partial": value.get("partial"),
+            "metrics": compact_summary_values(value.get("metrics", {})),
+            "source_statuses": [
+                compact_source_summary(source)
+                for source in value.get("sources", [])
+                if isinstance(source, dict)
+            ],
+            "report_date": value.get("report_date"),
+        }
+    if "source" in value and "status" in value:
+        return compact_source_summary(value)
+    if "result" in value or "data" in value:
+        return compact_observability_payload(value)
+
+    compacted: dict[str, Any] = {}
+    for key, item in value.items():
+        if key in {"items", "events", "results"} and isinstance(item, list):
+            compacted[key] = {
+                "count": len(item),
+                "sample": [compact_summary_values(entry) for entry in item[:3]],
+            }
+        else:
+            compacted[key] = compact_summary_values(item)
+    return compacted
+
+
+def compact_source_summary(source: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "source": source.get("source"),
+        "status": source.get("status"),
+        "error": source.get("error"),
+        "data_summary": compact_observability_payload(source.get("data")),
+    }
+
+
+def compact_observability_payload(payload: Any) -> dict[str, Any] | Any:
+    if not isinstance(payload, dict):
+        return payload
+    data = payload.get("data") if isinstance(payload.get("data"), dict) else payload
+    result = data.get("result") if isinstance(data, dict) else None
+    summary: dict[str, Any] = {
+        "status": payload.get("status"),
+        "result_type": data.get("resultType") if isinstance(data, dict) else None,
+    }
+    if isinstance(result, list):
+        summary["result_count"] = len(result)
+        summary["sample"] = [compact_observability_result(item) for item in result[:3]]
+    stats = data.get("stats") if isinstance(data, dict) else None
+    if isinstance(stats, dict):
+        stats_summary = stats.get("summary")
+        if isinstance(stats_summary, dict):
+            summary["stats_summary"] = {
+                key: stats_summary.get(key)
+                for key in (
+                    "totalEntriesReturned",
+                    "totalLinesProcessed",
+                    "totalBytesProcessed",
+                    "execTime",
+                )
+                if key in stats_summary
+            }
+    return {key: val for key, val in summary.items() if val is not None}
+
+
+def compact_observability_result(item: Any) -> Any:
+    if not isinstance(item, dict):
+        return item
+    compacted: dict[str, Any] = {}
+    metric = item.get("metric")
+    if isinstance(metric, dict):
+        compacted["metric"] = {
+            key: metric.get(key)
+            for key in ("__name__", "job", "namespace", "service", "pod", "instance")
+            if key in metric
+        }
+    stream = item.get("stream")
+    if isinstance(stream, dict):
+        compacted["stream"] = {
+            key: stream.get(key)
+            for key in ("job", "namespace", "service_name", "app", "pod", "container")
+            if key in stream
+        }
+    if "value" in item:
+        compacted["value"] = item.get("value")
+    values = item.get("values")
+    if isinstance(values, list):
+        compacted["value_count"] = len(values)
+        compacted["sample_values"] = values[:2]
+    return compacted or item
 
 
 def build_report_metrics(
