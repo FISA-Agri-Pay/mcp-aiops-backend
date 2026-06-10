@@ -128,6 +128,9 @@ MCP Tool이 바라보는 운영 인프라 주소는 Kubernetes `ConfigMap`과 `S
 | Agent/Copilot | LLM endpoint | `LLM_PROVIDER`, `LLM_MODEL`, `LLM_API_BASE_URL`, `LLM_API_KEY`, `LLM_REQUIRE_API_KEY` |
 | Ops report | SMTP | `SMTP_HOST`, `SMTP_PORT`, `SMTP_USERNAME`, `SMTP_PASSWORD`, `SMTP_FROM`, `SMTP_USE_TLS` |
 
+`INFRAOPS_ELK_ENABLED=false`는 Elasticsearch/OpenSearch와 Kibana/OpenSearch Dashboards만 비활성화합니다.
+Loki는 ELK의 Logstash가 아니므로 RCA와 운영 리포트의 로그 근거 수집에 계속 사용합니다.
+
 ### Kubernetes 매니페스트
 
 EKS 배포용 기본 파일은 `infra/k8s`에 있습니다.

@@ -61,6 +61,7 @@ def test_daily_ops_report_includes_rca_prediction_and_scaling_evidence() -> None
     assert result.rca_refs
     assert {summary.source_type for summary in result.metric_summaries} >= {
         "ONPREM_PROMETHEUS",
+        "AWS_LOKI",
         "KEDA",
         "SCALING",
         "PREDICTION_ERROR",
@@ -206,7 +207,24 @@ class FakeInfraOpsService:
                 "report_date": kwargs.get("report_date"),
                 "partial": False,
                 "metrics": {"avg_rps": 42, "p95_latency_ms": 120},
-                "sources": [{"source": "prometheus", "status": "SUCCESS"}],
+                "sources": [
+                    {"source": "prometheus", "status": "SUCCESS"},
+                    {
+                        "source": "loki",
+                        "status": "SUCCESS",
+                        "data": {
+                            "status": "success",
+                            "data": {
+                                "result": [
+                                    {
+                                        "stream": {"namespace": "default", "app": "api"},
+                                        "values": [["1781017560000000000", "timeout error"]],
+                                    }
+                                ]
+                            },
+                        },
+                    },
+                ],
             }
         )
 

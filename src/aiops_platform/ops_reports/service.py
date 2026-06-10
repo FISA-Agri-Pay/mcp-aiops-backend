@@ -314,7 +314,7 @@ class OpsReportService:
         period: ReportPeriod,
         job_id: str,
     ) -> list[dict[str, Any]]:
-        items = [self._collect_infra_metrics(request=request, job_id=job_id)]
+        items = self._collect_infra_metrics(request=request, job_id=job_id)
         if request.include_prediction_scaling:
             items.extend(self._collect_prediction_scaling_metrics(request=request, job_id=job_id))
         return items
@@ -324,11 +324,13 @@ class OpsReportService:
         *,
         request: OpsReportCreateRequest,
         job_id: str,
-    ) -> dict[str, Any]:
+    ) -> list[dict[str, Any]]:
         request_payload = {
             "report_date": request.report_date.isoformat(),
             "namespace": request.namespace,
             "prometheus_query": "up",
+            "loki_query": build_report_loki_query(request),
+            "loki_limit": 100,
         }
         try:
             result = self._infraops_service.aggregate_daily_ops_metrics(**request_payload)
@@ -341,11 +343,7 @@ class OpsReportService:
                 call_status="SUCCESS",
                 job_id=job_id,
             )
-            return {
-                "source_type": "ONPREM_PROMETHEUS",
-                "metric_name": "daily_ops_metrics",
-                "summary_values": response_payload,
-            }
+            return build_infra_metric_inputs(response_payload)
         except Exception as exc:
             self._record_tool_call(
                 server_name="infraops-mcp",
@@ -356,14 +354,16 @@ class OpsReportService:
                 job_id=job_id,
                 last_error=exc.__class__.__name__,
             )
-            return {
-                "source_type": "ONPREM_PROMETHEUS",
-                "metric_name": "daily_ops_metrics",
-                "summary_values": {
-                    "status": "FAILED",
-                    "error": exc.__class__.__name__,
-                },
-            }
+            return [
+                {
+                    "source_type": "ONPREM_PROMETHEUS",
+                    "metric_name": "daily_ops_metrics",
+                    "summary_values": {
+                        "status": "FAILED",
+                        "error": exc.__class__.__name__,
+                    },
+                }
+            ]
 
     def _collect_prediction_scaling_metrics(
         self,
@@ -611,6 +611,46 @@ def normalize_optional_text(value: str | None) -> str | None:
 def build_report_title(request: OpsReportCreateRequest, period: ReportPeriod) -> str:
     label = "Daily" if request.report_type == "DAILY" else "Weekly"
     return f"{label} operations report - {period.display_start[:10]}"
+
+
+def build_report_loki_query(request: OpsReportCreateRequest) -> str:
+    if request.namespace:
+        namespace = request.namespace.replace("\\", "\\\\").replace('"', '\\"')
+        return f'{{namespace="{namespace}"}}'
+    return '{job=~".+"}'
+
+
+INFRA_SOURCE_SUMMARY_TYPES = {
+    "prometheus": ("ONPREM_PROMETHEUS", "daily_prometheus_metrics"),
+    "loki": ("AWS_LOKI", "daily_loki_logs"),
+    "elasticsearch_cluster": ("AWS_ELASTICSEARCH", "elasticsearch_cluster_health"),
+    "elasticsearch_indices": ("AWS_ELASTICSEARCH", "elasticsearch_index_health"),
+    "kubernetes": ("HPA", "kubernetes_resource_summary"),
+}
+
+
+def build_infra_metric_inputs(response_payload: dict[str, Any]) -> list[dict[str, Any]]:
+    items: list[dict[str, Any]] = [
+        {
+            "source_type": "ONPREM_PROMETHEUS",
+            "metric_name": "daily_ops_metrics",
+            "summary_values": response_payload,
+        }
+    ]
+    for source in response_payload.get("sources", []):
+        source_name = source.get("source")
+        mapping = INFRA_SOURCE_SUMMARY_TYPES.get(source_name)
+        if mapping is None:
+            continue
+        source_type, metric_name = mapping
+        items.append(
+            {
+                "source_type": source_type,
+                "metric_name": metric_name,
+                "summary_values": source,
+            }
+        )
+    return items
 
 
 def build_report_metrics(

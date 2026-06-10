@@ -86,8 +86,10 @@ def test_mcp_tools_include_elk_registry_entries() -> None:
 def test_mcp_registry_can_hide_elk_tools() -> None:
     tools = list_mcp_tools(server_name="infraops-mcp", include_elk=False)
     servers = list_mcp_servers(include_elk=False)
+    tool_names = {tool.tool_name for tool in tools}
 
-    assert ELK_TOOL_NAMES.isdisjoint({tool.tool_name for tool in tools})
+    assert ELK_TOOL_NAMES.isdisjoint(tool_names)
+    assert {"query_loki", "query_multi_cluster_loki"}.issubset(tool_names)
     infraops_server = next(server for server in servers if server.server_name == "infraops-mcp")
     assert ELK_TOOL_NAMES.isdisjoint({tool.tool_name for tool in infraops_server.tools})
 

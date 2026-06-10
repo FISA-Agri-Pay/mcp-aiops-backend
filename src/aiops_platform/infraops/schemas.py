@@ -181,6 +181,8 @@ class DailyOpsMetricsRequest(BaseModel):
     namespace: str | None = None
     index_pattern: str | None = None
     prometheus_query: str = Field(default="up", min_length=1)
+    loki_query: str = Field(default='{job=~".+"}', min_length=1)
+    loki_limit: int = Field(default=100, ge=1, le=1000)
     kafka_consumer_group: str | None = Field(default=None, max_length=253)
     kafka_topic: str | None = Field(default=None, max_length=253)
     batch_job_name: str | None = Field(default=None, max_length=253)

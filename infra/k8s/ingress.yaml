@@ -67,3 +67,24 @@ spec:
                 name: mcp-aiops-backend
                 port:
                   number: 80
+          - path: /api/alerts
+            pathType: Prefix
+            backend:
+              service:
+                name: mcp-aiops-backend
+                port:
+                  number: 80
+          - path: /alerts/webhook
+            pathType: Prefix
+            backend:
+              service:
+                name: mcp-aiops-backend
+                port:
+                  number: 80
+          - path: /reports/ops
+            pathType: Prefix
+            backend:
+              service:
+                name: mcp-aiops-backend
+                port:
+                  number: 80
