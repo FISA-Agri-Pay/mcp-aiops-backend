@@ -142,7 +142,6 @@ infra/k8s/configmap.yaml
 infra/k8s/secret.example.yaml
 infra/k8s/deployment.yaml
 infra/k8s/service.yaml
-infra/k8s/rca-due-job-cronjob.yaml
 infra/k8s/kustomization.yaml
 ```
 
@@ -217,8 +216,8 @@ POST /api/v1/mcp-server/mcp
 
 Alertmanager webhook은 `POST /api/alerts`로 수신합니다. 신규 firing alert는 즉시 preliminary RCA email을 만들고,
 최종 RCA는 alert `startsAt` 기준 `10분 전 ~ 5분 후` 증거 윈도우가 닫힌 뒤 생성됩니다.
-EKS에서는 `mcp-aiops-rca-due-job-runner` CronJob이 1분마다 `POST /rca/jobs/run-due`를 호출해
-`scheduled_at`이 지난 RCA job만 처리합니다.
+EKS에서는 webhook을 받은 백엔드가 `mcp-aiops-rca-due-job-runner` Kubernetes Job을 동적으로 생성합니다.
+해당 Job은 `scheduled_at`까지 대기한 뒤 `POST /rca/jobs/run-due`를 호출해 due 상태의 RCA job만 처리합니다.
 
 CloudFront에서 MCP 외부 접근이 필요하면 `/api/v1/mcp*`, `/api/v1/mcp-server*`
 behavior를 기존 `catalog-api-alb` origin으로 추가합니다.

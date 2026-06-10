@@ -199,11 +199,9 @@ jobs:
             -e "s|namespace: default|namespace: ${K8S_NAMESPACE}|g" \
             -e "s|name: mcp-aiops-backend-secret|name: ${K8S_SECRET_NAME}|g" \
             infra/k8s/deployment.yaml | kubectl apply -f -
-          sed \
-            -e "s|REPLACE_IMAGE|${IMAGE_URI}|g" \
-            -e "s|namespace: default|namespace: ${K8S_NAMESPACE}|g" \
-            -e "s|mcp-aiops-backend.default.svc.cluster.local|${K8S_SERVICE}.${K8S_NAMESPACE}.svc.cluster.local|g" \
-            infra/k8s/rca-due-job-cronjob.yaml | kubectl apply -f -
+          kubectl delete cronjob mcp-aiops-rca-due-job-runner \
+            --namespace "${K8S_NAMESPACE}" \
+            --ignore-not-found
           kubectl rollout status "deployment/${K8S_DEPLOYMENT}" \
             --namespace "${K8S_NAMESPACE}" \
             --timeout=180s

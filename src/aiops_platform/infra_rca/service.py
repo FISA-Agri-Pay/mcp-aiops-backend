@@ -7,6 +7,7 @@ from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from aiops_platform.core.config import settings
+from aiops_platform.infra_rca.job_runner import RcaJobRunner, create_rca_job_runner
 from aiops_platform.infra_rca.repository import (
     InfraRcaRepository,
     ScheduledRcaJobRecord,
@@ -60,6 +61,7 @@ class InfraRcaService:
         prediction_scaling_service: PredictionScalingService | None = None,
         email_sender: EmailSender | None = None,
         email_recipients: list[str] | None = None,
+        rca_job_runner: RcaJobRunner | None = None,
     ) -> None:
         self._repository = repository or SqlInfraRcaRepository()
         self._orchestration_repository = (
@@ -72,6 +74,7 @@ class InfraRcaService:
         )
         self._email_sender = email_sender or SmtpEmailSender()
         self._email_recipients = email_recipients
+        self._rca_job_runner = rca_job_runner or create_rca_job_runner()
 
     def handle_alertmanager_webhook(
         self,
@@ -134,12 +137,13 @@ class InfraRcaService:
                 starts_at=starts_at,
             ),
         )
+        scheduled_at = resolve_rca_run_after(starts_at)
         job = self._orchestration_repository.create_job(
             job_type="rca",
             entity_type="incidents",
             entity_id=incident.incident_id,
             status="QUEUED",
-            scheduled_at=resolve_rca_run_after(starts_at).isoformat(sep=" "),
+            scheduled_at=scheduled_at.isoformat(sep=" "),
             job_context={
                 "incident": incident.model_dump(mode="json"),
                 "alert": incident_alert.model_dump(mode="json"),
@@ -151,6 +155,17 @@ class InfraRcaService:
                 "window_end": resolve_rca_run_after(starts_at).isoformat(sep=" "),
             },
         )
+        runner_message = ""
+        try:
+            self._rca_job_runner.schedule_due_rca_job(
+                job_id=job.job_id,
+                scheduled_at=scheduled_at,
+            )
+        except Exception:
+            logger.exception("Failed to schedule RCA Kubernetes Job for job_id=%s.", job.job_id)
+            runner_message = (
+                " The RCA job was stored, but the Kubernetes runner trigger failed."
+            )
         return AlertWebhookResult(
             incident=incident,
             alert=incident_alert,
@@ -160,6 +175,7 @@ class InfraRcaService:
             message=(
                 "Alertmanager webhook was recorded and RCA generation was "
                 "scheduled after the evidence window closes."
+                f"{runner_message}"
             ),
         )
 

@@ -49,6 +49,13 @@ spec:
                 name: mcp-aiops-backend-config
             - secretRef:
                 name: mcp-aiops-backend-secret
+          env:
+            - name: RCA_JOB_RUNNER_IMAGE
+              value: REPLACE_IMAGE
+            - name: RCA_JOB_RUNNER_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
           readinessProbe:
             httpGet:
               path: /health

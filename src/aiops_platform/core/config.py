@@ -152,6 +152,27 @@ class Settings(BaseSettings):
         ge=0,
         alias="RCA_DEFAULT_AFTER_MINUTES",
     )
+    rca_job_runner_enabled: bool = Field(default=False, alias="RCA_JOB_RUNNER_ENABLED")
+    rca_job_runner_image: str = Field(default="", alias="RCA_JOB_RUNNER_IMAGE")
+    rca_job_runner_namespace: str = Field(
+        default="default",
+        alias="RCA_JOB_RUNNER_NAMESPACE",
+    )
+    rca_job_runner_service_name: str = Field(
+        default="mcp-aiops-backend",
+        alias="RCA_JOB_RUNNER_SERVICE_NAME",
+    )
+    rca_job_runner_limit: int = Field(default=20, ge=1, le=50, alias="RCA_JOB_RUNNER_LIMIT")
+    rca_job_runner_ttl_seconds_after_finished: int = Field(
+        default=600,
+        ge=0,
+        alias="RCA_JOB_RUNNER_TTL_SECONDS_AFTER_FINISHED",
+    )
+    rca_job_runner_active_deadline_buffer_seconds: int = Field(
+        default=300,
+        ge=60,
+        alias="RCA_JOB_RUNNER_ACTIVE_DEADLINE_BUFFER_SECONDS",
+    )
     email_provider: str = Field(default="smtp", alias="EMAIL_PROVIDER")
     smtp_host: str = Field(default="", alias="SMTP_HOST")
     smtp_port: int = Field(default=587, ge=1, le=65535, alias="SMTP_PORT")

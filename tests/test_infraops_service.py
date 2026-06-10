@@ -129,6 +129,29 @@ def test_kubernetes_client_calls_namespaced_read_apis() -> None:
     assert http_client.calls[0]["headers"]["Authorization"] == "Bearer token"
 
 
+def test_kubernetes_client_creates_namespaced_job() -> None:
+    http_client = FakeHttpClient({"metadata": {"name": "rca-job"}})
+    client = KubernetesClient(
+        "http://kubernetes:8001",
+        bearer_token="token",
+        timeout_seconds=3,
+        http_client=http_client,
+    )
+    manifest = {
+        "apiVersion": "batch/v1",
+        "kind": "Job",
+        "metadata": {"name": "rca-job"},
+    }
+
+    assert client.create_job("default", manifest) == {"metadata": {"name": "rca-job"}}
+    assert http_client.calls[0]["method"] == "POST"
+    assert http_client.calls[0]["url"] == (
+        "http://kubernetes:8001/apis/batch/v1/namespaces/default/jobs"
+    )
+    assert http_client.calls[0]["json_body"] == manifest
+    assert http_client.calls[0]["headers"]["Authorization"] == "Bearer token"
+
+
 def test_kubernetes_client_reads_bearer_token_file(tmp_path) -> None:
     token_file = tmp_path / "token"
     token_file.write_text("file-token\n", encoding="utf-8")
