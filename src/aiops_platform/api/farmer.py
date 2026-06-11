@@ -1,4 +1,4 @@
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Query
 
 from aiops_platform.api.dependencies import OrchestrationServiceDep
 from aiops_platform.orchestration.schemas import (
@@ -6,6 +6,7 @@ from aiops_platform.orchestration.schemas import (
     ChatAskResult,
     ChatMessagesResult,
     ChatSessionCreateRequest,
+    ChatSessionListResult,
     ChatSessionResult,
 )
 from aiops_platform.orchestration.service import (
@@ -26,6 +27,24 @@ def create_farmer_chat_session(
         user_id=request.user_id,
         title=request.title,
     )
+
+
+@router.get("/sessions", response_model=ChatSessionListResult)
+def list_farmer_chat_sessions(
+    service: OrchestrationServiceDep,
+    user_id: str = Query(..., min_length=1, max_length=120),
+    status: str | None = Query(default=None),
+    limit: int = Query(default=20, ge=1, le=100),
+) -> ChatSessionListResult:
+    try:
+        return service.list_chat_sessions(
+            chat_type="farmer_bnpl",
+            user_id=user_id,
+            status=status,
+            limit=limit,
+        )
+    except OrchestrationValidationError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 @router.get("/sessions/{session_id}", response_model=ChatSessionResult)

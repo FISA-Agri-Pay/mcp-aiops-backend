@@ -165,6 +165,39 @@ def test_farmer_chat_api_creates_session_and_records_masked_tool_calls() -> None
     assert detail.json()["server_name"] == "farmer-bnpl-mcp"
 
 
+def test_farmer_chat_session_list_returns_only_requested_user_sessions() -> None:
+    client = create_orchestration_test_client()
+
+    first = client.post(
+        "/farmer/chat/sessions",
+        json={"user_id": FARMER_1_ID, "title": "first farmer chat"},
+    ).json()
+    client.post(
+        "/farmer/chat/sessions",
+        json={"user_id": FARMER_2_ID, "title": "other farmer chat"},
+    )
+    second = client.post(
+        "/farmer/chat/sessions",
+        json={"user_id": FARMER_1_ID, "title": "second farmer chat"},
+    ).json()
+
+    response = client.get(
+        "/farmer/chat/sessions",
+        params={"user_id": FARMER_1_ID, "status": "OPEN", "limit": 10},
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["user_id"] == FARMER_1_ID
+    assert body["status"] == "OPEN"
+    sessions = body["items"]
+    assert [item["session_id"] for item in sessions[:2]] == [
+        second["session_id"],
+        first["session_id"],
+    ]
+    assert {item["user_id"] for item in sessions} == {FARMER_1_ID}
+
+
 def test_farmer_chat_delivery_question_returns_delivery_card() -> None:
     client = create_orchestration_test_client()
     order_id = "90000000-0000-0000-0000-000000000101"
