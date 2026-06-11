@@ -116,6 +116,7 @@ def test_farmer_bnpl_prompt_requires_korean_user_facing_guidance() -> None:
     assert "내부 tool 이름" in template
     assert "외상 한도 수치는 본문에서 길게 반복하지 말고" in template
     assert "fertilizer_recommendation" in template
+    assert "상품명, 가격, 한도 내 구매 가능 여부" in template
     assert "현재 추천 가능한 상품을 찾지 못했습니다" in template
     assert "작물, 재배 면적, 지역, 생육 단계" in template
 

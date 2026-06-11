@@ -237,6 +237,9 @@ def plan_farmer_bnpl_tools(*, message: str, user_id: str) -> list[AgentToolPlan]
             "장바구니",
         )
     )
+    wants_checkout = any(
+        keyword in message for keyword in ("결제", "checkout", "cart", "장바구니", "체크아웃")
+    )
     is_sensor_request = any(
         keyword in message
         for keyword in ("sensor", "센서", "스마트팜", "smartfarm", "smart farm")
@@ -332,7 +335,7 @@ def plan_farmer_bnpl_tools(*, message: str, user_id: str) -> list[AgentToolPlan]
         )
 
     should_prepare_checkout = intent == "checkout_prepare" or (
-        intent == "recommendation" and wants_bnpl_context
+        intent == "recommendation" and wants_checkout
     )
     should_recommend_fertilizer = (
         intent == "recommendation" and not product_only_recommendation

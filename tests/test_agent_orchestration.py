@@ -80,6 +80,25 @@ def test_rule_based_planner_selects_farmer_credit_limit_tool() -> None:
     assert plan.capability == "credit_limit_status"
 
 
+def test_rule_based_planner_recommends_with_credit_without_checkout_dry_run() -> None:
+    planner = RuleBasedAgentPlanner()
+
+    plan = planner.plan(
+        chat_type="farmer_bnpl",
+        message="지금 시즌에 필요한 내 한도내에서 살수 있는 농자재 추천해줘!!",
+        user_id=FARMER_1_ID,
+    )
+
+    assert plan.intent == "recommendation"
+    assert plan.capability == "fertilizer_recommendation"
+    assert [tool.tool_name for tool in plan.tool_plans] == [
+        "get_user_credit_limit",
+        "get_farmer_profile",
+        "recommend_fertilizer_requirements",
+        "search_lowest_price_fertilizer",
+    ]
+
+
 def test_rule_based_planner_marks_farmer_recommendation_capability() -> None:
     planner = RuleBasedAgentPlanner()
 

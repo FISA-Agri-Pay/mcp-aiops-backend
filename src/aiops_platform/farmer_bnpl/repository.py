@@ -94,8 +94,10 @@ class SqlFarmerBnplRepository:
     def get_farmer_profile(self, user_id: str) -> FarmerProfileResult | None:
         if not is_uuid(user_id):
             return None
+        farmer_profile_columns = self._fetch_core_table_columns("farmer_profiles")
+        farmer_profile_join = build_farmer_profile_join(farmer_profile_columns)
         query = text(
-            """
+            f"""
             select
                 u.name as display_name,
                 coalesce(nullif(fp.farm_address, ''), nullif(u.address, ''), 'UNKNOWN') as region,
@@ -106,7 +108,7 @@ class SqlFarmerBnplRepository:
                     else 'INCOMPLETE'
                 end as profile_status
             from core.users u
-            left join core.farmer_profiles fp on fp.user_id = u.id
+            {farmer_profile_join}
             left join core.credit_limits cl on cl.user_public_id = u.public_id
             where u.public_id = cast(:user_id as uuid)
             order by cl.created_at desc nulls last
@@ -287,7 +289,34 @@ class SqlFarmerBnplRepository:
         category: str | None = None,
         limit: int = 20,
     ) -> list[ProductResult]:
-        sql = """
+        category_values = expand_category_aliases(category)
+        params: dict[str, object] = {
+            "query": query.lower().strip() if query else None,
+            "limit": limit,
+        }
+        if category_values:
+            category_placeholders = []
+            for index, value in enumerate(category_values):
+                key = f"category_{index}"
+                category_placeholders.append(f":{key}")
+                params[key] = value
+            category_clause = f"lower(c.name) in ({', '.join(category_placeholders)})"
+        else:
+            category_clause = "true"
+        keyword_values = material_keywords_for_category(category)
+        if keyword_values:
+            keyword_clauses = []
+            for index, value in enumerate(keyword_values):
+                key = f"material_keyword_{index}"
+                keyword_clauses.append(
+                    f"(lower(p.name) like '%' || :{key} || '%' "
+                    f"or lower(coalesce(p.description, '')) like '%' || :{key} || '%')"
+                )
+                params[key] = value
+            material_clause = f"and ({' or '.join(keyword_clauses)})"
+        else:
+            material_clause = ""
+        sql = f"""
             select
                 p.public_id::text as product_id,
                 p.name,
@@ -298,21 +327,17 @@ class SqlFarmerBnplRepository:
                 p.status
             from catalog.products p
             left join catalog.categories c on c.public_id = p.category_public_id
-            where (cast(:category as text) is null or lower(c.name) = cast(:category as text))
+            where {category_clause}
               and (
                   cast(:query as text) is null
                   or lower(p.name) like '%' || cast(:query as text) || '%'
                   or lower(coalesce(p.description, '')) like '%' || cast(:query as text) || '%'
                   or lower(coalesce(c.name, '')) like '%' || cast(:query as text) || '%'
-              )
+            )
+              {material_clause}
             order by p.price asc, p.created_at desc
             limit :limit
         """
-        params = {
-            "query": query.lower().strip() if query else None,
-            "category": category.lower().strip() if category else None,
-            "limit": limit,
-        }
         with self._session_scope() as session:
             rows = session.execute(text(sql), params).mappings().all()
         return [build_product(row) for row in rows]
@@ -342,6 +367,21 @@ class SqlFarmerBnplRepository:
             return None
         return build_product(row)
 
+    def _fetch_core_table_columns(self, table_name: str) -> set[str]:
+        query = text(
+            """
+            select column_name
+            from information_schema.columns
+            where table_schema = 'core'
+              and table_name = :table_name
+            """
+        )
+        with self._session_scope() as session:
+            return {
+                str(row[0])
+                for row in session.execute(query, {"table_name": table_name}).all()
+            }
+
     @contextmanager
     def _session_scope(self) -> Iterator[Session]:
         if self._session is not None:
@@ -360,6 +400,54 @@ def build_product(row) -> ProductResult:
         vendor=row["vendor"],
         stock_status=map_stock_status(row["status"], int(row["stock_quantity"] or 0)),
     )
+
+
+CATEGORY_ALIASES = {
+    "fertilizer": ("fertilizer", "비료/자재"),
+    "비료": ("fertilizer", "비료/자재"),
+    "농자재": ("fertilizer", "비료/자재", "씨앗/모종", "영농 서비스"),
+    "seed": ("seed", "씨앗/모종"),
+    "씨앗": ("seed", "씨앗/모종"),
+    "모종": ("seed", "씨앗/모종"),
+    "pesticide": ("pesticide", "비료/자재"),
+    "농약": ("pesticide", "비료/자재"),
+    "material": ("material", "비료/자재"),
+}
+
+
+def expand_category_aliases(category: str | None) -> list[str]:
+    if not category:
+        return []
+    normalized = category.lower().strip()
+    aliases = CATEGORY_ALIASES.get(normalized, (normalized,))
+    deduplicated = []
+    seen = set()
+    for value in aliases:
+        lowered = value.lower().strip()
+        if lowered in seen:
+            continue
+        seen.add(lowered)
+        deduplicated.append(lowered)
+    return deduplicated
+
+
+def material_keywords_for_category(category: str | None) -> list[str]:
+    if not category:
+        return []
+    normalized = category.lower().strip()
+    if normalized in {"fertilizer", "비료"}:
+        return ["fertilizer", "비료", "유기질", "요소", "복합"]
+    if normalized in {"pesticide", "농약"}:
+        return ["pesticide", "농약", "제초제", "살균", "살충"]
+    return []
+
+
+def build_farmer_profile_join(columns: set[str]) -> str:
+    if "user_public_id" in columns:
+        return "left join core.farmer_profiles fp on fp.user_public_id = u.public_id"
+    if "user_id" in columns:
+        return "left join core.farmer_profiles fp on fp.user_id = u.id"
+    return "left join core.farmer_profiles fp on false"
 
 
 def map_credit_limit_status(value: str) -> str:
