@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import re
-from typing import Any, Literal, Protocol
+from typing import Any, Literal, Protocol, get_args
 
 from aiops_platform.agent.schemas import AgentPlanResult, AgentToolPlan
 from aiops_platform.core.config import settings
@@ -29,18 +29,24 @@ class RuleBasedAgentPlanner:
         normalized_message = message.lower()
         if chat_type == "farmer_bnpl":
             intent = classify_farmer_bnpl_intent(normalized_message)
+            capability = None
             tool_plans = plan_farmer_bnpl_tools(
                 message=normalized_message,
                 user_id=user_id,
             )
         else:
             intent = classify_admin_copilot_intent(normalized_message)
-            tool_plans = plan_admin_copilot_tools(message=normalized_message)
+            capability = classify_admin_copilot_capability(normalized_message)
+            tool_plans = plan_admin_copilot_tools(
+                message=normalized_message,
+                capability=capability,
+            )
         return AgentPlanResult(
             provider_name="rule_based",
             chat_type=chat_type,
             tool_plans=deduplicate_tool_plans(tool_plans),
             intent=intent,
+            capability=capability,
             direct_answer=build_direct_answer(chat_type=chat_type, intent=intent),
         )
 
@@ -74,10 +80,11 @@ class LlmAgentPlanner:
                         "message": message,
                         "user_id": user_id,
                         "available_tools": available_tools_for_prompt(chat_type),
+                        "available_capabilities": available_capabilities_for_prompt(chat_type),
                     },
                     output_schema={
                         "type": "object",
-                        "required": ["intent", "requires_tools", "tool_plans"],
+                        "required": ["intent", "capability", "requires_tools", "tool_plans"],
                     },
                 )
             )
@@ -111,6 +118,19 @@ AdminCopilotIntent = Literal[
     "risk_overview",
     "action_priority",
 ]
+AdminCopilotCapability = Literal[
+    "smalltalk",
+    "help",
+    "unsupported",
+    "bnpl_portfolio_status",
+    "overdue_risk_triage",
+    "credit_review_workload",
+    "infra_scaling_health",
+    "disaster_credit_impact",
+    "evidence_snapshot",
+    "risk_overview",
+    "ops_action_prioritization",
+]
 FarmerBnplIntent = Literal[
     "greeting",
     "thanks",
@@ -125,6 +145,35 @@ FarmerBnplIntent = Literal[
     "application",
     "general_bnpl",
 ]
+ADMIN_COPILOT_CAPABILITY_VALUES = set(get_args(AdminCopilotCapability))
+ADMIN_DIRECT_CAPABILITIES = {"smalltalk", "help", "unsupported"}
+ADMIN_INTENT_TO_CAPABILITY: dict[str, AdminCopilotCapability] = {
+    "greeting": "smalltalk",
+    "thanks": "smalltalk",
+    "help": "help",
+    "unsupported": "unsupported",
+    "overdue_risk": "overdue_risk_triage",
+    "credit_review": "credit_review_workload",
+    "infra_scaling": "infra_scaling_health",
+    "disaster_risk": "disaster_credit_impact",
+    "snapshot": "evidence_snapshot",
+    "bnpl_summary": "bnpl_portfolio_status",
+    "risk_overview": "risk_overview",
+    "action_priority": "ops_action_prioritization",
+}
+ADMIN_CAPABILITY_TO_INTENT: dict[str, AdminCopilotIntent] = {
+    "smalltalk": "greeting",
+    "help": "help",
+    "unsupported": "unsupported",
+    "bnpl_portfolio_status": "bnpl_summary",
+    "overdue_risk_triage": "overdue_risk",
+    "credit_review_workload": "credit_review",
+    "infra_scaling_health": "infra_scaling",
+    "disaster_credit_impact": "disaster_risk",
+    "evidence_snapshot": "snapshot",
+    "risk_overview": "risk_overview",
+    "ops_action_prioritization": "action_priority",
+}
 
 
 def plan_farmer_bnpl_tools(*, message: str, user_id: str) -> list[AgentToolPlan]:
@@ -318,7 +367,10 @@ def classify_farmer_bnpl_intent(message: str) -> FarmerBnplIntent:
 
     if any(keyword in normalized for keyword in ("confirm checkout", "checkout 생성", "구매 확정")):
         return "checkout_confirm"
-    if any(keyword in normalized for keyword in ("repayment", "상환", "interest", "이자", "overdue", "연체", "납부")):
+    if any(
+        keyword in normalized
+        for keyword in ("repayment", "상환", "interest", "이자", "overdue", "연체", "납부")
+    ):
         return "repayment"
     if any(keyword in normalized for keyword in ("delivery", "배송", "주문", "order")):
         return "delivery"
@@ -349,15 +401,23 @@ def classify_farmer_bnpl_intent(message: str) -> FarmerBnplIntent:
     return "unsupported"
 
 
-def plan_admin_copilot_tools(*, message: str) -> list[AgentToolPlan]:
-    intent = classify_admin_copilot_intent(message)
-    if intent in {"greeting", "thanks", "help", "unsupported"}:
+def plan_admin_copilot_tools(
+    *,
+    message: str,
+    capability: AdminCopilotCapability | None = None,
+) -> list[AgentToolPlan]:
+    resolved_capability = capability or classify_admin_copilot_capability(message)
+    if resolved_capability in ADMIN_DIRECT_CAPABILITIES:
         return []
 
     review_limit = extract_requested_limit(message, default=10)
     plans: list[AgentToolPlan] = []
 
-    if intent in {"bnpl_summary", "risk_overview", "action_priority"}:
+    if resolved_capability in {
+        "bnpl_portfolio_status",
+        "risk_overview",
+        "ops_action_prioritization",
+    }:
         plans.append(
             AgentToolPlan(
                 server_name="admin-riskops-mcp",
@@ -367,7 +427,11 @@ def plan_admin_copilot_tools(*, message: str) -> list[AgentToolPlan]:
             )
         )
 
-    if intent in {"credit_review", "risk_overview", "action_priority"}:
+    if resolved_capability in {
+        "credit_review_workload",
+        "risk_overview",
+        "ops_action_prioritization",
+    }:
         plans.append(
             AgentToolPlan(
                 server_name="admin-riskops-mcp",
@@ -377,7 +441,11 @@ def plan_admin_copilot_tools(*, message: str) -> list[AgentToolPlan]:
             )
         )
 
-    if intent in {"infra_scaling", "risk_overview", "action_priority"}:
+    if resolved_capability in {
+        "infra_scaling_health",
+        "risk_overview",
+        "ops_action_prioritization",
+    }:
         plans.extend(
             [
                 AgentToolPlan(
@@ -395,7 +463,11 @@ def plan_admin_copilot_tools(*, message: str) -> list[AgentToolPlan]:
             ]
         )
 
-    if intent in {"overdue_risk", "risk_overview", "action_priority"}:
+    if resolved_capability in {
+        "overdue_risk_triage",
+        "risk_overview",
+        "ops_action_prioritization",
+    }:
         plans.extend(
             [
                 AgentToolPlan(
@@ -414,7 +486,7 @@ def plan_admin_copilot_tools(*, message: str) -> list[AgentToolPlan]:
         )
 
     user_keywords = ("user", "users", "customer", "고객", "사용자", "농가")
-    if intent in {"overdue_risk", "bnpl_summary"} and any(
+    if resolved_capability in {"overdue_risk_triage", "bnpl_portfolio_status"} and any(
         keyword in message for keyword in user_keywords
     ):
         plans.append(
@@ -426,7 +498,7 @@ def plan_admin_copilot_tools(*, message: str) -> list[AgentToolPlan]:
             )
         )
 
-    if intent == "disaster_risk":
+    if resolved_capability == "disaster_credit_impact":
         plans.append(
             AgentToolPlan(
                 server_name="admin-riskops-mcp",
@@ -440,7 +512,7 @@ def plan_admin_copilot_tools(*, message: str) -> list[AgentToolPlan]:
             )
         )
 
-    if intent == "snapshot":
+    if resolved_capability == "evidence_snapshot":
         plans.append(
             AgentToolPlan(
                 server_name="admin-riskops-mcp",
@@ -575,13 +647,42 @@ def classify_admin_copilot_intent(message: str) -> AdminCopilotIntent:
     return "unsupported"
 
 
+def classify_admin_copilot_capability(message: str) -> AdminCopilotCapability:
+    intent = classify_admin_copilot_intent(message)
+    return ADMIN_INTENT_TO_CAPABILITY[intent]
+
+
+def normalize_admin_capability(value: object) -> AdminCopilotCapability | None:
+    normalized = normalize_optional_string(value)
+    if normalized is None:
+        return None
+    normalized = normalized.lower().replace("-", "_")
+    if normalized in ADMIN_COPILOT_CAPABILITY_VALUES:
+        return normalized  # type: ignore[return-value]
+    return None
+
+
+def admin_intent_for_capability(
+    *,
+    capability: AdminCopilotCapability,
+    fallback_intent: str | None = None,
+) -> AdminCopilotIntent:
+    if capability == "smalltalk" and fallback_intent in {"greeting", "thanks"}:
+        return fallback_intent  # type: ignore[return-value]
+    return ADMIN_CAPABILITY_TO_INTENT[capability]
+
+
 def build_llm_planner_prompt() -> str:
     return (
         "You are a tool-planning layer for a Korean AIOps BNPL chatbot. "
         "Return only JSON. Decide whether the user needs MCP tools or a direct chat answer. "
-        "Use only tools listed in available_tools. Do not invent tools. "
-        "Admin requests for action priority, next actions, recommendations, or operational triage "
-        "are supported data requests: use BNPL summary, overdue, credit review, and infra/scaling tools. "
+        "Use only tools listed in available_tools and capabilities listed in "
+        "available_capabilities. "
+        "Do not invent tools or capabilities. "
+        "For admin_copilot, choose one capability first. Admin requests for action priority, "
+        "next actions, recommendations, or operational triage are ops_action_prioritization. "
+        "The backend maps admin capabilities to approved MCP tool bundles, so admin data requests "
+        "may set tool_plans=[] as long as capability is correct and requires_tools=true. "
         "For greeting, thanks, help, or unsupported requests, set requires_tools=false, "
         "tool_plans=[], and provide a Korean direct_answer. "
         "For supported data requests, set requires_tools=true and provide the minimal tool_plans. "
@@ -589,6 +690,63 @@ def build_llm_planner_prompt() -> str:
         "Keep request_payload minimal; backend will fill safe defaults such as user_id. "
         "If requested analysis is unsupported by available_tools, do not choose adjacent tools."
     )
+
+
+def available_capabilities_for_prompt(chat_type: ChatType) -> list[dict[str, str]]:
+    if chat_type != "admin_copilot":
+        return []
+    return [
+        {
+            "capability": "smalltalk",
+            "description": "Greeting or thanks that does not require operational data.",
+        },
+        {
+            "capability": "help",
+            "description": "Explain what the Admin Copilot can answer.",
+        },
+        {
+            "capability": "unsupported",
+            "description": "The requested analysis has no supported MCP data source.",
+        },
+        {
+            "capability": "bnpl_portfolio_status",
+            "description": "BNPL usage, active users, limits, exposure, and portfolio status.",
+        },
+        {
+            "capability": "overdue_risk_triage",
+            "description": "Overdue users, overdue amount, delinquency status, and risk triage.",
+        },
+        {
+            "capability": "credit_review_workload",
+            "description": (
+                "Pending credit review queue, approval workload, and review bottlenecks."
+            ),
+        },
+        {
+            "capability": "infra_scaling_health",
+            "description": "Cluster observability, scaling summary, pods, load, and infra health.",
+        },
+        {
+            "capability": "disaster_credit_impact",
+            "description": "Weather or disaster impact simulation for BNPL credit risk.",
+        },
+        {
+            "capability": "evidence_snapshot",
+            "description": "Create a read-only RiskOps evidence snapshot.",
+        },
+        {
+            "capability": "risk_overview",
+            "description": (
+                "Cross-domain risk summary combining BNPL, overdue, review, and infra evidence."
+            ),
+        },
+        {
+            "capability": "ops_action_prioritization",
+            "description": (
+                "Rank admin next actions using BNPL, overdue, credit review, and scaling evidence."
+            ),
+        },
+    ]
 
 
 def available_tools_for_prompt(chat_type: ChatType) -> list[dict[str, str]]:
@@ -649,9 +807,37 @@ def build_validated_llm_plan(
     fallback: AgentPlanResult,
 ) -> AgentPlanResult:
     intent = normalize_optional_string(payload.get("intent")) or fallback.intent
+    capability = normalize_optional_string(payload.get("capability")) or fallback.capability
     direct_answer = normalize_optional_string(payload.get("direct_answer"))
-    requires_tools = bool(payload.get("requires_tools"))
+    requires_tools = parse_bool(payload.get("requires_tools"))
     raw_tool_plans = payload.get("tool_plans")
+
+    if chat_type == "admin_copilot":
+        llm_capability = normalize_admin_capability(payload.get("capability"))
+        if llm_capability is not None and llm_capability not in ADMIN_DIRECT_CAPABILITIES:
+            plans = deduplicate_tool_plans(
+                plan_admin_copilot_tools(
+                    message=message.lower(),
+                    capability=llm_capability,
+                )
+            )
+            if plans:
+                return AgentPlanResult(
+                    provider_name="llm",
+                    chat_type=chat_type,
+                    intent=admin_intent_for_capability(
+                        capability=llm_capability,
+                        fallback_intent=intent,
+                    ),
+                    capability=llm_capability,
+                    tool_plans=plans,
+                )
+        if llm_capability is not None:
+            capability = llm_capability
+            intent = admin_intent_for_capability(
+                capability=llm_capability,
+                fallback_intent=intent,
+            )
 
     if not requires_tools:
         if fallback.tool_plans:
@@ -665,6 +851,7 @@ def build_validated_llm_plan(
             provider_name="llm",
             chat_type=chat_type,
             intent=intent,
+            capability=capability,
             direct_answer=direct_answer
             or build_direct_answer(chat_type=chat_type, intent=str(intent or "")),
             tool_plans=[],
@@ -701,6 +888,7 @@ def build_validated_llm_plan(
         provider_name="llm",
         chat_type=chat_type,
         intent=intent,
+        capability=capability,
         tool_plans=plans,
     )
 
@@ -724,12 +912,18 @@ def validate_llm_tool_plan(
     tool = find_registered_tool(server_name=server_name, tool_name=tool_name)
     if tool is None:
         return None
-    if chat_type == "admin_copilot" and McpToolPermission(tool.tool_permission) != McpToolPermission.READ:
+    if (
+        chat_type == "admin_copilot"
+        and McpToolPermission(tool.tool_permission) != McpToolPermission.READ
+    ):
         return None
     request_payload = raw_plan.get("request_payload")
     if not isinstance(request_payload, dict):
         request_payload = {}
-    reason = normalize_optional_string(raw_plan.get("reason")) or "LLM planner selected this MCP tool."
+    reason = (
+        normalize_optional_string(raw_plan.get("reason"))
+        or "LLM planner selected this MCP tool."
+    )
     return AgentToolPlan(
         server_name=server_name,
         tool_name=tool_name,
@@ -766,7 +960,10 @@ def normalize_tool_payload(
     }:
         normalized["user_id"] = user_id
     if tool_name in {"get_credit_review_queue", "search_bnpl_users"}:
-        normalized["limit"] = clamp_int(normalized.get("limit"), default=extract_requested_limit(message, default=10))
+        normalized["limit"] = clamp_int(
+            normalized.get("limit"),
+            default=extract_requested_limit(message, default=10),
+        )
     if tool_name == "search_overdue_users":
         normalized["min_days_overdue"] = clamp_int(normalized.get("min_days_overdue"), default=1)
         normalized["limit"] = clamp_int(normalized.get("limit"), default=10)
@@ -779,8 +976,12 @@ def normalize_tool_payload(
         )
         normalized["affected_crop"] = normalize_optional_string(normalized.get("affected_crop"))
     if tool_name == "create_risk_analysis_snapshot":
-        normalized["target_type"] = normalize_optional_string(normalized.get("target_type")) or "PORTFOLIO"
-        normalized["target_id"] = normalize_optional_string(normalized.get("target_id")) or "portfolio"
+        normalized["target_type"] = (
+            normalize_optional_string(normalized.get("target_type")) or "PORTFOLIO"
+        )
+        normalized["target_id"] = (
+            normalize_optional_string(normalized.get("target_id")) or "portfolio"
+        )
     if tool_name == "search_products":
         normalized["query"] = normalize_optional_string(normalized.get("query")) or "sensor"
         normalized["limit"] = clamp_int(normalized.get("limit"), default=3)
@@ -833,11 +1034,15 @@ def build_direct_answer(*, chat_type: ChatType, intent: str) -> str | None:
             ),
             "unsupported": (
                 "현재 Admin Copilot에서 해당 분석에 필요한 운영 데이터를 조회할 수 없습니다. "
-                "BNPL 현황, 연체 위험 고객, 심사 대기 건, 인프라/스케일링 상태는 확인할 수 있습니다."
+                "BNPL 현황, 연체 위험 고객, 심사 대기 건, "
+                "인프라/스케일링 상태는 확인할 수 있습니다."
             ),
         }.get(intent)
     return {
-        "greeting": "안녕하세요. 외상 한도, 상환 일정, 배송 현황, 농자재 추천을 도와드릴 수 있어요.",
+        "greeting": (
+            "안녕하세요. 외상 한도, 상환 일정, 배송 현황, "
+            "농자재 추천을 도와드릴 수 있어요."
+        ),
         "thanks": "언제든 외상 한도, 상환 일정, 배송 현황이 궁금하면 물어봐 주세요.",
         "help": (
             "외상 한도 확인, 상환/이자 일정, 연체 여부, 배송 현황, "
@@ -855,6 +1060,14 @@ def normalize_optional_string(value: object) -> str | None:
         return None
     normalized = value.strip()
     return normalized or None
+
+
+def parse_bool(value: object) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        return value.strip().lower() in {"true", "1", "yes"}
+    return False
 
 
 def clamp_int(value: object, *, default: int) -> int:

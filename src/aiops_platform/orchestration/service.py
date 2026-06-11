@@ -5,11 +5,11 @@ from datetime import UTC, datetime
 from typing import Any, get_args
 from uuid import uuid4
 
+from aiops_platform.agent.orchestrator import AgentOrchestrator
 from aiops_platform.agent.planner import (
     classify_admin_copilot_intent,
     classify_farmer_bnpl_intent,
 )
-from aiops_platform.agent.orchestrator import AgentOrchestrator
 from aiops_platform.agent.schemas import AgentToolExecutionResult
 from aiops_platform.llmops.schemas import LlmRunResult
 from aiops_platform.llmops.service import LlmOpsService
@@ -285,6 +285,7 @@ class OrchestrationService:
                 ui_actions = []
                 assistant_metadata = {
                     "intent": agent_run.intent,
+                    "capability": agent_run.capability,
                     "planner_provider": agent_run.provider_name,
                     "planner_error": agent_run.planner_error,
                     "response_source": "direct",
@@ -315,6 +316,7 @@ class OrchestrationService:
                     tool_results=tool_results,
                     job_id=job.job_id,
                     session_id=session.session_id,
+                    capability=agent_run.capability,
                 )
                 self._attach_llm_run_to_tool_calls(
                     job_id=job.job_id,
@@ -344,6 +346,7 @@ class OrchestrationService:
                 ui_actions = build_chat_ui_actions(ui_cards)
                 assistant_metadata = {
                     "intent": agent_run.intent,
+                    "capability": agent_run.capability,
                     "planner_provider": agent_run.provider_name,
                     "planner_error": agent_run.planner_error,
                     "response_source": (
@@ -430,6 +433,7 @@ class OrchestrationService:
         tool_results: list[AgentToolExecutionResult],
         job_id: str,
         session_id: str,
+        capability: str | None = None,
     ) -> LlmRunResult:
         return self._llmops_service.run_agent_completion(
             chat_type=chat_type,
@@ -438,6 +442,7 @@ class OrchestrationService:
             tool_results=tool_results,
             job_id=job_id,
             session_id=session_id,
+            capability=capability,
         )
 
     def _attach_llm_run_to_tool_calls(

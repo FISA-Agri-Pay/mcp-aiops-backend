@@ -2,17 +2,18 @@ from aiops_platform.agent.dispatcher import McpToolDispatcher
 from aiops_platform.agent.planner import (
     LlmAgentPlanner,
     RuleBasedAgentPlanner,
+    classify_admin_copilot_capability,
     classify_admin_copilot_intent,
     classify_farmer_bnpl_intent,
 )
 from aiops_platform.agent.schemas import AgentToolExecutionResult, AgentToolPlan
+from aiops_platform.llmops.client import LlmCompletionResponse
 from aiops_platform.mcp.schemas import (
     McpConfirmationPolicy,
     McpExecutionPolicy,
     McpToolCallStatus,
     McpToolPermission,
 )
-from aiops_platform.llmops.client import LlmCompletionResponse
 from aiops_platform.orchestration.service import (
     build_direct_chat_response,
     resolve_assistant_content,
@@ -179,6 +180,8 @@ def test_rule_based_planner_skips_admin_tools_for_greeting() -> None:
     plan = planner.plan(chat_type="admin_copilot", message="안녕", user_id="admin-1")
 
     assert classify_admin_copilot_intent("안녕") == "greeting"
+    assert classify_admin_copilot_capability("안녕") == "smalltalk"
+    assert plan.capability == "smalltalk"
     assert plan.tool_plans == []
 
 
@@ -191,6 +194,7 @@ def test_rule_based_planner_selects_overdue_tools_for_admin_risk_question() -> N
         user_id="admin-1",
     )
 
+    assert plan.capability == "overdue_risk_triage"
     assert [tool.tool_name for tool in plan.tool_plans] == [
         "get_overdue_summary",
         "search_overdue_users",
@@ -208,6 +212,38 @@ def test_rule_based_planner_selects_ops_tools_for_admin_action_priority() -> Non
     )
 
     assert plan.intent == "action_priority"
+    assert plan.capability == "ops_action_prioritization"
+    assert [tool.tool_name for tool in plan.tool_plans] == [
+        "get_bnpl_summary",
+        "get_credit_review_queue",
+        "query_multi_cluster_prometheus",
+        "get_scaling_summary",
+        "get_overdue_summary",
+        "search_overdue_users",
+    ]
+
+
+def test_llm_planner_maps_admin_capability_to_backend_tool_bundle() -> None:
+    planner = LlmAgentPlanner(
+        llm_client=FakePlannerLlmClient(
+            {
+                "intent": "action_priority",
+                "capability": "ops_action_prioritization",
+                "requires_tools": True,
+                "tool_plans": [],
+            }
+        )
+    )
+
+    plan = planner.plan(
+        chat_type="admin_copilot",
+        message="관리자 Action 우선순위 정리해줘",
+        user_id="admin-1",
+    )
+
+    assert plan.provider_name == "llm"
+    assert plan.intent == "action_priority"
+    assert plan.capability == "ops_action_prioritization"
     assert [tool.tool_name for tool in plan.tool_plans] == [
         "get_bnpl_summary",
         "get_credit_review_queue",
@@ -224,7 +260,9 @@ def test_llm_planner_falls_back_when_supported_admin_request_skips_tools() -> No
             {
                 "intent": "unsupported",
                 "requires_tools": False,
-                "direct_answer": "현재 Admin Copilot에서 해당 분석에 필요한 운영 데이터를 조회할 수 없습니다.",
+                "direct_answer": (
+                    "현재 Admin Copilot에서 해당 분석에 필요한 운영 데이터를 조회할 수 없습니다."
+                ),
                 "tool_plans": [],
             }
         )
@@ -238,6 +276,7 @@ def test_llm_planner_falls_back_when_supported_admin_request_skips_tools() -> No
 
     assert plan.provider_name == "llm_with_rule_fallback"
     assert plan.intent == "action_priority"
+    assert plan.capability == "ops_action_prioritization"
     assert "skipped tools" in str(plan.planner_error)
     assert [tool.tool_name for tool in plan.tool_plans] == [
         "get_bnpl_summary",

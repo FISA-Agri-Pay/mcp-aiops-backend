@@ -24,6 +24,7 @@ class AgentOrchestrator:
                 answer=plan.direct_answer,
                 tool_results=[],
                 intent=plan.intent,
+                capability=plan.capability,
                 is_direct_response=True,
                 planner_error=plan.planner_error,
             )
@@ -33,6 +34,7 @@ class AgentOrchestrator:
             answer=build_agent_answer(chat_type=chat_type, tool_count=len(tool_results)),
             tool_results=tool_results,
             intent=plan.intent,
+            capability=plan.capability,
             is_direct_response=False,
             planner_error=plan.planner_error,
         )

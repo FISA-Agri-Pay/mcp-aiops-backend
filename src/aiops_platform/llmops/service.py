@@ -56,8 +56,12 @@ DEFAULT_PROMPTS = {
             "운영자가 바로 판단할 수 있도록 핵심 요약, 근거 수치, 위험 신호, 원인 후보, "
             "우선순위가 높은 다음 조치를 구분해 작성한다. 단순 수치 나열로 끝내지 말고 "
             "무엇을 봐야 하는지, 지금 조치가 필요한지, 추가 확인이 필요한 데이터를 함께 제시한다. "
-            "BNPL 심사, 연체 위험, 운영/스케일링 근거를 다룰 때는 영향 범위와 관리 포인트를 포함한다. "
-            "확인되지 않은 내용은 추정으로 단정하지 않는다. 사용자가 오늘, 최근, 이번 주처럼 기간을 물어도 "
+            "BNPL 심사, 연체 위험, 운영/스케일링 근거를 다룰 때는 "
+            "영향 범위와 관리 포인트를 포함한다. "
+            "input의 capability가 ops_action_prioritization이면 즉시 확인할 항목, 오늘 우선 조치, "
+            "후속 모니터링, 데이터 한계를 나눠서 운영자가 바로 실행할 수 있게 작성한다. "
+            "확인되지 않은 내용은 추정으로 단정하지 않는다. "
+            "사용자가 오늘, 최근, 이번 주처럼 기간을 물어도 "
             "Tool 결과에 해당 기간 필드가 없으면 그 기간의 데이터라고 단정하지 말고 "
             "'현재 조회 가능한 요약 기준'이라고 명시한다. 지원하지 않는 분석이나 "
             "Tool 결과에 없는 항목은 데이터 없음으로 설명한다."
@@ -141,6 +145,7 @@ class LlmOpsService:
         tool_results: list[AgentToolExecutionResult],
         job_id: str | None = None,
         session_id: str | None = None,
+        capability: str | None = None,
     ) -> LlmRunResult:
         scope: PromptScope = "farmer_bnpl" if chat_type == "farmer_bnpl" else "admin_copilot"
         prompt = self.ensure_prompt_version(scope=scope)
@@ -148,6 +153,7 @@ class LlmOpsService:
             "chat_type": chat_type,
             "message": message,
             "user_id": user_id,
+            "capability": capability,
             "tool_results": [
                 result.model_dump(mode="json", exclude={"masked_request_payload"})
                 for result in tool_results

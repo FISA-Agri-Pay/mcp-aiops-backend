@@ -25,6 +25,7 @@ class AgentPlanResult(BaseModel):
     chat_type: AgentChatType
     tool_plans: list[AgentToolPlan]
     intent: str | None = None
+    capability: str | None = None
     direct_answer: str | None = None
     planner_error: str | None = None
 
@@ -54,5 +55,6 @@ class AgentRunResult(BaseModel):
     answer: str
     tool_results: list[AgentToolExecutionResult]
     intent: str | None = None
+    capability: str | None = None
     is_direct_response: bool = False
     planner_error: str | None = None
