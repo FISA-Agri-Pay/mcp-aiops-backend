@@ -198,6 +198,57 @@ def test_rule_based_planner_selects_overdue_tools_for_admin_risk_question() -> N
     ]
 
 
+def test_rule_based_planner_selects_ops_tools_for_admin_action_priority() -> None:
+    planner = RuleBasedAgentPlanner()
+
+    plan = planner.plan(
+        chat_type="admin_copilot",
+        message="관리자 Action 우선순위 정리해줘",
+        user_id="admin-1",
+    )
+
+    assert plan.intent == "action_priority"
+    assert [tool.tool_name for tool in plan.tool_plans] == [
+        "get_bnpl_summary",
+        "get_credit_review_queue",
+        "query_multi_cluster_prometheus",
+        "get_scaling_summary",
+        "get_overdue_summary",
+        "search_overdue_users",
+    ]
+
+
+def test_llm_planner_falls_back_when_supported_admin_request_skips_tools() -> None:
+    planner = LlmAgentPlanner(
+        llm_client=FakePlannerLlmClient(
+            {
+                "intent": "unsupported",
+                "requires_tools": False,
+                "direct_answer": "현재 Admin Copilot에서 해당 분석에 필요한 운영 데이터를 조회할 수 없습니다.",
+                "tool_plans": [],
+            }
+        )
+    )
+
+    plan = planner.plan(
+        chat_type="admin_copilot",
+        message="관리자 Action 우선순위 정리해줘",
+        user_id="admin-1",
+    )
+
+    assert plan.provider_name == "llm_with_rule_fallback"
+    assert plan.intent == "action_priority"
+    assert "skipped tools" in str(plan.planner_error)
+    assert [tool.tool_name for tool in plan.tool_plans] == [
+        "get_bnpl_summary",
+        "get_credit_review_queue",
+        "query_multi_cluster_prometheus",
+        "get_scaling_summary",
+        "get_overdue_summary",
+        "search_overdue_users",
+    ]
+
+
 def test_dispatcher_executes_read_tool_and_masks_payload() -> None:
     dispatcher = McpToolDispatcher()
 

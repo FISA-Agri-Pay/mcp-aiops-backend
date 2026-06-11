@@ -109,6 +109,7 @@ AdminCopilotIntent = Literal[
     "snapshot",
     "bnpl_summary",
     "risk_overview",
+    "action_priority",
 ]
 FarmerBnplIntent = Literal[
     "greeting",
@@ -356,7 +357,7 @@ def plan_admin_copilot_tools(*, message: str) -> list[AgentToolPlan]:
     review_limit = extract_requested_limit(message, default=10)
     plans: list[AgentToolPlan] = []
 
-    if intent in {"bnpl_summary", "risk_overview"}:
+    if intent in {"bnpl_summary", "risk_overview", "action_priority"}:
         plans.append(
             AgentToolPlan(
                 server_name="admin-riskops-mcp",
@@ -366,7 +367,7 @@ def plan_admin_copilot_tools(*, message: str) -> list[AgentToolPlan]:
             )
         )
 
-    if intent in {"credit_review", "risk_overview"}:
+    if intent in {"credit_review", "risk_overview", "action_priority"}:
         plans.append(
             AgentToolPlan(
                 server_name="admin-riskops-mcp",
@@ -376,7 +377,7 @@ def plan_admin_copilot_tools(*, message: str) -> list[AgentToolPlan]:
             )
         )
 
-    if intent in {"infra_scaling", "risk_overview"}:
+    if intent in {"infra_scaling", "risk_overview", "action_priority"}:
         plans.extend(
             [
                 AgentToolPlan(
@@ -394,7 +395,7 @@ def plan_admin_copilot_tools(*, message: str) -> list[AgentToolPlan]:
             ]
         )
 
-    if intent in {"overdue_risk", "risk_overview"}:
+    if intent in {"overdue_risk", "risk_overview", "action_priority"}:
         plans.extend(
             [
                 AgentToolPlan(
@@ -478,6 +479,12 @@ def classify_admin_copilot_intent(message: str) -> AdminCopilotIntent:
         "snapshot",
         "스냅샷",
         "근거",
+        "action",
+        "액션",
+        "조치",
+        "우선순위",
+        "우선 순위",
+        "priority",
     )
     greeting_keywords = ("안녕", "안녕하세요", "하이", "hello", "hi", "hey")
     if compact in greeting_keywords or (
@@ -507,6 +514,23 @@ def classify_admin_copilot_intent(message: str) -> AdminCopilotIntent:
     )
     if any(keyword in normalized for keyword in unsupported_keywords):
         return "unsupported"
+
+    if any(
+        keyword in normalized
+        for keyword in (
+            "action",
+            "액션",
+            "조치",
+            "해야 할 일",
+            "할 일",
+            "우선순위",
+            "우선 순위",
+            "priority",
+            "recommendation",
+            "권장",
+        )
+    ):
+        return "action_priority"
 
     has_risk_keyword = any(keyword in normalized for keyword in ("risk", "위험", "리스크"))
     has_scaling_keyword = any(
@@ -556,6 +580,8 @@ def build_llm_planner_prompt() -> str:
         "You are a tool-planning layer for a Korean AIOps BNPL chatbot. "
         "Return only JSON. Decide whether the user needs MCP tools or a direct chat answer. "
         "Use only tools listed in available_tools. Do not invent tools. "
+        "Admin requests for action priority, next actions, recommendations, or operational triage "
+        "are supported data requests: use BNPL summary, overdue, credit review, and infra/scaling tools. "
         "For greeting, thanks, help, or unsupported requests, set requires_tools=false, "
         "tool_plans=[], and provide a Korean direct_answer. "
         "For supported data requests, set requires_tools=true and provide the minimal tool_plans. "
@@ -628,6 +654,13 @@ def build_validated_llm_plan(
     raw_tool_plans = payload.get("tool_plans")
 
     if not requires_tools:
+        if fallback.tool_plans:
+            return fallback.model_copy(
+                update={
+                    "provider_name": "llm_with_rule_fallback",
+                    "planner_error": "LLM planner skipped tools for a supported data request.",
+                }
+            )
         return AgentPlanResult(
             provider_name="llm",
             chat_type=chat_type,
