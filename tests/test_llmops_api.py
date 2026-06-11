@@ -1,7 +1,15 @@
 from fastapi.testclient import TestClient
 
+from aiops_platform.agent.orchestrator import AgentOrchestrator
+from aiops_platform.agent.planner import RuleBasedAgentPlanner
 from aiops_platform.llmops.client import FakeLlmClient
-from aiops_platform.llmops.service import LlmOpsService, LlmOpsValidationError
+from aiops_platform.llmops.service import (
+    DEFAULT_PROMPTS,
+    OUTPUT_SCHEMA,
+    LlmOpsService,
+    LlmOpsValidationError,
+)
+from aiops_platform.llmops.validation import validate_output_payload
 from aiops_platform.main import create_app
 from aiops_platform.orchestration.service import OrchestrationService
 from tests.seed_constants import FARMER_1_ID
@@ -11,7 +19,10 @@ def create_llmops_test_client() -> TestClient:
     app = create_app()
     llmops_service = LlmOpsService(llm_client=FakeLlmClient())
     app.state.llmops_service = llmops_service
-    app.state.orchestration_service = OrchestrationService(llmops_service=llmops_service)
+    app.state.orchestration_service = OrchestrationService(
+        agent_orchestrator=AgentOrchestrator(planner=RuleBasedAgentPlanner()),
+        llmops_service=llmops_service,
+    )
     return TestClient(app)
 
 
@@ -66,6 +77,27 @@ def test_farmer_agent_records_llm_run_and_prompt_version() -> None:
     assert matched_snapshot["session_id"] == answer["session"]["session_id"]
     assert matched_snapshot["llm_run_id"] == answer["llm_run"]["llm_run_id"]
     assert matched_snapshot["payload"]["llm_run_id"] == answer["llm_run"]["llm_run_id"]
+
+
+def test_agent_answer_schema_rejects_structured_answer_object() -> None:
+    validation = validate_output_payload(
+        {"answer": {"summary": "structured objects should not reach chat content"}},
+        OUTPUT_SCHEMA,
+    )
+
+    assert validation.is_valid is False
+    assert "answer must be a string." in validation.errors
+
+
+def test_admin_copilot_prompt_requires_readable_plain_text_sections() -> None:
+    _, template = DEFAULT_PROMPTS["admin_copilot"]
+
+    assert "plain text" in template
+    assert "긴 단일 문단" in template
+    assert "요약, 주요 지표, 판단, 우선 조치, 데이터 한계 5개 섹션" in template
+    assert "섹션 사이는 빈 줄로 구분" in template
+    assert "'- ' 불릿" in template
+    assert "smalltalk, help, unsupported이면 섹션 형식을 강제하지 않고" in template
 
 
 def test_llm_runs_can_be_filtered_for_client_history() -> None:

@@ -6,6 +6,10 @@ from typing import Any, get_args
 from uuid import uuid4
 
 from aiops_platform.agent.orchestrator import AgentOrchestrator
+from aiops_platform.agent.planner import (
+    classify_admin_copilot_intent,
+    classify_farmer_bnpl_intent,
+)
 from aiops_platform.agent.schemas import AgentToolExecutionResult
 from aiops_platform.llmops.schemas import LlmRunResult
 from aiops_platform.llmops.service import LlmOpsService
@@ -264,58 +268,95 @@ class OrchestrationService:
             entity_id=session.session_id,
             status="RUNNING",
         )
+        assistant_metadata: dict[str, Any] = {}
         try:
             agent_run = self._agent_orchestrator.run(
                 chat_type=session.chat_type,
                 message=message,
                 user_id=user_id,
             )
-            planned_tool_results = [
-                self._build_planned_tool(
-                    server_name=tool_result.server_name,
-                    tool_name=tool_result.tool_name,
-                )
-                for tool_result in agent_run.tool_results
-            ]
-            tool_results = [
-                self._persist_agent_tool_result(
-                    tool_result=tool_result,
+            if agent_run.is_direct_response:
+                planned_tool_results = []
+                tool_results = []
+                llm_run = None
+                job = self._finish_job(job.job_id, tool_results)
+                assistant_content = agent_run.answer
+                ui_cards = []
+                ui_actions = []
+                assistant_metadata = {
+                    "intent": agent_run.intent,
+                    "capability": agent_run.capability,
+                    "planner_provider": agent_run.provider_name,
+                    "planner_error": agent_run.planner_error,
+                    "response_source": "direct",
+                    "fallback_used": False,
+                    "llm_run_status": None,
+                    "llm_last_error": None,
+                }
+            else:
+                planned_tool_results = [
+                    self._build_planned_tool(
+                        server_name=tool_result.server_name,
+                        tool_name=tool_result.tool_name,
+                    )
+                    for tool_result in agent_run.tool_results
+                ]
+                tool_results = [
+                    self._persist_agent_tool_result(
+                        tool_result=tool_result,
+                        job_id=job.job_id,
+                        session_id=session.session_id,
+                    )
+                    for tool_result in agent_run.tool_results
+                ]
+                llm_run = self._record_llm_run(
+                    chat_type=session.chat_type,
+                    message=message,
+                    user_id=user_id,
+                    tool_results=tool_results,
                     job_id=job.job_id,
                     session_id=session.session_id,
+                    capability=agent_run.capability,
                 )
-                for tool_result in agent_run.tool_results
-            ]
-            llm_run = self._record_llm_run(
-                chat_type=session.chat_type,
-                message=message,
-                user_id=user_id,
-                tool_results=tool_results,
-                job_id=job.job_id,
-                session_id=session.session_id,
-            )
-            self._attach_llm_run_to_tool_calls(
-                job_id=job.job_id,
-                session_id=session.session_id,
-                llm_run_id=llm_run.llm_run_id,
-            )
-            self._create_agent_snapshot(
-                chat_type=session.chat_type,
-                job_id=job.job_id,
-                session_id=session.session_id,
-                llm_run=llm_run,
-                tool_results=tool_results,
-            )
-            self._create_approval_requests(
-                user_id=user_id,
-                tool_results=tool_results,
-            )
-            job = self._finish_job(job.job_id, tool_results)
-            assistant_content = resolve_assistant_content(
-                llm_run.masked_output,
-                agent_run.answer,
-            )
-            ui_cards = build_chat_ui_cards(session.chat_type, message, tool_results)
-            ui_actions = build_chat_ui_actions(ui_cards)
+                self._attach_llm_run_to_tool_calls(
+                    job_id=job.job_id,
+                    session_id=session.session_id,
+                    llm_run_id=llm_run.llm_run_id,
+                )
+                self._create_agent_snapshot(
+                    chat_type=session.chat_type,
+                    job_id=job.job_id,
+                    session_id=session.session_id,
+                    llm_run=llm_run,
+                    tool_results=tool_results,
+                )
+                self._create_approval_requests(
+                    user_id=user_id,
+                    tool_results=tool_results,
+                )
+                job = self._finish_job(job.job_id, tool_results)
+                assistant_content = resolve_assistant_content(
+                    llm_run.masked_output,
+                    agent_run.answer,
+                    chat_type=session.chat_type,
+                    llm_run_status=llm_run.run_status,
+                    tool_results=tool_results,
+                )
+                ui_cards = build_chat_ui_cards(session.chat_type, message, tool_results)
+                ui_actions = build_chat_ui_actions(ui_cards)
+                assistant_metadata = {
+                    "intent": agent_run.intent,
+                    "capability": agent_run.capability,
+                    "planner_provider": agent_run.provider_name,
+                    "planner_error": agent_run.planner_error,
+                    "response_source": (
+                        "llm" if llm_run.run_status == "SUCCESS" else "fallback"
+                    ),
+                    "fallback_used": llm_run.run_status != "SUCCESS",
+                    "llm_run_id": llm_run.llm_run_id,
+                    "llm_run_status": llm_run.run_status,
+                    "llm_last_error": llm_run.last_error,
+                }
         except Exception as exc:
             logger.exception("Agent orchestration failed for job %s.", job.job_id)
             planned_tool_results = []
@@ -329,6 +370,12 @@ class OrchestrationService:
             assistant_content = "Agent execution failed before MCP tool results were finalized."
             ui_cards = []
             ui_actions = []
+            assistant_metadata = {
+                "response_source": "fallback",
+                "fallback_used": True,
+                "llm_run_status": None,
+                "llm_last_error": None,
+            }
         assistant_message = self._append_message(
             session_id=session.session_id,
             role="ASSISTANT",
@@ -340,6 +387,7 @@ class OrchestrationService:
             ],
             ui_cards=ui_cards,
             ui_actions=ui_actions,
+            metadata=assistant_metadata,
         )
         self._touch_session(session.session_id)
         updated_session = self.get_chat_session(session.session_id, chat_type=session.chat_type)
@@ -364,6 +412,7 @@ class OrchestrationService:
         mcp_tool_call_ids: list[str] | None = None,
         ui_cards: list[dict[str, Any]] | None = None,
         ui_actions: list[dict[str, Any]] | None = None,
+        metadata: dict[str, Any] | None = None,
     ) -> ChatMessageResult:
         return self._repository.append_message(
             session_id=session_id,
@@ -372,6 +421,7 @@ class OrchestrationService:
             mcp_tool_call_ids=mcp_tool_call_ids or [],
             ui_cards=ui_cards or [],
             ui_actions=ui_actions or [],
+            metadata=metadata or {},
         )
 
     def _record_llm_run(
@@ -383,6 +433,7 @@ class OrchestrationService:
         tool_results: list[AgentToolExecutionResult],
         job_id: str,
         session_id: str,
+        capability: str | None = None,
     ) -> LlmRunResult:
         return self._llmops_service.run_agent_completion(
             chat_type=chat_type,
@@ -391,6 +442,7 @@ class OrchestrationService:
             tool_results=tool_results,
             job_id=job_id,
             session_id=session_id,
+            capability=capability,
         )
 
     def _attach_llm_run_to_tool_calls(
@@ -826,10 +878,156 @@ def has_card_type(cards: list[dict[str, Any]], card_type: str) -> bool:
 def resolve_assistant_content(
     masked_output: dict[str, object],
     fallback_answer: str,
+    *,
+    chat_type: ChatType = "farmer_bnpl",
+    llm_run_status: str = "SUCCESS",
+    tool_results: list[AgentToolExecutionResult] | None = None,
 ) -> str:
+    if llm_run_status != "SUCCESS":
+        if chat_type == "admin_copilot":
+            return build_admin_copilot_llm_failure_fallback(tool_results or [])
+        return build_farmer_bnpl_llm_failure_fallback(tool_results or [])
     if "answer" in masked_output:
         return str(masked_output["answer"])
     return fallback_answer
+
+
+def build_direct_chat_response(
+    *,
+    chat_type: ChatType,
+    message: str,
+) -> dict[str, str] | None:
+    if chat_type == "admin_copilot":
+        return build_direct_admin_copilot_response(message)
+    if chat_type == "farmer_bnpl":
+        return build_direct_farmer_bnpl_response(message)
+    return None
+
+
+def build_direct_admin_copilot_response(message: str) -> dict[str, str] | None:
+    intent = classify_admin_copilot_intent(message)
+    responses = {
+        "greeting": (
+            "안녕하세요. BNPL 현황, 연체 위험 고객, 심사 대기 건, "
+            "인프라/스케일링 상태를 도와드릴 수 있습니다."
+        ),
+        "thanks": "도움이 필요하면 언제든 BNPL 운영 현황이나 리스크 상태를 물어봐 주세요.",
+        "help": (
+            "BNPL 이용 현황, 연체 위험 고객, 심사 대기 건, "
+            "인프라/스케일링 상태를 조회할 수 있습니다."
+        ),
+        "unsupported": (
+            "현재 Admin Copilot에서 해당 분석에 필요한 운영 데이터를 조회할 수 없습니다. "
+            "BNPL 현황, 연체 위험 고객, 심사 대기 건, 인프라/스케일링 상태는 확인할 수 있습니다."
+        ),
+    }
+    answer = responses.get(intent)
+    return {"intent": intent, "answer": answer} if answer is not None else None
+
+
+def build_direct_farmer_bnpl_response(message: str) -> dict[str, str] | None:
+    intent = classify_farmer_bnpl_intent(message)
+    responses = {
+        "greeting": (
+            "안녕하세요. 외상 한도, 상환 일정, 배송 현황, 농자재 추천을 도와드릴 수 있어요."
+        ),
+        "thanks": "언제든 외상 한도, 상환 일정, 배송 현황이 궁금하면 물어봐 주세요.",
+        "help": (
+            "외상 한도 확인, 상환/이자 일정, 연체 여부, 배송 현황, "
+            "비료와 농자재 추천을 도와드릴 수 있어요."
+        ),
+        "unsupported": (
+            "현재 이 챗봇에서는 외상 한도, 상환 일정, 배송 현황, "
+            "농자재 추천과 결제 준비를 도와드릴 수 있어요."
+        ),
+    }
+    answer = responses.get(intent)
+    return {"intent": intent, "answer": answer} if answer is not None else None
+
+
+def build_admin_copilot_llm_failure_fallback(
+    tool_results: list[AgentToolExecutionResult],
+) -> str:
+    metrics: list[str] = []
+    bnpl_summary = find_tool_payload(tool_results, "get_bnpl_summary")
+    overdue_summary = find_tool_payload(tool_results, "get_overdue_summary")
+    if bnpl_summary:
+        active_users = bnpl_summary.get("active_users")
+        used_amount = bnpl_summary.get("used_amount")
+        if active_users is not None:
+            metrics.append(f"BNPL 활성 사용자 {active_users}명")
+        if used_amount is not None:
+            metrics.append(f"사용 금액 {format_krw(used_amount)}")
+    if overdue_summary:
+        overdue_users = overdue_summary.get("overdue_users")
+        overdue_amount = overdue_summary.get("overdue_amount")
+        if overdue_users is not None:
+            metrics.append(f"연체 고객 {overdue_users}명")
+        if overdue_amount is not None:
+            metrics.append(f"연체 금액 {format_krw(overdue_amount)}")
+
+    if metrics:
+        return (
+            "운영 데이터 조회는 완료했지만 AI 요약 생성에 실패했습니다. "
+            f"현재 확인된 주요 지표는 {', '.join(metrics)}입니다."
+        )
+    return "운영 데이터를 조회했지만 AI 요약 생성에 실패했습니다. 잠시 후 다시 시도해주세요."
+
+
+def build_farmer_bnpl_llm_failure_fallback(
+    tool_results: list[AgentToolExecutionResult],
+) -> str:
+    credit_payload = find_tool_payload(tool_results, "get_user_credit_limit")
+    repayment_card = build_repayment_summary_card(tool_results)
+    delivery_payload = find_tool_payload(tool_results, "get_latest_order_delivery_status")
+    recommendation_payload = find_tool_payload(tool_results, "search_lowest_price_fertilizer")
+    if not recommendation_payload:
+        recommendation_payload = find_tool_payload(tool_results, "search_products")
+
+    parts: list[str] = []
+    if credit_payload:
+        available_limit = credit_payload.get("available_limit")
+        if available_limit is not None:
+            parts.append(f"사용 가능한 외상 한도는 {format_krw(available_limit)}입니다")
+    if repayment_card:
+        next_due_date = repayment_card.get("next_due_date")
+        interest_due = repayment_card.get("interest_due")
+        if next_due_date:
+            parts.append(f"다음 상환일은 {next_due_date}입니다")
+        if interest_due:
+            parts.append(f"예정 이자는 {format_krw(interest_due)}입니다")
+        if repayment_card.get("is_overdue"):
+            parts.append(
+                f"현재 연체 금액은 {format_krw(repayment_card.get('overdue_amount'))}입니다"
+            )
+    if delivery_payload:
+        status = delivery_payload.get("delivery_status")
+        item_name = delivery_payload.get("item_name") or "최근 주문"
+        if status:
+            parts.append(f"{item_name} 배송 상태는 {status}입니다")
+    recommendation_items = recommendation_payload.get("items") if recommendation_payload else None
+    if isinstance(recommendation_items, list) and recommendation_items:
+        product = recommendation_items[0]
+        if isinstance(product, dict):
+            name = product.get("name")
+            price = product.get("unit_price")
+            if name and price is not None:
+                parts.append(f"추천 상품은 {name}, 가격은 {format_krw(price)}입니다")
+
+    if parts:
+        return (
+            "조회는 완료했지만 AI 답변 생성에 실패했습니다. "
+            f"확인된 내용은 {'; '.join(parts)}."
+        )
+    return "요청 처리 중 AI 답변 생성에 실패했습니다. 잠시 후 다시 시도해주세요."
+
+
+def format_krw(value: object) -> str:
+    try:
+        amount = int(value)
+    except (TypeError, ValueError):
+        return str(value)
+    return f"{amount:,} KRW"
 
 
 def current_timestamp() -> str:

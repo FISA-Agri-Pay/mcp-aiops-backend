@@ -1,5 +1,7 @@
 from fastapi.testclient import TestClient
 
+from aiops_platform.agent.orchestrator import AgentOrchestrator
+from aiops_platform.agent.planner import RuleBasedAgentPlanner
 from aiops_platform.llmops.client import FakeLlmClient
 from aiops_platform.llmops.service import LlmOpsService
 from aiops_platform.main import create_app
@@ -10,6 +12,7 @@ from tests.seed_constants import FARMER_1_ID
 def create_contract_test_client() -> TestClient:
     app = create_app()
     app.state.orchestration_service = OrchestrationService(
+        agent_orchestrator=AgentOrchestrator(planner=RuleBasedAgentPlanner()),
         llmops_service=LlmOpsService(llm_client=FakeLlmClient())
     )
     return TestClient(app)

@@ -62,6 +62,7 @@ class ChatMessageResult(BaseModel):
     mcp_tool_call_ids: list[str] = Field(default_factory=list)
     ui_cards: list[dict[str, Any]] = Field(default_factory=list)
     ui_actions: list[dict[str, Any]] = Field(default_factory=list)
+    metadata: dict[str, Any] = Field(default_factory=dict)
 
 
 class PlannedToolResult(BaseModel):

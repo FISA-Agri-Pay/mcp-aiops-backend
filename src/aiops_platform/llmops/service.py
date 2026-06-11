@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from typing import Any, get_args
 from uuid import UUID
 
@@ -42,6 +43,7 @@ class LlmOpsValidationError(ValueError):
 
 
 MAX_LIST_LIMIT = 100
+logger = logging.getLogger(__name__)
 DEFAULT_PROMPTS = {
     "farmer_bnpl": (
         "farmer_bnpl_chat",
@@ -51,9 +53,28 @@ DEFAULT_PROMPTS = {
         "admin_copilot",
         (
             "관리자 RiskOps Copilot으로서 MCP Tool 결과만 근거로 한국어 답변을 작성한다. "
-            "BNPL 심사, 연체 위험, 운영/스케일링 근거를 요약하고 주요 수치, 위험 신호, "
-            "우선순위가 높은 관리자 Action을 포함한다. 확인되지 않은 내용은 "
-            "추정으로 단정하지 않는다."
+            "반드시 JSON object를 반환하되, answer 필드는 한국어 자연어 문자열이어야 한다. "
+            "answer를 object, array, dict, markdown AST로 반환하지 않는다. "
+            "운영자가 바로 판단할 수 있도록 핵심 요약, 근거 수치, 위험 신호, 원인 후보, "
+            "우선순위가 높은 다음 조치를 구분해 작성한다. 단순 수치 나열로 끝내지 말고 "
+            "무엇을 봐야 하는지, 지금 조치가 필요한지, 추가 확인이 필요한 데이터를 함께 제시한다. "
+            "answer는 프론트가 plain text로 렌더링해도 읽히도록 짧은 섹션과 줄바꿈을 포함한다. "
+            "굵게 표시, 표, 긴 단일 문단은 사용하지 않는다. "
+            "운영 데이터 기반 답변은 반드시 요약, 주요 지표, 판단, 우선 조치, 데이터 한계 "
+            "5개 섹션 제목만 이 순서대로 사용한다. "
+            "각 섹션 제목은 한 줄로 쓰고, 섹션 사이는 빈 줄로 구분한다. "
+            "각 섹션의 내용은 '- ' 불릿으로 작성하되 섹션당 1~4개로 제한한다. "
+            "단, input의 capability가 smalltalk, help, unsupported이면 "
+            "섹션 형식을 강제하지 않고 짧게 답한다. "
+            "BNPL 심사, 연체 위험, 운영/스케일링 근거를 다룰 때는 "
+            "영향 범위와 관리 포인트를 포함한다. "
+            "input의 capability가 ops_action_prioritization이면 즉시 확인할 항목, 오늘 우선 조치, "
+            "후속 모니터링, 데이터 한계를 나눠서 운영자가 바로 실행할 수 있게 작성한다. "
+            "확인되지 않은 내용은 추정으로 단정하지 않는다. "
+            "사용자가 오늘, 최근, 이번 주처럼 기간을 물어도 "
+            "Tool 결과에 해당 기간 필드가 없으면 그 기간의 데이터라고 단정하지 말고 "
+            "'현재 조회 가능한 요약 기준'이라고 명시한다. 지원하지 않는 분석이나 "
+            "Tool 결과에 없는 항목은 데이터 없음으로 설명한다."
         ),
     ),
     "rca": (
@@ -68,6 +89,9 @@ DEFAULT_PROMPTS = {
 OUTPUT_SCHEMA = {
     "type": "object",
     "required": ["answer"],
+    "properties": {
+        "answer": {"type": "string"},
+    },
 }
 OPS_REPORT_OUTPUT_SCHEMA = {
     "type": "object",
@@ -134,6 +158,7 @@ class LlmOpsService:
         tool_results: list[AgentToolExecutionResult],
         job_id: str | None = None,
         session_id: str | None = None,
+        capability: str | None = None,
     ) -> LlmRunResult:
         scope: PromptScope = "farmer_bnpl" if chat_type == "farmer_bnpl" else "admin_copilot"
         prompt = self.ensure_prompt_version(scope=scope)
@@ -141,6 +166,7 @@ class LlmOpsService:
             "chat_type": chat_type,
             "message": message,
             "user_id": user_id,
+            "capability": capability,
             "tool_results": [
                 result.model_dump(mode="json", exclude={"masked_request_payload"})
                 for result in tool_results
@@ -174,6 +200,13 @@ class LlmOpsService:
                 last_error=last_error,
             )
         except Exception as exc:
+            last_error = format_llm_exception(exc)
+            logger.exception(
+                "LLM agent completion failed provider=%s model=%s prompt_key=%s.",
+                self._llm_client.provider,
+                self._llm_client.model,
+                prompt.prompt_key,
+            )
             return self._repository.record_llm_run(
                 provider=self._llm_client.provider,
                 model=self._llm_client.model,
@@ -186,7 +219,7 @@ class LlmOpsService:
                 validation_errors=[],
                 job_id=job_id,
                 session_id=session_id,
-                last_error=exc.__class__.__name__,
+                last_error=last_error,
             )
 
     def run_rca_completion(
@@ -241,6 +274,13 @@ class LlmOpsService:
                 last_error=last_error,
             )
         except Exception as exc:
+            last_error = format_llm_exception(exc)
+            logger.exception(
+                "RCA LLM completion failed provider=%s model=%s prompt_key=%s.",
+                self._llm_client.provider,
+                self._llm_client.model,
+                prompt.prompt_key,
+            )
             return self._repository.record_llm_run(
                 provider=self._llm_client.provider,
                 model=self._llm_client.model,
@@ -253,7 +293,7 @@ class LlmOpsService:
                 validation_errors=[],
                 job_id=job_id,
                 session_id=None,
-                last_error=exc.__class__.__name__,
+                last_error=last_error,
             )
 
     def run_ops_report_completion(
@@ -338,6 +378,13 @@ class LlmOpsService:
                 last_error=last_error,
             )
         except Exception as exc:
+            last_error = format_llm_exception(exc)
+            logger.exception(
+                "Ops report LLM completion failed provider=%s model=%s prompt_key=%s.",
+                self._llm_client.provider,
+                self._llm_client.model,
+                prompt.prompt_key,
+            )
             return self._repository.record_llm_run(
                 provider=self._llm_client.provider,
                 model=self._llm_client.model,
@@ -350,7 +397,7 @@ class LlmOpsService:
                 validation_errors=[],
                 job_id=job_id,
                 session_id=None,
-                last_error=exc.__class__.__name__,
+                last_error=last_error,
             )
 
     def get_llm_run(self, llm_run_id: str) -> LlmRunResult:
@@ -576,6 +623,16 @@ def normalize_notification_channel(value: str) -> str:
     if normalized in {"SLACK", "EMAIL", "WEBHOOK", "DASHBOARD"}:
         return normalized
     raise LlmOpsValidationError("notification channel is invalid.")
+
+
+def format_llm_exception(exc: Exception) -> str:
+    message = str(exc).strip()
+    if not message:
+        message = exc.__class__.__name__
+    formatted = f"{exc.__class__.__name__}: {message}"
+    if len(formatted) <= 1000:
+        return formatted
+    return f"{formatted[:1000]}..."
 
 
 def is_uuid(value: str | None) -> bool:

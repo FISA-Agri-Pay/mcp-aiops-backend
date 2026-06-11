@@ -59,6 +59,7 @@ LLM_PROVIDER=openai
 LLM_MODEL=gpt-4o-mini
 LLM_API_KEY=...
 LLM_API_BASE_URL=https://api.openai.com/v1
+LLM_MAX_TOKENS=2000
 ```
 
 Claude/Anthropic 계열은 아래처럼 설정합니다.
@@ -189,7 +190,7 @@ GitHub Actions에 필요한 값은 아래처럼 설정합니다.
 | `ECR_REPOSITORY` | Variable 또는 Secret | ECR 리포지토리 이름 |
 | `EKS_CLUSTER_NAME` | Variable 또는 Secret | EKS 클러스터 이름 |
 | `DATABASE_URL` | Secret | 운영 PostgreSQL/RDS 연결 문자열 |
-| `LLM_API_KEY` | Secret | Groq 외부 LLM API key. `infra/k8s/configmap.yaml`은 `LLM_PROVIDER=groq`, `LLM_MODEL=qwen/qwen3-32b`, `LLM_API_BASE_URL=https://api.groq.com/openai/v1` 기준 |
+| `LLM_API_KEY` | Secret | 외부 LLM API key. `infra/k8s/configmap.yaml`은 기본적으로 `LLM_PROVIDER=openai`, `LLM_MODEL=gpt-4o-mini`, `LLM_API_BASE_URL=https://api.openai.com/v1` 기준 |
 | `ELASTICSEARCH_USERNAME` | Secret | Elasticsearch/OpenSearch 사용자명 |
 | `ELASTICSEARCH_PASSWORD` | Secret | Elasticsearch/OpenSearch 비밀번호 |
 | `SMTP_HOST` | Secret | SMTP host |
@@ -206,6 +207,14 @@ K8S_NAMESPACE=default
 K8S_DEPLOYMENT=mcp-aiops-backend
 K8S_SERVICE=mcp-aiops-backend
 K8S_SECRET_NAME=mcp-aiops-backend-secret
+```
+
+온프레 Patroni PostgreSQL HA 구성을 사용할 때는 특정 DB 노드 IP 하나가 아니라 multi-host
+URL과 `target_session_attrs=read-write`를 사용합니다. 이렇게 하면 failover 후 primary가
+바뀌어도 psycopg가 쓰기 가능한 노드를 선택합니다.
+
+```text
+DATABASE_URL=postgresql+psycopg://USER:PASSWORD@/core_db?sslmode=disable&host=192.168.100.23,10.30.4.11&port=5432,5432&target_session_attrs=read-write&connect_timeout=5
 ```
 
 배포 후 기본 확인 endpoint:
