@@ -209,6 +209,14 @@ K8S_SERVICE=mcp-aiops-backend
 K8S_SECRET_NAME=mcp-aiops-backend-secret
 ```
 
+온프레 Patroni PostgreSQL HA 구성을 사용할 때는 특정 DB 노드 IP 하나가 아니라 multi-host
+URL과 `target_session_attrs=read-write`를 사용합니다. 이렇게 하면 failover 후 primary가
+바뀌어도 psycopg가 쓰기 가능한 노드를 선택합니다.
+
+```text
+DATABASE_URL=postgresql+psycopg://USER:PASSWORD@/core_db?sslmode=disable&host=192.168.100.23,10.30.4.11&port=5432,5432&target_session_attrs=read-write&connect_timeout=5
+```
+
 배포 후 기본 확인 endpoint:
 
 ```text
