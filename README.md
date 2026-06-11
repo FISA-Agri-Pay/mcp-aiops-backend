@@ -59,7 +59,7 @@ LLM_PROVIDER=openai
 LLM_MODEL=gpt-4o-mini
 LLM_API_KEY=...
 LLM_API_BASE_URL=https://api.openai.com/v1
-LLM_MAX_TOKENS=1000
+LLM_MAX_TOKENS=2000
 ```
 
 Claude/Anthropic 계열은 아래처럼 설정합니다.
