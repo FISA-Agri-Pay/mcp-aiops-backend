@@ -20,4 +20,18 @@ def validate_output_payload(
             continue
         if field_name not in payload:
             errors.append(f"{field_name} is required.")
+    properties = schema.get("properties", {})
+    if not isinstance(properties, dict):
+        properties = {}
+    for field_name, rules in properties.items():
+        if field_name not in payload or not isinstance(rules, dict):
+            continue
+        expected_type = rules.get("type")
+        value = payload[field_name]
+        if expected_type == "string" and not isinstance(value, str):
+            errors.append(f"{field_name} must be a string.")
+        if expected_type == "array" and not isinstance(value, list):
+            errors.append(f"{field_name} must be an array.")
+        if expected_type == "object" and not isinstance(value, dict):
+            errors.append(f"{field_name} must be an object.")
     return LlmOutputValidationResult(is_valid=not errors, errors=errors)

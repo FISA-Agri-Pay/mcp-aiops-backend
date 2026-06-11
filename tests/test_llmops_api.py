@@ -1,10 +1,11 @@
 from fastapi.testclient import TestClient
 
-from aiops_platform.llmops.client import FakeLlmClient
-from aiops_platform.llmops.service import LlmOpsService, LlmOpsValidationError
-from aiops_platform.main import create_app
 from aiops_platform.agent.orchestrator import AgentOrchestrator
 from aiops_platform.agent.planner import RuleBasedAgentPlanner
+from aiops_platform.llmops.client import FakeLlmClient
+from aiops_platform.llmops.service import OUTPUT_SCHEMA, LlmOpsService, LlmOpsValidationError
+from aiops_platform.llmops.validation import validate_output_payload
+from aiops_platform.main import create_app
 from aiops_platform.orchestration.service import OrchestrationService
 from tests.seed_constants import FARMER_1_ID
 
@@ -71,6 +72,16 @@ def test_farmer_agent_records_llm_run_and_prompt_version() -> None:
     assert matched_snapshot["session_id"] == answer["session"]["session_id"]
     assert matched_snapshot["llm_run_id"] == answer["llm_run"]["llm_run_id"]
     assert matched_snapshot["payload"]["llm_run_id"] == answer["llm_run"]["llm_run_id"]
+
+
+def test_agent_answer_schema_rejects_structured_answer_object() -> None:
+    validation = validate_output_payload(
+        {"answer": {"summary": "structured objects should not reach chat content"}},
+        OUTPUT_SCHEMA,
+    )
+
+    assert validation.is_valid is False
+    assert "answer must be a string." in validation.errors
 
 
 def test_llm_runs_can_be_filtered_for_client_history() -> None:

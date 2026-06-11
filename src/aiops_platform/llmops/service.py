@@ -53,6 +53,8 @@ DEFAULT_PROMPTS = {
         "admin_copilot",
         (
             "관리자 RiskOps Copilot으로서 MCP Tool 결과만 근거로 한국어 답변을 작성한다. "
+            "반드시 JSON object를 반환하되, answer 필드는 한국어 자연어 문자열이어야 한다. "
+            "answer를 object, array, dict, markdown AST로 반환하지 않는다. "
             "운영자가 바로 판단할 수 있도록 핵심 요약, 근거 수치, 위험 신호, 원인 후보, "
             "우선순위가 높은 다음 조치를 구분해 작성한다. 단순 수치 나열로 끝내지 말고 "
             "무엇을 봐야 하는지, 지금 조치가 필요한지, 추가 확인이 필요한 데이터를 함께 제시한다. "
@@ -79,6 +81,9 @@ DEFAULT_PROMPTS = {
 OUTPUT_SCHEMA = {
     "type": "object",
     "required": ["answer"],
+    "properties": {
+        "answer": {"type": "string"},
+    },
 }
 OPS_REPORT_OUTPUT_SCHEMA = {
     "type": "object",
