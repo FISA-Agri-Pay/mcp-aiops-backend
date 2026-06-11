@@ -1015,11 +1015,20 @@ def build_farmer_bnpl_llm_failure_fallback(
                 parts.append(f"추천 상품은 {name}, 가격은 {format_krw(price)}입니다")
 
     if parts:
+        return f"조회된 내용을 기준으로 안내드릴게요. {'; '.join(parts)}."
+
+    failed_tools = [
+        result.tool_name
+        for result in tool_results
+        if McpToolCallStatus(result.call_status) != McpToolCallStatus.SUCCESS
+    ]
+    if failed_tools:
         return (
-            "조회는 완료했지만 AI 답변 생성에 실패했습니다. "
-            f"확인된 내용은 {'; '.join(parts)}."
+            "현재 필요한 정보를 모두 확인하지 못했습니다. "
+            "작물, 재배 면적, 지역, 생육 단계 중 알고 있는 내용을 알려주시면 "
+            "다시 추천을 도와드릴게요."
         )
-    return "요청 처리 중 AI 답변 생성에 실패했습니다. 잠시 후 다시 시도해주세요."
+    return "요청을 처리할 정보를 찾지 못했습니다. 잠시 후 다시 시도해주세요."
 
 
 def format_krw(value: object) -> str:

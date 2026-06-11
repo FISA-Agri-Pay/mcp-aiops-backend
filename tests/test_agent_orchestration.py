@@ -4,6 +4,7 @@ from aiops_platform.agent.planner import (
     RuleBasedAgentPlanner,
     classify_admin_copilot_capability,
     classify_admin_copilot_intent,
+    classify_farmer_bnpl_capability,
     classify_farmer_bnpl_intent,
 )
 from aiops_platform.agent.schemas import AgentToolExecutionResult, AgentToolPlan
@@ -61,6 +62,7 @@ def test_rule_based_planner_skips_farmer_tools_for_greeting() -> None:
     plan = planner.plan(chat_type="farmer_bnpl", message="안녕", user_id=FARMER_1_ID)
 
     assert classify_farmer_bnpl_intent("안녕") == "greeting"
+    assert plan.capability == "smalltalk"
     assert plan.tool_plans == []
 
 
@@ -74,6 +76,21 @@ def test_rule_based_planner_selects_farmer_credit_limit_tool() -> None:
     )
 
     assert [tool.tool_name for tool in plan.tool_plans] == ["get_user_credit_limit"]
+    assert plan.capability == "credit_limit_status"
+
+
+def test_rule_based_planner_marks_farmer_recommendation_capability() -> None:
+    planner = RuleBasedAgentPlanner()
+
+    plan = planner.plan(
+        chat_type="farmer_bnpl",
+        message="비료 추천해줘",
+        user_id=FARMER_1_ID,
+    )
+
+    assert classify_farmer_bnpl_capability("비료 추천해줘") == "fertilizer_recommendation"
+    assert plan.intent == "recommendation"
+    assert plan.capability == "fertilizer_recommendation"
 
 
 def test_rule_based_planner_selects_farmer_repayment_tools() -> None:
@@ -399,7 +416,7 @@ def test_farmer_llm_failure_returns_tool_based_fallback() -> None:
     )
 
     assert "Agent executed" not in content
-    assert "조회는 완료했지만 AI 답변 생성에 실패했습니다" in content
+    assert "조회된 내용을 기준으로 안내드릴게요" in content
     assert "2,550,000 KRW" in content
     assert "Organic 20kg fertilizer" in content
 

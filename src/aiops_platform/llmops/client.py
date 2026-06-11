@@ -479,10 +479,10 @@ def excerpt_text(value: str, *, limit: int = 500) -> str:
 def build_fake_answer(*, chat_type: ChatType, tool_count: int) -> str:
     if chat_type == "farmer_bnpl":
         return (
-            f"Agent executed {tool_count} MCP tool checks for the Farmer BNPL flow. "
-            "Review tool_results for credit limit, profile, recommendation, and checkout details."
+            f"요청하신 내용을 확인하기 위해 관련 정보 {tool_count}건을 조회했습니다. "
+            "외상 한도, 추천 상품, 상환 또는 배송 정보를 기준으로 안내드릴게요."
         )
     return (
-        f"Agent executed {tool_count} MCP tool checks for the Admin Copilot flow. "
-        "Review tool_results for risk, observability, and scaling evidence."
+        f"운영 판단에 필요한 데이터 {tool_count}건을 조회했습니다. "
+        "조회된 지표를 기준으로 리스크와 다음 조치를 정리하겠습니다."
     )

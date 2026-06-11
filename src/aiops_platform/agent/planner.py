@@ -29,7 +29,7 @@ class RuleBasedAgentPlanner:
         normalized_message = message.lower()
         if chat_type == "farmer_bnpl":
             intent = classify_farmer_bnpl_intent(normalized_message)
-            capability = None
+            capability = classify_farmer_bnpl_capability(normalized_message)
             tool_plans = plan_farmer_bnpl_tools(
                 message=normalized_message,
                 user_id=user_id,
@@ -145,8 +145,47 @@ FarmerBnplIntent = Literal[
     "application",
     "general_bnpl",
 ]
+FarmerBnplCapability = Literal[
+    "smalltalk",
+    "help",
+    "unsupported",
+    "credit_limit_status",
+    "repayment_guidance",
+    "delivery_status",
+    "fertilizer_recommendation",
+    "checkout_guidance",
+    "credit_application_guidance",
+    "bnpl_general_guidance",
+]
 ADMIN_COPILOT_CAPABILITY_VALUES = set(get_args(AdminCopilotCapability))
 ADMIN_DIRECT_CAPABILITIES = {"smalltalk", "help", "unsupported"}
+FARMER_BNPL_CAPABILITY_VALUES = set(get_args(FarmerBnplCapability))
+FARMER_INTENT_TO_CAPABILITY: dict[str, FarmerBnplCapability] = {
+    "greeting": "smalltalk",
+    "thanks": "smalltalk",
+    "help": "help",
+    "unsupported": "unsupported",
+    "credit_limit": "credit_limit_status",
+    "repayment": "repayment_guidance",
+    "delivery": "delivery_status",
+    "recommendation": "fertilizer_recommendation",
+    "checkout_prepare": "checkout_guidance",
+    "checkout_confirm": "checkout_guidance",
+    "application": "credit_application_guidance",
+    "general_bnpl": "bnpl_general_guidance",
+}
+FARMER_CAPABILITY_TO_INTENT: dict[str, FarmerBnplIntent] = {
+    "smalltalk": "greeting",
+    "help": "help",
+    "unsupported": "unsupported",
+    "credit_limit_status": "credit_limit",
+    "repayment_guidance": "repayment",
+    "delivery_status": "delivery",
+    "fertilizer_recommendation": "recommendation",
+    "checkout_guidance": "checkout_prepare",
+    "credit_application_guidance": "application",
+    "bnpl_general_guidance": "general_bnpl",
+}
 ADMIN_INTENT_TO_CAPABILITY: dict[str, AdminCopilotCapability] = {
     "greeting": "smalltalk",
     "thanks": "smalltalk",
@@ -652,6 +691,31 @@ def classify_admin_copilot_capability(message: str) -> AdminCopilotCapability:
     return ADMIN_INTENT_TO_CAPABILITY[intent]
 
 
+def classify_farmer_bnpl_capability(message: str) -> FarmerBnplCapability:
+    intent = classify_farmer_bnpl_intent(message)
+    return FARMER_INTENT_TO_CAPABILITY[intent]
+
+
+def normalize_farmer_capability(value: object) -> FarmerBnplCapability | None:
+    normalized = normalize_optional_string(value)
+    if normalized is None:
+        return None
+    normalized = normalized.lower().replace("-", "_")
+    if normalized in FARMER_BNPL_CAPABILITY_VALUES:
+        return normalized  # type: ignore[return-value]
+    return None
+
+
+def farmer_intent_for_capability(
+    *,
+    capability: FarmerBnplCapability,
+    fallback_intent: str | None = None,
+) -> FarmerBnplIntent:
+    if capability == "smalltalk" and fallback_intent in {"greeting", "thanks"}:
+        return fallback_intent  # type: ignore[return-value]
+    return FARMER_CAPABILITY_TO_INTENT[capability]
+
+
 def normalize_admin_capability(value: object) -> AdminCopilotCapability | None:
     normalized = normalize_optional_string(value)
     if normalized is None:
@@ -683,6 +747,9 @@ def build_llm_planner_prompt() -> str:
         "next actions, recommendations, or operational triage are ops_action_prioritization. "
         "The backend maps admin capabilities to approved MCP tool bundles, so admin data requests "
         "may set tool_plans=[] as long as capability is correct and requires_tools=true. "
+        "For farmer_bnpl, choose the capability that matches the user's main need. "
+        "Fertilizer or product recommendation requests are fertilizer_recommendation, "
+        "and credit limit questions are credit_limit_status. "
         "For greeting, thanks, help, or unsupported requests, set requires_tools=false, "
         "tool_plans=[], and provide a Korean direct_answer. "
         "For supported data requests, set requires_tools=true and provide the minimal tool_plans. "
@@ -693,6 +760,56 @@ def build_llm_planner_prompt() -> str:
 
 
 def available_capabilities_for_prompt(chat_type: ChatType) -> list[dict[str, str]]:
+    if chat_type == "farmer_bnpl":
+        return [
+            {
+                "capability": "smalltalk",
+                "description": "Greeting or thanks that does not require account data.",
+            },
+            {
+                "capability": "help",
+                "description": "Explain what the farmer chatbot can answer.",
+            },
+            {
+                "capability": "unsupported",
+                "description": "The user request has no supported farmer-facing data source.",
+            },
+            {
+                "capability": "credit_limit_status",
+                "description": (
+                    "Current BNPL credit limit, used amount, available limit, and status."
+                ),
+            },
+            {
+                "capability": "repayment_guidance",
+                "description": (
+                    "Repayment schedule, interest due, overdue status, and payment guidance."
+                ),
+            },
+            {
+                "capability": "delivery_status",
+                "description": "Latest order and delivery status.",
+            },
+            {
+                "capability": "fertilizer_recommendation",
+                "description": (
+                    "Fertilizer or farming material recommendation using profile, "
+                    "advisory, product, and BNPL eligibility evidence."
+                ),
+            },
+            {
+                "capability": "checkout_guidance",
+                "description": "Prepare or confirm BNPL checkout with user confirmation policy.",
+            },
+            {
+                "capability": "credit_application_guidance",
+                "description": "Credit application, required documents, and review guidance.",
+            },
+            {
+                "capability": "bnpl_general_guidance",
+                "description": "General farmer-facing BNPL usage guidance.",
+            },
+        ]
     if chat_type != "admin_copilot":
         return []
     return [
@@ -835,6 +952,14 @@ def build_validated_llm_plan(
         if llm_capability is not None:
             capability = llm_capability
             intent = admin_intent_for_capability(
+                capability=llm_capability,
+                fallback_intent=intent,
+            )
+    elif chat_type == "farmer_bnpl":
+        llm_capability = normalize_farmer_capability(payload.get("capability"))
+        if llm_capability is not None:
+            capability = llm_capability
+            intent = farmer_intent_for_capability(
                 capability=llm_capability,
                 fallback_intent=intent,
             )
