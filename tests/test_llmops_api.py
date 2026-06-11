@@ -3,7 +3,12 @@ from fastapi.testclient import TestClient
 from aiops_platform.agent.orchestrator import AgentOrchestrator
 from aiops_platform.agent.planner import RuleBasedAgentPlanner
 from aiops_platform.llmops.client import FakeLlmClient
-from aiops_platform.llmops.service import OUTPUT_SCHEMA, LlmOpsService, LlmOpsValidationError
+from aiops_platform.llmops.service import (
+    DEFAULT_PROMPTS,
+    OUTPUT_SCHEMA,
+    LlmOpsService,
+    LlmOpsValidationError,
+)
 from aiops_platform.llmops.validation import validate_output_payload
 from aiops_platform.main import create_app
 from aiops_platform.orchestration.service import OrchestrationService
@@ -82,6 +87,16 @@ def test_agent_answer_schema_rejects_structured_answer_object() -> None:
 
     assert validation.is_valid is False
     assert "answer must be a string." in validation.errors
+
+
+def test_admin_copilot_prompt_requires_readable_plain_text_sections() -> None:
+    _, template = DEFAULT_PROMPTS["admin_copilot"]
+
+    assert "plain text" in template
+    assert "긴 단일 문단" in template
+    assert "요약, 주요 지표, 판단, 우선 조치, 데이터 한계" in template
+    assert "섹션 사이는 빈 줄로 구분" in template
+    assert "'- ' 불릿" in template
 
 
 def test_llm_runs_can_be_filtered_for_client_history() -> None:
