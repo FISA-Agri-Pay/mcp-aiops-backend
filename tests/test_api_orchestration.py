@@ -3,8 +3,10 @@ from fastapi.testclient import TestClient
 from sqlalchemy import text
 
 from aiops_platform.agent.schemas import AgentToolExecutionResult
+from aiops_platform.agent.orchestrator import AgentOrchestrator
+from aiops_platform.agent.planner import RuleBasedAgentPlanner
 from aiops_platform.core.database import SessionLocal
-from aiops_platform.llmops.client import FakeLlmClient
+from aiops_platform.llmops.client import FakeLlmClient, LlmClientError
 from aiops_platform.llmops.service import LlmOpsService
 from aiops_platform.main import create_app
 from aiops_platform.mcp.schemas import (
@@ -31,6 +33,20 @@ class FailingAttachRepository(SqlOrchestrationRepository):
         raise RuntimeError("link unavailable")
 
 
+class FailingLlmClient:
+    provider = "test-provider"
+    model = "test-model"
+
+    def complete(self, request):
+        raise LlmClientError(
+            "LLM provider returned HTTP 429.",
+            error_type="http_error",
+            http_status=429,
+            response_body_excerpt='{"error":"rate limit"}',
+            retryable=True,
+        )
+
+
 def build_successful_farmer_tool_result(
     *,
     tool_name: str,
@@ -55,12 +71,14 @@ def create_orchestration_test_client(
     *,
     agent_orchestrator: object | None = None,
     repository: OrchestrationRepository | None = None,
+    llm_client: object | None = None,
 ) -> TestClient:
     app = create_app()
     app.state.orchestration_service = OrchestrationService(
-        agent_orchestrator=agent_orchestrator,
+        agent_orchestrator=agent_orchestrator
+        or AgentOrchestrator(planner=RuleBasedAgentPlanner()),
         repository=repository,
-        llmops_service=LlmOpsService(llm_client=FakeLlmClient()),
+        llmops_service=LlmOpsService(llm_client=llm_client or FakeLlmClient()),
     )
     return TestClient(app)
 
@@ -284,6 +302,45 @@ def test_admin_copilot_api_creates_job_and_planned_tools() -> None:
     assert retry.json()["will_execute"] is False
     assert retry.json()["action"] == "retry"
     assert cancel.json()["action"] == "cancel"
+
+
+def test_admin_copilot_greeting_does_not_execute_tools_or_llm() -> None:
+    client = create_orchestration_test_client()
+
+    ask_response = client.post(
+        "/admin/copilot/ask",
+        json={"user_id": "admin-1", "message": "안녕"},
+    )
+
+    assert ask_response.status_code == 200
+    answer = ask_response.json()
+    assert answer["job"]["status"] == "SUCCEEDED"
+    assert answer["planned_tools"] == []
+    assert answer["tool_results"] == []
+    assert answer["llm_run"] is None
+    assert "BNPL 심사 현황" not in answer["assistant_message"]["content"]
+    assert "Agent executed" not in answer["assistant_message"]["content"]
+    assert answer["assistant_message"]["metadata"]["intent"] == "greeting"
+    assert answer["assistant_message"]["metadata"]["response_source"] == "direct"
+
+
+def test_admin_copilot_llm_failure_uses_user_safe_fallback() -> None:
+    client = create_orchestration_test_client(llm_client=FailingLlmClient())
+
+    ask_response = client.post(
+        "/admin/copilot/ask",
+        json={"user_id": "admin-1", "message": "연체 위험 고객 현황 알려줘"},
+    )
+
+    assert ask_response.status_code == 200
+    answer = ask_response.json()
+    assert answer["job"]["status"] == "SUCCEEDED"
+    assert answer["llm_run"]["run_status"] == "FAILED"
+    assert "http_status=429" in answer["llm_run"]["last_error"]
+    assert "Agent executed" not in answer["assistant_message"]["content"]
+    assert "AI 요약 생성에 실패했습니다" in answer["assistant_message"]["content"]
+    assert answer["assistant_message"]["metadata"]["fallback_used"] is True
+    assert answer["assistant_message"]["metadata"]["llm_run_status"] == "FAILED"
 
 
 def test_admin_copilot_session_list_supports_recent_chat_ui() -> None:

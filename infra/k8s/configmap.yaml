@@ -21,11 +21,11 @@ data:
   ADMIN_RISKOPS_MAX_SEARCH_LIMIT: "100"
   PREDICTION_SCALING_MAX_SEARCH_LIMIT: "100"
 
-  LLM_PROVIDER: "groq"
-  LLM_MODEL: "qwen/qwen3-32b"
-  LLM_API_BASE_URL: "https://api.groq.com/openai/v1"
+  LLM_PROVIDER: "openai"
+  LLM_MODEL: "gpt-4o-mini"
+  LLM_API_BASE_URL: "https://api.openai.com/v1"
   LLM_REQUIRE_API_KEY: "true"
-  LLM_MAX_TOKENS: "1600"
+  LLM_MAX_TOKENS: "1000"
   LLM_TIMEOUT_SECONDS: "60"
   LLM_TEMPERATURE: "0.1"
 

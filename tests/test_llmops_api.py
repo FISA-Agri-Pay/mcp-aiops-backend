@@ -3,6 +3,8 @@ from fastapi.testclient import TestClient
 from aiops_platform.llmops.client import FakeLlmClient
 from aiops_platform.llmops.service import LlmOpsService, LlmOpsValidationError
 from aiops_platform.main import create_app
+from aiops_platform.agent.orchestrator import AgentOrchestrator
+from aiops_platform.agent.planner import RuleBasedAgentPlanner
 from aiops_platform.orchestration.service import OrchestrationService
 from tests.seed_constants import FARMER_1_ID
 
@@ -11,7 +13,10 @@ def create_llmops_test_client() -> TestClient:
     app = create_app()
     llmops_service = LlmOpsService(llm_client=FakeLlmClient())
     app.state.llmops_service = llmops_service
-    app.state.orchestration_service = OrchestrationService(llmops_service=llmops_service)
+    app.state.orchestration_service = OrchestrationService(
+        agent_orchestrator=AgentOrchestrator(planner=RuleBasedAgentPlanner()),
+        llmops_service=llmops_service,
+    )
     return TestClient(app)
 
 

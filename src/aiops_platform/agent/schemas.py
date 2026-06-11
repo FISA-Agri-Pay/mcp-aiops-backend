@@ -9,7 +9,7 @@ from aiops_platform.mcp.schemas import (
     McpToolPermission,
 )
 
-AgentProviderName = Literal["rule_based"]
+AgentProviderName = Literal["rule_based", "llm", "llm_with_rule_fallback"]
 AgentChatType = Literal["farmer_bnpl", "admin_copilot"]
 
 
@@ -24,6 +24,9 @@ class AgentPlanResult(BaseModel):
     provider_name: AgentProviderName
     chat_type: AgentChatType
     tool_plans: list[AgentToolPlan]
+    intent: str | None = None
+    direct_answer: str | None = None
+    planner_error: str | None = None
 
 
 class AgentToolExecutionResult(BaseModel):
@@ -50,3 +53,6 @@ class AgentRunResult(BaseModel):
     provider_name: AgentProviderName
     answer: str
     tool_results: list[AgentToolExecutionResult]
+    intent: str | None = None
+    is_direct_response: bool = False
+    planner_error: str | None = None

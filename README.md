@@ -59,6 +59,7 @@ LLM_PROVIDER=openai
 LLM_MODEL=gpt-4o-mini
 LLM_API_KEY=...
 LLM_API_BASE_URL=https://api.openai.com/v1
+LLM_MAX_TOKENS=1000
 ```
 
 Claude/Anthropic 계열은 아래처럼 설정합니다.
@@ -189,7 +190,7 @@ GitHub Actions에 필요한 값은 아래처럼 설정합니다.
 | `ECR_REPOSITORY` | Variable 또는 Secret | ECR 리포지토리 이름 |
 | `EKS_CLUSTER_NAME` | Variable 또는 Secret | EKS 클러스터 이름 |
 | `DATABASE_URL` | Secret | 운영 PostgreSQL/RDS 연결 문자열 |
-| `LLM_API_KEY` | Secret | Groq 외부 LLM API key. `infra/k8s/configmap.yaml`은 `LLM_PROVIDER=groq`, `LLM_MODEL=qwen/qwen3-32b`, `LLM_API_BASE_URL=https://api.groq.com/openai/v1` 기준 |
+| `LLM_API_KEY` | Secret | 외부 LLM API key. `infra/k8s/configmap.yaml`은 기본적으로 `LLM_PROVIDER=openai`, `LLM_MODEL=gpt-4o-mini`, `LLM_API_BASE_URL=https://api.openai.com/v1` 기준 |
 | `ELASTICSEARCH_USERNAME` | Secret | Elasticsearch/OpenSearch 사용자명 |
 | `ELASTICSEARCH_PASSWORD` | Secret | Elasticsearch/OpenSearch 비밀번호 |
 | `SMTP_HOST` | Secret | SMTP host |

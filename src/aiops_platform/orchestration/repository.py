@@ -67,6 +67,7 @@ class OrchestrationRepository(Protocol):
         mcp_tool_call_ids: list[str] | None = None,
         ui_cards: list[dict[str, Any]] | None = None,
         ui_actions: list[dict[str, Any]] | None = None,
+        metadata: dict[str, Any] | None = None,
     ) -> ChatMessageResult:
         pass
 
@@ -337,6 +338,7 @@ class SqlOrchestrationRepository:
         mcp_tool_call_ids: list[str] | None = None,
         ui_cards: list[dict[str, Any]] | None = None,
         ui_actions: list[dict[str, Any]] | None = None,
+        metadata: dict[str, Any] | None = None,
     ) -> ChatMessageResult:
         query = text(
             """
@@ -369,6 +371,7 @@ class SqlOrchestrationRepository:
             "content": content,
             "metadata": to_json(
                 {
+                    **(metadata or {}),
                     "mcp_tool_call_ids": mcp_tool_call_ids or [],
                     "ui_cards": ui_cards or [],
                     "ui_actions": ui_actions or [],
@@ -834,6 +837,7 @@ def build_chat_message(row) -> ChatMessageResult:
         mcp_tool_call_ids=metadata.get("mcp_tool_call_ids", []),
         ui_cards=metadata.get("ui_cards", []),
         ui_actions=metadata.get("ui_actions", []),
+        metadata=metadata,
     )
 
 
