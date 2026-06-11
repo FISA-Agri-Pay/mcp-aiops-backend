@@ -62,6 +62,8 @@ DEFAULT_PROMPTS = {
             "추천 상품이나 추천 근거가 없으면 "
             "'현재 추천 가능한 상품을 찾지 못했습니다'처럼 말하고, "
             "작물, 재배 면적, 지역, 생육 단계 중 필요한 추가 정보를 물어본다. "
+            "tool이 실패해도 '요청이 실패했습니다'라고 끝내지 말고 "
+            "현재 확인 가능한 내용과 사용자가 추가로 알려줄 정보를 안내한다. "
             "input의 capability가 repayment_guidance이면 "
             "상환일, 이자, 연체 여부와 다음 행동을 안내한다. "
             "input의 capability가 delivery_status이면 최근 주문의 배송 상태를 안내한다. "
@@ -190,7 +192,7 @@ class LlmOpsService:
             "user_id": user_id,
             "capability": capability,
             "tool_results": [
-                result.model_dump(mode="json", exclude={"masked_request_payload"})
+                serialize_tool_result_for_llm(result, chat_type=chat_type)
                 for result in tool_results
             ],
         }
@@ -670,3 +672,26 @@ def has_failed_tool(tool_results: list[AgentToolExecutionResult]) -> bool:
         McpToolCallStatus(result.call_status) == McpToolCallStatus.FAILED
         for result in tool_results
     )
+
+
+def serialize_tool_result_for_llm(
+    result: AgentToolExecutionResult,
+    *,
+    chat_type: ChatType,
+) -> dict[str, Any]:
+    payload = result.model_dump(mode="json", exclude={"masked_request_payload"})
+    if chat_type != "farmer_bnpl":
+        return payload
+
+    call_status = McpToolCallStatus(result.call_status)
+    if call_status == McpToolCallStatus.SUCCESS:
+        return payload
+
+    payload["error_message"] = (
+        "현재 이 정보는 확인하지 못했습니다. 사용자에게 내부 오류 원인을 설명하지 말고 "
+        "필요한 추가 정보나 다시 시도 안내만 제공하세요."
+    )
+    payload["response_payload"] = {}
+    payload["masked_response_payload"] = {}
+    payload["failure_policy"] = "hide_internal_error_from_user"
+    return payload

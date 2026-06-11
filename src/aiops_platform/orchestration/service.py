@@ -341,6 +341,7 @@ class OrchestrationService:
                     chat_type=session.chat_type,
                     llm_run_status=llm_run.run_status,
                     tool_results=tool_results,
+                    capability=agent_run.capability,
                 )
                 ui_cards = build_chat_ui_cards(session.chat_type, message, tool_results)
                 ui_actions = build_chat_ui_actions(ui_cards)
@@ -715,9 +716,7 @@ def build_chat_ui_cards(
         if McpToolCallStatus(result.call_status) != McpToolCallStatus.SUCCESS:
             continue
         payload = result.response_payload if isinstance(result.response_payload, dict) else {}
-        if result.tool_name == "get_user_credit_limit" and (
-            wants_credit or wants_recommendation
-        ):
+        if result.tool_name == "get_user_credit_limit" and wants_credit:
             cards.append(build_credit_summary_card(payload))
         elif wants_repayment and result.tool_name in {
             "get_repayment_schedule",
@@ -736,9 +735,7 @@ def build_chat_ui_cards(
             recommendation_card = build_recommendation_card(payload)
             if recommendation_card is not None:
                 cards.append(recommendation_card)
-        elif result.tool_name == "prepare_bnpl_checkout_payload" and (
-            wants_credit or wants_recommendation
-        ):
+        elif result.tool_name == "prepare_bnpl_checkout_payload" and wants_credit:
             checkout_card = build_checkout_confirmation_card(payload)
             if checkout_card is not None:
                 cards.append(checkout_card)
@@ -882,13 +879,23 @@ def resolve_assistant_content(
     chat_type: ChatType = "farmer_bnpl",
     llm_run_status: str = "SUCCESS",
     tool_results: list[AgentToolExecutionResult] | None = None,
+    capability: str | None = None,
 ) -> str:
     if llm_run_status != "SUCCESS":
         if chat_type == "admin_copilot":
             return build_admin_copilot_llm_failure_fallback(tool_results or [])
-        return build_farmer_bnpl_llm_failure_fallback(tool_results or [])
+        return build_farmer_bnpl_llm_failure_fallback(
+            tool_results or [],
+            capability=capability,
+        )
     if "answer" in masked_output:
-        return str(masked_output["answer"])
+        answer = str(masked_output["answer"])
+        if chat_type == "farmer_bnpl" and is_unsafe_farmer_answer(answer):
+            return build_farmer_bnpl_llm_failure_fallback(
+                tool_results or [],
+                capability=capability,
+            )
+        return answer
     return fallback_answer
 
 
@@ -976,6 +983,8 @@ def build_admin_copilot_llm_failure_fallback(
 
 def build_farmer_bnpl_llm_failure_fallback(
     tool_results: list[AgentToolExecutionResult],
+    *,
+    capability: str | None = None,
 ) -> str:
     credit_payload = find_tool_payload(tool_results, "get_user_credit_limit")
     repayment_card = build_repayment_summary_card(tool_results)
@@ -1014,6 +1023,15 @@ def build_farmer_bnpl_llm_failure_fallback(
             if name and price is not None:
                 parts.append(f"추천 상품은 {name}, 가격은 {format_krw(price)}입니다")
 
+    if capability == "fertilizer_recommendation":
+        if recommendation_items:
+            return f"조회된 추천 정보를 기준으로 안내드릴게요. {'; '.join(parts)}."
+        return (
+            "현재 추천 가능한 농자재 상품을 찾지 못했습니다. "
+            "작물, 재배 면적, 지역, 생육 단계 중 알고 있는 내용을 알려주시면 "
+            "조건에 맞춰 다시 추천해드릴게요."
+        )
+
     if parts:
         return f"조회된 내용을 기준으로 안내드릴게요. {'; '.join(parts)}."
 
@@ -1029,6 +1047,30 @@ def build_farmer_bnpl_llm_failure_fallback(
             "다시 추천을 도와드릴게요."
         )
     return "요청을 처리할 정보를 찾지 못했습니다. 잠시 후 다시 시도해주세요."
+
+
+def is_unsafe_farmer_answer(answer: str) -> bool:
+    normalized = " ".join(answer.lower().split())
+    internal_markers = (
+        "programming error",
+        "validation",
+        "api error",
+        "mcp",
+        "profile retrieving",
+        "checkout payload",
+        "your current credit limit",
+        "credit limit is",
+        "please ensure",
+        "try again later",
+        "프로그래밍 오류",
+        "유효성 검사",
+        "내부 오류",
+        "api 오류",
+        "mcp",
+        "요청이 실패",
+        "실패했습니다",
+    )
+    return any(marker in normalized for marker in internal_markers)
 
 
 def format_krw(value: object) -> str:

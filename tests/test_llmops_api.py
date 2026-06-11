@@ -2,15 +2,23 @@ from fastapi.testclient import TestClient
 
 from aiops_platform.agent.orchestrator import AgentOrchestrator
 from aiops_platform.agent.planner import RuleBasedAgentPlanner
+from aiops_platform.agent.schemas import AgentToolExecutionResult
 from aiops_platform.llmops.client import FakeLlmClient, build_fake_answer
 from aiops_platform.llmops.service import (
     DEFAULT_PROMPTS,
     OUTPUT_SCHEMA,
     LlmOpsService,
     LlmOpsValidationError,
+    serialize_tool_result_for_llm,
 )
 from aiops_platform.llmops.validation import validate_output_payload
 from aiops_platform.main import create_app
+from aiops_platform.mcp.schemas import (
+    McpConfirmationPolicy,
+    McpExecutionPolicy,
+    McpToolCallStatus,
+    McpToolPermission,
+)
 from aiops_platform.orchestration.service import OrchestrationService
 from tests.seed_constants import FARMER_1_ID
 
@@ -117,6 +125,30 @@ def test_fake_farmer_answer_is_user_facing() -> None:
 
     assert "Agent executed" not in answer
     assert "관련 정보 2건을 조회했습니다" in answer
+
+
+def test_failed_farmer_tool_result_hides_internal_error_from_llm_input() -> None:
+    payload = serialize_tool_result_for_llm(
+        AgentToolExecutionResult(
+            server_name="farm-advisory-mcp",
+            tool_name="recommend_fertilizer_requirements",
+            tool_permission=McpToolPermission.READ,
+            confirmation_policy=McpConfirmationPolicy.NONE,
+            execution_policy=McpExecutionPolicy.ALLOWED,
+            call_status=McpToolCallStatus.FAILED,
+            will_execute=True,
+            requires_approval=False,
+            is_blocked=False,
+            request_payload={},
+            response_payload={"debug": "raw internal detail"},
+            error_message="ProgrammingError: validation failed",
+        ),
+        chat_type="farmer_bnpl",
+    )
+
+    assert "ProgrammingError" not in str(payload)
+    assert "validation failed" not in str(payload)
+    assert payload["failure_policy"] == "hide_internal_error_from_user"
 
 
 def test_llm_runs_can_be_filtered_for_client_history() -> None:

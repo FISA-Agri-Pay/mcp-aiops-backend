@@ -221,14 +221,40 @@ def plan_farmer_bnpl_tools(*, message: str, user_id: str) -> list[AgentToolPlan]
         return []
 
     plans: list[AgentToolPlan] = []
+    wants_bnpl_context = any(
+        keyword in message
+        for keyword in (
+            "외상",
+            "한도",
+            "잔액",
+            "bnpl",
+            "credit",
+            "limit",
+            "결제",
+            "구매",
+            "checkout",
+            "cart",
+            "장바구니",
+        )
+    )
+    is_sensor_request = any(
+        keyword in message
+        for keyword in ("sensor", "센서", "스마트팜", "smartfarm", "smart farm")
+    )
+    is_fertilizer_request = any(
+        keyword in message
+        for keyword in ("fertilizer", "비료")
+    )
+    product_only_recommendation = (
+        intent == "recommendation" and is_sensor_request and not is_fertilizer_request
+    )
 
     if intent in {
         "credit_limit",
         "checkout_prepare",
-        "recommendation",
         "application",
         "general_bnpl",
-    }:
+    } or (intent == "recommendation" and wants_bnpl_context):
         plans.append(
             AgentToolPlan(
                 server_name="farmer-bnpl-mcp",
@@ -238,7 +264,10 @@ def plan_farmer_bnpl_tools(*, message: str, user_id: str) -> list[AgentToolPlan]
             )
         )
 
-    if intent in {"recommendation", "application", "general_bnpl"}:
+    if (
+        intent in {"recommendation", "application", "general_bnpl"}
+        and not product_only_recommendation
+    ):
         plans.append(
             AgentToolPlan(
                 server_name="farmer-bnpl-mcp",
@@ -292,9 +321,7 @@ def plan_farmer_bnpl_tools(*, message: str, user_id: str) -> list[AgentToolPlan]
             )
         )
 
-    if intent == "recommendation" and any(
-        keyword in message for keyword in ("sensor", "센서", "스마트팜", "smartfarm", "smart farm")
-    ):
+    if intent == "recommendation" and is_sensor_request:
         plans.append(
             AgentToolPlan(
                 server_name="farmer-bnpl-mcp",
@@ -304,13 +331,13 @@ def plan_farmer_bnpl_tools(*, message: str, user_id: str) -> list[AgentToolPlan]
             )
         )
 
-    if intent in {"recommendation", "checkout_prepare"}:
-        default_cart_items = [
-            {
-                "product_id": str(settings.farmer_bnpl_default_checkout_product_id),
-                "quantity": settings.farmer_bnpl_default_checkout_quantity,
-            }
-        ]
+    should_prepare_checkout = intent == "checkout_prepare" or (
+        intent == "recommendation" and wants_bnpl_context
+    )
+    should_recommend_fertilizer = (
+        intent == "recommendation" and not product_only_recommendation
+    ) or intent == "checkout_prepare"
+    if should_recommend_fertilizer:
         plans.extend(
             [
                 AgentToolPlan(
@@ -325,6 +352,18 @@ def plan_farmer_bnpl_tools(*, message: str, user_id: str) -> list[AgentToolPlan]
                     request_payload={"limit": 3},
                     reason="Find low-price fertilizer candidates.",
                 ),
+            ]
+        )
+
+    if should_prepare_checkout:
+        default_cart_items = [
+            {
+                "product_id": str(settings.farmer_bnpl_default_checkout_product_id),
+                "quantity": settings.farmer_bnpl_default_checkout_quantity,
+            }
+        ]
+        plans.extend(
+            [
                 AgentToolPlan(
                     server_name="farmer-bnpl-mcp",
                     tool_name="prepare_bnpl_checkout_payload",
