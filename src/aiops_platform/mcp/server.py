@@ -28,6 +28,7 @@ from aiops_platform.mcp.schemas import (
     McpToolPermission,
 )
 from aiops_platform.prediction_scaling.service import PredictionScalingService
+from aiops_platform.topology_knowledge.service import TopologyKnowledgeService
 
 MCP_TRANSPORT_MOUNT_PATH = "/mcp-server"
 MCP_TRANSPORT_PATH = "/mcp"
@@ -123,12 +124,14 @@ def create_mcp_server(
     farm_advisory_service: FarmAdvisoryService | None = None,
     admin_riskops_service: AdminRiskOpsService | None = None,
     prediction_scaling_service: PredictionScalingService | None = None,
+    topology_knowledge_service: TopologyKnowledgeService | None = None,
 ) -> FastMCP:
     farmer_bnpl = farmer_bnpl_service or FarmerBnplService()
     farm_advisory = farm_advisory_service or FarmAdvisoryService()
     admin_riskops = admin_riskops_service or AdminRiskOpsService()
     prediction_scaling = prediction_scaling_service or PredictionScalingService()
     infraops = infraops_service or InfraOpsService.from_settings()
+    topology_knowledge = topology_knowledge_service or TopologyKnowledgeService.from_settings()
     mcp = FastMCP(
         name="aiops-platform-mcp",
         instructions="Use the registry tools to discover allowed AIOps MCP capabilities.",
@@ -1385,6 +1388,140 @@ def create_mcp_server(
             ),
         )
 
+    def call_infraops_read_tool(
+        *,
+        tool_name: str,
+        request_payload: dict[str, Any],
+        operation: Callable[[], Any],
+    ) -> dict[str, Any]:
+        started_at = perf_counter()
+        tool = _resolve_registered_tool("infraops-mcp", tool_name)
+
+        try:
+            operation_result = operation()
+            result = (
+                operation_result.model_dump(mode="json")
+                if hasattr(operation_result, "model_dump")
+                else operation_result
+            )
+        except Exception as exc:
+            _record_tool_audit(
+                audit_service=audit_service,
+                tool=tool,
+                request_payload=request_payload,
+                response_payload=None,
+                call_status=McpToolCallStatus.FAILED,
+                started_at=started_at,
+                last_error=str(exc),
+            )
+            raise
+
+        _record_tool_audit(
+            audit_service=audit_service,
+            tool=tool,
+            request_payload=request_payload,
+            response_payload=result,
+            call_status=McpToolCallStatus.SUCCESS,
+            started_at=started_at,
+        )
+        return result
+
+    @mcp.tool(
+        name="get_topology_snapshot",
+        description="Read stored on-prem/AWS topology snapshots for SRE analysis.",
+        tags={"infraops", "topology", "knowledge", "read"},
+        annotations={"readOnlyHint": True, "openWorldHint": False},
+    )
+    def get_topology_snapshot_tool(
+        environment: str = "all",
+        detail: str = "summary",
+        masking_level: str = "secrets_only",
+    ) -> dict[str, Any]:
+        request_payload = {
+            "environment": environment,
+            "detail": detail,
+            "masking_level": masking_level,
+        }
+        return call_infraops_read_tool(
+            tool_name="get_topology_snapshot",
+            request_payload=request_payload,
+            operation=lambda: topology_knowledge.get_topology_snapshot(**request_payload),
+        )
+
+    @mcp.tool(
+        name="search_topology_knowledge",
+        description="Search stored topology knowledge snapshots by keyword.",
+        tags={"infraops", "topology", "knowledge", "search", "read"},
+        annotations={"readOnlyHint": True, "openWorldHint": False},
+    )
+    def search_topology_knowledge_tool(
+        query: str,
+        environment: str = "all",
+        limit: int = 5,
+        masking_level: str = "secrets_only",
+    ) -> dict[str, Any]:
+        request_payload = {
+            "query": query,
+            "environment": environment,
+            "limit": limit,
+            "masking_level": masking_level,
+        }
+        return call_infraops_read_tool(
+            tool_name="search_topology_knowledge",
+            request_payload=request_payload,
+            operation=lambda: topology_knowledge.search_topology_knowledge(
+                **request_payload,
+            ),
+        )
+
+    @mcp.tool(
+        name="get_service_routing_path",
+        description="Read known routing paths for a service from topology knowledge.",
+        tags={"infraops", "topology", "routing", "knowledge", "read"},
+        annotations={"readOnlyHint": True, "openWorldHint": False},
+    )
+    def get_service_routing_path_tool(
+        service: str,
+        environment: str = "all",
+        masking_level: str = "secrets_only",
+    ) -> dict[str, Any]:
+        request_payload = {
+            "service": service,
+            "environment": environment,
+            "masking_level": masking_level,
+        }
+        return call_infraops_read_tool(
+            tool_name="get_service_routing_path",
+            request_payload=request_payload,
+            operation=lambda: topology_knowledge.get_service_routing_path(
+                **request_payload,
+            ),
+        )
+
+    @mcp.tool(
+        name="get_service_dependency_map",
+        description="Read known service dependencies from topology knowledge.",
+        tags={"infraops", "topology", "dependencies", "knowledge", "read"},
+        annotations={"readOnlyHint": True, "openWorldHint": False},
+    )
+    def get_service_dependency_map_tool(
+        service: str,
+        environment: str = "all",
+        masking_level: str = "secrets_only",
+    ) -> dict[str, Any]:
+        request_payload = {
+            "service": service,
+            "environment": environment,
+            "masking_level": masking_level,
+        }
+        return call_infraops_read_tool(
+            tool_name="get_service_dependency_map",
+            request_payload=request_payload,
+            operation=lambda: topology_knowledge.get_service_dependency_map(
+                **request_payload,
+            ),
+        )
+
     @mcp.tool(
         name="query_prometheus",
         description="Run an instant PromQL query through infraops-mcp.",
@@ -1552,6 +1689,90 @@ def create_mcp_server(
         return result
 
     @mcp.tool(
+        name="search_traces",
+        description="Search Tempo traces by TraceQL or service/operation filters.",
+        tags={"infraops", "tempo", "tracing", "read"},
+        annotations={"readOnlyHint": True, "openWorldHint": False},
+    )
+    def search_traces_tool(
+        traceql: str | None = None,
+        service_name: str | None = None,
+        operation_name: str | None = None,
+        start: str | None = None,
+        end: str | None = None,
+        min_duration: str | None = None,
+        max_duration: str | None = None,
+        limit: int = 20,
+    ) -> dict[str, Any]:
+        request_payload = {
+            "traceql": traceql,
+            "service_name": service_name,
+            "operation_name": operation_name,
+            "start": start,
+            "end": end,
+            "min_duration": min_duration,
+            "max_duration": max_duration,
+            "limit": limit,
+        }
+        return call_infraops_read_tool(
+            tool_name="search_traces",
+            request_payload=request_payload,
+            operation=lambda: infraops.search_traces(**request_payload),
+        )
+
+    @mcp.tool(
+        name="get_trace_by_id",
+        description="Read a Tempo trace by trace id.",
+        tags={"infraops", "tempo", "tracing", "read"},
+        annotations={"readOnlyHint": True, "openWorldHint": False},
+    )
+    def get_trace_by_id_tool(trace_id: str) -> dict[str, Any]:
+        request_payload = {"trace_id": trace_id}
+        return call_infraops_read_tool(
+            tool_name="get_trace_by_id",
+            request_payload=request_payload,
+            operation=lambda: infraops.get_trace_by_id(**request_payload),
+        )
+
+    @mcp.tool(
+        name="get_service_trace_summary",
+        description="Read a summarized Tempo trace view for one service.",
+        tags={"infraops", "tempo", "tracing", "summary", "read"},
+        annotations={"readOnlyHint": True, "openWorldHint": False},
+    )
+    def get_service_trace_summary_tool(
+        service_name: str,
+        start: str | None = None,
+        end: str | None = None,
+        limit: int = 100,
+    ) -> dict[str, Any]:
+        request_payload = {
+            "service_name": service_name,
+            "start": start,
+            "end": end,
+            "limit": limit,
+        }
+        return call_infraops_read_tool(
+            tool_name="get_service_trace_summary",
+            request_payload=request_payload,
+            operation=lambda: infraops.get_service_trace_summary(**request_payload),
+        )
+
+    @mcp.tool(
+        name="get_trace_error_spans",
+        description="Read only error spans from a Tempo trace by trace id.",
+        tags={"infraops", "tempo", "tracing", "errors", "read"},
+        annotations={"readOnlyHint": True, "openWorldHint": False},
+    )
+    def get_trace_error_spans_tool(trace_id: str) -> dict[str, Any]:
+        request_payload = {"trace_id": trace_id}
+        return call_infraops_read_tool(
+            tool_name="get_trace_error_spans",
+            request_payload=request_payload,
+            operation=lambda: infraops.get_trace_error_spans(**request_payload),
+        )
+
+    @mcp.tool(
         name="get_k8s_pods",
         description="Read Kubernetes pods from an allowlisted namespace through infraops-mcp.",
         tags={"infraops", "kubernetes", "read"},
@@ -1711,6 +1932,245 @@ def create_mcp_server(
             started_at=started_at,
         )
         return result
+
+    @mcp.tool(
+        name="get_pod_logs",
+        description="Read recent logs for a Kubernetes pod from an allowlisted namespace.",
+        tags={"infraops", "kubernetes", "logs", "read"},
+        annotations={"readOnlyHint": True, "openWorldHint": False},
+    )
+    def get_pod_logs_tool(
+        pod_name: str,
+        namespace: str | None = None,
+        container: str | None = None,
+        since_seconds: int | None = None,
+        tail_lines: int = 200,
+        source: str | None = None,
+    ) -> dict[str, Any]:
+        request_payload = {
+            "pod_name": pod_name,
+            "namespace": namespace,
+            "container": container,
+            "since_seconds": since_seconds,
+            "tail_lines": tail_lines,
+            "source": source,
+        }
+        return call_infraops_read_tool(
+            tool_name="get_pod_logs",
+            request_payload=request_payload,
+            operation=lambda: infraops.get_pod_logs(**request_payload),
+        )
+
+    @mcp.tool(
+        name="get_rollout_status",
+        description="Read computed rollout status for a Kubernetes deployment.",
+        tags={"infraops", "kubernetes", "deployment", "read"},
+        annotations={"readOnlyHint": True, "openWorldHint": False},
+    )
+    def get_rollout_status_tool(
+        deployment_name: str,
+        namespace: str | None = None,
+        source: str | None = None,
+    ) -> dict[str, Any]:
+        request_payload = {
+            "deployment_name": deployment_name,
+            "namespace": namespace,
+            "source": source,
+        }
+        return call_infraops_read_tool(
+            tool_name="get_rollout_status",
+            request_payload=request_payload,
+            operation=lambda: infraops.get_rollout_status(**request_payload),
+        )
+
+    @mcp.tool(
+        name="get_alertmanager_alerts",
+        description="Read Alertmanager alerts for incident triage.",
+        tags={"infraops", "alertmanager", "alerts", "read"},
+        annotations={"readOnlyHint": True, "openWorldHint": False},
+    )
+    def get_alertmanager_alerts_tool(
+        active_only: bool = True,
+        receiver: str | None = None,
+        alertname: str | None = None,
+        severity: str | None = None,
+        limit: int = 100,
+    ) -> dict[str, Any]:
+        request_payload = {
+            "active_only": active_only,
+            "receiver": receiver,
+            "alertname": alertname,
+            "severity": severity,
+            "limit": limit,
+        }
+        return call_infraops_read_tool(
+            tool_name="get_alertmanager_alerts",
+            request_payload=request_payload,
+            operation=lambda: infraops.get_alertmanager_alerts(**request_payload),
+        )
+
+    @mcp.tool(
+        name="get_sqs_queue_attributes",
+        description="Read AWS SQS queue attributes through the configured ops read proxy.",
+        tags={"infraops", "aws", "sqs", "read"},
+        annotations={"readOnlyHint": True, "openWorldHint": False},
+    )
+    def get_sqs_queue_attributes_tool(
+        queue_name: str | None = None,
+        queue_url: str | None = None,
+        region: str | None = None,
+    ) -> dict[str, Any]:
+        request_payload = {
+            "queue_name": queue_name,
+            "queue_url": queue_url,
+            "region": region,
+        }
+        return call_infraops_read_tool(
+            tool_name="get_sqs_queue_attributes",
+            request_payload=request_payload,
+            operation=lambda: infraops.get_sqs_queue_attributes(**request_payload),
+        )
+
+    @mcp.tool(
+        name="get_sqs_dlq_attributes",
+        description="Read AWS SQS DLQ attributes through the configured ops read proxy.",
+        tags={"infraops", "aws", "sqs", "dlq", "read"},
+        annotations={"readOnlyHint": True, "openWorldHint": False},
+    )
+    def get_sqs_dlq_attributes_tool(
+        queue_name: str | None = None,
+        queue_url: str | None = None,
+        region: str | None = None,
+    ) -> dict[str, Any]:
+        request_payload = {
+            "queue_name": queue_name,
+            "queue_url": queue_url,
+            "region": region,
+        }
+        return call_infraops_read_tool(
+            tool_name="get_sqs_dlq_attributes",
+            request_payload=request_payload,
+            operation=lambda: infraops.get_sqs_dlq_attributes(**request_payload),
+        )
+
+    @mcp.tool(
+        name="get_alb_target_health",
+        description="Read AWS ALB target health through the configured ops read proxy.",
+        tags={"infraops", "aws", "alb", "read"},
+        annotations={"readOnlyHint": True, "openWorldHint": False},
+    )
+    def get_alb_target_health_tool(
+        target_group_arn: str | None = None,
+        target_group_name: str | None = None,
+        load_balancer_name: str | None = None,
+        region: str | None = None,
+    ) -> dict[str, Any]:
+        request_payload = {
+            "target_group_arn": target_group_arn,
+            "target_group_name": target_group_name,
+            "load_balancer_name": load_balancer_name,
+            "region": region,
+        }
+        return call_infraops_read_tool(
+            tool_name="get_alb_target_health",
+            request_payload=request_payload,
+            operation=lambda: infraops.get_alb_target_health(**request_payload),
+        )
+
+    @mcp.tool(
+        name="get_cloudfront_origin_mapping",
+        description="Read CloudFront origin mapping through the configured ops read proxy.",
+        tags={"infraops", "aws", "cloudfront", "read"},
+        annotations={"readOnlyHint": True, "openWorldHint": False},
+    )
+    def get_cloudfront_origin_mapping_tool(
+        distribution_id: str | None = None,
+        domain_name: str | None = None,
+    ) -> dict[str, Any]:
+        request_payload = {
+            "distribution_id": distribution_id,
+            "domain_name": domain_name,
+        }
+        return call_infraops_read_tool(
+            tool_name="get_cloudfront_origin_mapping",
+            request_payload=request_payload,
+            operation=lambda: infraops.get_cloudfront_origin_mapping(**request_payload),
+        )
+
+    @mcp.tool(
+        name="get_cloudfront_distribution_status",
+        description="Read CloudFront distribution status through the configured ops read proxy.",
+        tags={"infraops", "aws", "cloudfront", "read"},
+        annotations={"readOnlyHint": True, "openWorldHint": False},
+    )
+    def get_cloudfront_distribution_status_tool(
+        distribution_id: str | None = None,
+    ) -> dict[str, Any]:
+        request_payload = {"distribution_id": distribution_id}
+        return call_infraops_read_tool(
+            tool_name="get_cloudfront_distribution_status",
+            request_payload=request_payload,
+            operation=lambda: infraops.get_cloudfront_distribution_status(
+                **request_payload,
+            ),
+        )
+
+    @mcp.tool(
+        name="get_argocd_application_status",
+        description="Read ArgoCD application status through the configured read API.",
+        tags={"infraops", "argocd", "gitops", "read"},
+        annotations={"readOnlyHint": True, "openWorldHint": False},
+    )
+    def get_argocd_application_status_tool(
+        application_name: str,
+        project: str | None = None,
+    ) -> dict[str, Any]:
+        request_payload = {"application_name": application_name, "project": project}
+        return call_infraops_read_tool(
+            tool_name="get_argocd_application_status",
+            request_payload=request_payload,
+            operation=lambda: infraops.get_argocd_application_status(**request_payload),
+        )
+
+    @mcp.tool(
+        name="get_current_image_tags",
+        description="Read current container image tags from Kubernetes deployments.",
+        tags={"infraops", "kubernetes", "deployment", "image", "read"},
+        annotations={"readOnlyHint": True, "openWorldHint": False},
+    )
+    def get_current_image_tags_tool(
+        namespace: str | None = None,
+        deployment_name: str | None = None,
+        source: str | None = None,
+    ) -> dict[str, Any]:
+        request_payload = {
+            "namespace": namespace,
+            "deployment_name": deployment_name,
+            "source": source,
+        }
+        return call_infraops_read_tool(
+            tool_name="get_current_image_tags",
+            request_payload=request_payload,
+            operation=lambda: infraops.get_current_image_tags(**request_payload),
+        )
+
+    @mcp.tool(
+        name="get_recent_deployments",
+        description="Read recently created Kubernetes deployments from an allowlisted namespace.",
+        tags={"infraops", "kubernetes", "deployment", "read"},
+        annotations={"readOnlyHint": True, "openWorldHint": False},
+    )
+    def get_recent_deployments_tool(
+        namespace: str | None = None,
+        source: str | None = None,
+        limit: int = 20,
+    ) -> dict[str, Any]:
+        request_payload = {"namespace": namespace, "source": source, "limit": limit}
+        return call_infraops_read_tool(
+            tool_name="get_recent_deployments",
+            request_payload=request_payload,
+            operation=lambda: infraops.get_recent_deployments(**request_payload),
+        )
 
     @mcp.tool(
         name="get_kafka_consumer_lag",
@@ -2220,6 +2680,7 @@ def create_mcp_server(
         kafka_consumer_group: str | None = None,
         kafka_topic: str | None = None,
         batch_job_name: str | None = None,
+        context_bundle: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         started_at = perf_counter()
         tool = _resolve_registered_tool("infraops-mcp", "create_rca_snapshot")
@@ -2234,6 +2695,8 @@ def create_mcp_server(
             "kafka_topic": kafka_topic,
             "batch_job_name": batch_job_name,
         }
+        if context_bundle is not None:
+            request_payload["context_bundle"] = context_bundle
 
         try:
             result = infraops.create_rca_snapshot(**request_payload).model_dump(mode="json")

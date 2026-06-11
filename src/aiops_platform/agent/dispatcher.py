@@ -10,6 +10,7 @@ from aiops_platform.admin_riskops.service import AdminRiskOpsService
 from aiops_platform.agent.schemas import AgentToolExecutionResult, AgentToolPlan
 from aiops_platform.farm_advisory.service import FarmAdvisoryService
 from aiops_platform.farmer_bnpl.service import FarmerBnplService
+from aiops_platform.infraops.service import InfraOpsService
 from aiops_platform.mcp.masking import mask_payload
 from aiops_platform.mcp.policy import resolve_tool_policy
 from aiops_platform.mcp.registry import list_mcp_tools
@@ -20,6 +21,7 @@ from aiops_platform.mcp.schemas import (
     McpToolPermission,
 )
 from aiops_platform.prediction_scaling.service import PredictionScalingService
+from aiops_platform.topology_knowledge.service import TopologyKnowledgeService
 
 ToolOperation = Callable[[dict[str, Any]], Any]
 EXECUTION_CONTEXT_KEYS = {
@@ -39,12 +41,18 @@ class McpToolDispatcher:
         farmer_bnpl_service: FarmerBnplService | None = None,
         farm_advisory_service: FarmAdvisoryService | None = None,
         admin_riskops_service: AdminRiskOpsService | None = None,
+        infraops_service: InfraOpsService | None = None,
         prediction_scaling_service: PredictionScalingService | None = None,
+        topology_knowledge_service: TopologyKnowledgeService | None = None,
     ) -> None:
         self._farmer_bnpl = farmer_bnpl_service or FarmerBnplService()
         self._farm_advisory = farm_advisory_service or FarmAdvisoryService()
         self._admin_riskops = admin_riskops_service or AdminRiskOpsService()
+        self._infraops = infraops_service or InfraOpsService.from_settings()
         self._prediction_scaling = prediction_scaling_service or PredictionScalingService()
+        self._topology_knowledge = (
+            topology_knowledge_service or TopologyKnowledgeService.from_settings()
+        )
 
     def execute(self, plan: AgentToolPlan) -> AgentToolExecutionResult:
         tool = resolve_registered_tool(
@@ -172,8 +180,95 @@ class McpToolDispatcher:
             ("admin-riskops-mcp", "send_overdue_alerts"): (
                 lambda payload: self._admin_riskops.send_overdue_alerts(**payload)
             ),
+            ("infraops-mcp", "query_prometheus"): (
+                lambda payload: self._infraops.query_prometheus(**payload)
+            ),
+            ("infraops-mcp", "query_loki"): (
+                lambda payload: self._infraops.query_loki(**payload)
+            ),
             ("infraops-mcp", "query_multi_cluster_prometheus"): (
-                lambda payload: build_multi_cluster_prometheus_stub(payload)
+                lambda payload: self._infraops.query_multi_cluster_prometheus(**payload)
+            ),
+            ("infraops-mcp", "query_multi_cluster_loki"): (
+                lambda payload: self._infraops.query_multi_cluster_loki(**payload)
+            ),
+            ("infraops-mcp", "search_traces"): (
+                lambda payload: self._infraops.search_traces(**payload)
+            ),
+            ("infraops-mcp", "get_trace_by_id"): (
+                lambda payload: self._infraops.get_trace_by_id(**payload)
+            ),
+            ("infraops-mcp", "get_service_trace_summary"): (
+                lambda payload: self._infraops.get_service_trace_summary(**payload)
+            ),
+            ("infraops-mcp", "get_trace_error_spans"): (
+                lambda payload: self._infraops.get_trace_error_spans(**payload)
+            ),
+            ("infraops-mcp", "get_k8s_pods"): (
+                lambda payload: self._infraops.get_k8s_pods(**payload)
+            ),
+            ("infraops-mcp", "get_k8s_events"): (
+                lambda payload: self._infraops.get_k8s_events(**payload)
+            ),
+            ("infraops-mcp", "get_k8s_deployments"): (
+                lambda payload: self._infraops.get_k8s_deployments(**payload)
+            ),
+            ("infraops-mcp", "get_k8s_hpa"): (
+                lambda payload: self._infraops.get_k8s_hpa(**payload)
+            ),
+            ("infraops-mcp", "get_pod_logs"): (
+                lambda payload: self._infraops.get_pod_logs(**payload)
+            ),
+            ("infraops-mcp", "get_rollout_status"): (
+                lambda payload: self._infraops.get_rollout_status(**payload)
+            ),
+            ("infraops-mcp", "get_alertmanager_alerts"): (
+                lambda payload: self._infraops.get_alertmanager_alerts(**payload)
+            ),
+            ("infraops-mcp", "get_sqs_queue_attributes"): (
+                lambda payload: self._infraops.get_sqs_queue_attributes(**payload)
+            ),
+            ("infraops-mcp", "get_sqs_dlq_attributes"): (
+                lambda payload: self._infraops.get_sqs_dlq_attributes(**payload)
+            ),
+            ("infraops-mcp", "get_alb_target_health"): (
+                lambda payload: self._infraops.get_alb_target_health(**payload)
+            ),
+            ("infraops-mcp", "get_cloudfront_origin_mapping"): (
+                lambda payload: self._infraops.get_cloudfront_origin_mapping(**payload)
+            ),
+            ("infraops-mcp", "get_cloudfront_distribution_status"): (
+                lambda payload: self._infraops.get_cloudfront_distribution_status(**payload)
+            ),
+            ("infraops-mcp", "get_argocd_application_status"): (
+                lambda payload: self._infraops.get_argocd_application_status(**payload)
+            ),
+            ("infraops-mcp", "get_current_image_tags"): (
+                lambda payload: self._infraops.get_current_image_tags(**payload)
+            ),
+            ("infraops-mcp", "get_recent_deployments"): (
+                lambda payload: self._infraops.get_recent_deployments(**payload)
+            ),
+            ("infraops-mcp", "get_topology_snapshot"): (
+                lambda payload: self._topology_knowledge.get_topology_snapshot(**payload)
+            ),
+            ("infraops-mcp", "search_topology_knowledge"): (
+                lambda payload: self._topology_knowledge.search_topology_knowledge(**payload)
+            ),
+            ("infraops-mcp", "get_service_routing_path"): (
+                lambda payload: self._topology_knowledge.get_service_routing_path(**payload)
+            ),
+            ("infraops-mcp", "get_service_dependency_map"): (
+                lambda payload: self._topology_knowledge.get_service_dependency_map(**payload)
+            ),
+            ("infraops-mcp", "create_rca_snapshot"): (
+                lambda payload: self._infraops.create_rca_snapshot(**payload)
+            ),
+            ("infraops-mcp", "search_incidents"): (
+                lambda payload: self._infraops.search_incidents(**payload)
+            ),
+            ("infraops-mcp", "search_rca_history"): (
+                lambda payload: self._infraops.search_rca_history(**payload)
             ),
             ("prediction-scaling-mcp", "get_scaling_summary"): (
                 lambda payload: self._prediction_scaling.get_scaling_summary(**payload)
@@ -241,19 +336,3 @@ def sanitize_payload(value: Any) -> Any:
     if isinstance(value, list):
         return [sanitize_payload(item) for item in value]
     return value
-
-
-def build_multi_cluster_prometheus_stub(payload: dict[str, Any]) -> dict[str, Any]:
-    query = payload.get("query") or "up"
-    return {
-        "query": query,
-        "sources": [
-            {
-                "source_name": "local-skeleton",
-                "status": "SUCCESS",
-                "result_count": 0,
-                "error": None,
-            }
-        ],
-        "summary": "Multi-cluster Prometheus execution is represented as a safe skeleton result.",
-    }

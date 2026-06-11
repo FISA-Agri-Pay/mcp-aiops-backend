@@ -16,6 +16,10 @@ MCP_기반_농업_BNPL_AIOps_최종_기획서_v1.5.md
 !*secret*.example.yml
 !*secret*.example.yaml
 
+# Sensitive infrastructure topology snapshots
+docs/*topology-snapshot-*.md
+runtime_knowledge/
+
 # Internal DB schema, seed data, and database snapshots
 infra/docker/postgres/init/*.sql
 !infra/docker/postgres/init/*.example.sql

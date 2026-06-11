@@ -4,7 +4,9 @@ from fastmcp.client import Client
 
 from aiops_platform.farmer_bnpl.service import build_public_id
 from aiops_platform.infraops.schemas import (
+    AlertmanagerAlertsResult,
     BatchRunStatusResult,
+    CurrentImageTagsResult,
     DailyOpsMetricsResult,
     ElasticsearchClusterHealthResult,
     ElasticsearchIndexHealthItem,
@@ -13,6 +15,7 @@ from aiops_platform.infraops.schemas import (
     ElasticsearchQueryResult,
     ElkSnapshotResult,
     InfraOpsChangePreviewResult,
+    InfraOpsExternalReadResult,
     InfraOpsSearchResult,
     InfraOpsSourceResult,
     KafkaConsumerLagResult,
@@ -22,8 +25,15 @@ from aiops_platform.infraops.schemas import (
     MultiClusterLokiQueryResult,
     MultiClusterPrometheusQueryResult,
     MultiClusterQuerySourceResult,
+    PodLogsResult,
     PrometheusQueryResult,
+    RecentDeploymentsResult,
     RcaSnapshotResult,
+    RolloutStatusResult,
+    TraceByIdResult,
+    TraceErrorSpansResult,
+    TraceSearchResult,
+    TraceServiceSummaryResult,
 )
 from aiops_platform.main import create_app
 from aiops_platform.mcp.registry import list_mcp_tools
@@ -35,6 +45,7 @@ from aiops_platform.mcp.server import (
     create_mcp_server,
     settings as mcp_server_settings,
 )
+from aiops_platform.topology_knowledge.service import TopologyKnowledgeService
 from tests.seed_constants import (
     CREDIT_APP_2_ID,
     CREDIT_APP_3_ID,
@@ -708,6 +719,375 @@ def test_fastmcp_kubernetes_read_tools_return_results() -> None:
         assert events.data["namespace"] == "default"
         assert deployments.data["namespace"] == "default"
         assert hpa.data["namespace"] == "default"
+
+    asyncio.run(run())
+
+
+def test_fastmcp_sre_mvp_read_tools_return_results() -> None:
+    class FakeInfraOpsService:
+        def search_traces(
+            self,
+            traceql: str | None = None,
+            service_name: str | None = None,
+            operation_name: str | None = None,
+            start: str | None = None,
+            end: str | None = None,
+            min_duration: str | None = None,
+            max_duration: str | None = None,
+            limit: int = 20,
+        ):
+            assert service_name == "service-catalog"
+            assert limit == 5
+            return TraceSearchResult(
+                query={
+                    "traceql": traceql,
+                    "service_name": service_name,
+                    "operation_name": operation_name,
+                    "start": start,
+                    "end": end,
+                    "min_duration": min_duration,
+                    "max_duration": max_duration,
+                    "limit": limit,
+                },
+                traces=[{"traceID": "trace-1"}],
+                raw={"traces": [{"traceID": "trace-1"}]},
+            )
+
+        def get_trace_by_id(self, trace_id: str):
+            assert trace_id == "trace-1"
+            return TraceByIdResult(
+                trace_id=trace_id,
+                trace={"batches": []},
+                span_count=2,
+                error_span_count=1,
+            )
+
+        def get_service_trace_summary(
+            self,
+            service_name: str,
+            start: str | None = None,
+            end: str | None = None,
+            limit: int = 100,
+        ):
+            assert service_name == "service-catalog"
+            return TraceServiceSummaryResult(
+                service_name=service_name,
+                start=start,
+                end=end,
+                limit=limit,
+                trace_count=2,
+                error_trace_count=1,
+                duration_ms_summary={"min": 100.0, "max": 200.0, "avg": 150.0},
+                traces=[{"traceID": "trace-1"}],
+                raw={"traces": [{"traceID": "trace-1"}]},
+            )
+
+        def get_trace_error_spans(self, trace_id: str):
+            assert trace_id == "trace-1"
+            return TraceErrorSpansResult(
+                trace_id=trace_id,
+                span_count=2,
+                error_span_count=1,
+                error_spans=[{"span_id": "span-1", "name": "POST /checkout"}],
+            )
+
+        def get_pod_logs(
+            self,
+            pod_name: str,
+            namespace: str | None = None,
+            container: str | None = None,
+            since_seconds: int | None = None,
+            tail_lines: int = 200,
+            source: str | None = None,
+        ):
+            assert pod_name == "api-123"
+            assert namespace == "default"
+            assert tail_lines == 20
+            return PodLogsResult(
+                source=source or "eks",
+                namespace=namespace or "default",
+                pod_name=pod_name,
+                container=container,
+                since_seconds=since_seconds,
+                tail_lines=tail_lines,
+                logs="error line",
+            )
+
+        def get_rollout_status(
+            self,
+            deployment_name: str,
+            namespace: str | None = None,
+            source: str | None = None,
+        ):
+            assert deployment_name == "api"
+            return RolloutStatusResult(
+                source=source or "eks",
+                namespace=namespace or "default",
+                deployment_name=deployment_name,
+                rollout_status="HEALTHY",
+                generation=2,
+                observed_generation=2,
+                desired_replicas=2,
+                updated_replicas=2,
+                ready_replicas=2,
+                available_replicas=2,
+                unavailable_replicas=0,
+                conditions=[],
+                raw={},
+            )
+
+        def get_alertmanager_alerts(
+            self,
+            active_only: bool = True,
+            receiver: str | None = None,
+            alertname: str | None = None,
+            severity: str | None = None,
+            limit: int = 100,
+        ):
+            assert severity == "critical"
+            return AlertmanagerAlertsResult(
+                active_only=active_only,
+                receiver=receiver,
+                alertname=alertname,
+                severity=severity,
+                limit=limit,
+                items=[{"labels": {"alertname": "Checkout500"}}],
+                raw_count=1,
+            )
+
+        def get_sqs_queue_attributes(
+            self,
+            queue_name: str | None = None,
+            queue_url: str | None = None,
+            region: str | None = None,
+        ):
+            return InfraOpsExternalReadResult(
+                source="aws",
+                resource="sqs_queue_attributes",
+                request={"queue_name": queue_name, "region": region},
+                response={"Attributes": {"ApproximateNumberOfMessages": "0"}},
+            )
+
+        def get_sqs_dlq_attributes(
+            self,
+            queue_name: str | None = None,
+            queue_url: str | None = None,
+            region: str | None = None,
+        ):
+            return InfraOpsExternalReadResult(
+                source="aws",
+                resource="sqs_dlq_attributes",
+                request={"queue_name": queue_name, "region": region},
+                response={"Attributes": {"ApproximateNumberOfMessages": "1"}},
+            )
+
+        def get_alb_target_health(
+            self,
+            target_group_arn: str | None = None,
+            target_group_name: str | None = None,
+            load_balancer_name: str | None = None,
+            region: str | None = None,
+        ):
+            return InfraOpsExternalReadResult(
+                source="aws",
+                resource="alb_target_health",
+                request={"target_group_name": target_group_name, "region": region},
+                response={"TargetHealthDescriptions": []},
+            )
+
+        def get_cloudfront_origin_mapping(
+            self,
+            distribution_id: str | None = None,
+            domain_name: str | None = None,
+        ):
+            return InfraOpsExternalReadResult(
+                source="aws",
+                resource="cloudfront_origin_mapping",
+                request={"distribution_id": distribution_id},
+                response={"origins": []},
+            )
+
+        def get_cloudfront_distribution_status(self, distribution_id: str | None = None):
+            return InfraOpsExternalReadResult(
+                source="aws",
+                resource="cloudfront_distribution_status",
+                request={"distribution_id": distribution_id},
+                response={"status": "Deployed"},
+            )
+
+        def get_argocd_application_status(
+            self,
+            application_name: str,
+            project: str | None = None,
+        ):
+            return InfraOpsExternalReadResult(
+                source="argocd",
+                resource="application_status",
+                request={"application_name": application_name, "project": project},
+                response={"sync": {"status": "Synced"}},
+            )
+
+        def get_current_image_tags(
+            self,
+            namespace: str | None = None,
+            deployment_name: str | None = None,
+            source: str | None = None,
+        ):
+            return CurrentImageTagsResult(
+                source=source or "eks",
+                namespace=namespace or "default",
+                deployment_name=deployment_name,
+                items=[
+                    {
+                        "deployment_name": deployment_name,
+                        "container_name": "api",
+                        "image": "example.com/api:v1",
+                        "repository": "example.com/api",
+                        "tag": "v1",
+                        "digest": None,
+                    }
+                ],
+            )
+
+        def get_recent_deployments(
+            self,
+            namespace: str | None = None,
+            source: str | None = None,
+            limit: int = 20,
+        ):
+            return RecentDeploymentsResult(
+                source=source or "eks",
+                namespace=namespace or "default",
+                limit=limit,
+                items=[{"deployment_name": "api"}],
+            )
+
+    async def run() -> None:
+        async with Client(create_mcp_server(infraops_service=FakeInfraOpsService())) as client:
+            traces = await client.call_tool(
+                "search_traces",
+                {"service_name": "service-catalog", "limit": 5},
+            )
+            trace = await client.call_tool(
+                "get_trace_by_id",
+                {"trace_id": "trace-1"},
+            )
+            trace_summary = await client.call_tool(
+                "get_service_trace_summary",
+                {"service_name": "service-catalog"},
+            )
+            error_spans = await client.call_tool(
+                "get_trace_error_spans",
+                {"trace_id": "trace-1"},
+            )
+            logs = await client.call_tool(
+                "get_pod_logs",
+                {"pod_name": "api-123", "namespace": "default", "tail_lines": 20},
+            )
+            rollout = await client.call_tool(
+                "get_rollout_status",
+                {"deployment_name": "api", "namespace": "default"},
+            )
+            alerts = await client.call_tool(
+                "get_alertmanager_alerts",
+                {"severity": "critical"},
+            )
+            sqs = await client.call_tool(
+                "get_sqs_queue_attributes",
+                {"queue_name": "credit-payment-requested.fifo", "region": "ap-northeast-2"},
+            )
+            dlq = await client.call_tool(
+                "get_sqs_dlq_attributes",
+                {"queue_name": "credit-payment-requested-dlq.fifo"},
+            )
+            alb = await client.call_tool(
+                "get_alb_target_health",
+                {"target_group_name": "api-tg"},
+            )
+            origin = await client.call_tool(
+                "get_cloudfront_origin_mapping",
+                {"distribution_id": "E123"},
+            )
+            distribution = await client.call_tool(
+                "get_cloudfront_distribution_status",
+                {"distribution_id": "E123"},
+            )
+            argocd = await client.call_tool(
+                "get_argocd_application_status",
+                {"application_name": "service-catalog"},
+            )
+            images = await client.call_tool(
+                "get_current_image_tags",
+                {"namespace": "default", "deployment_name": "api"},
+            )
+            recent = await client.call_tool(
+                "get_recent_deployments",
+                {"namespace": "default", "limit": 5},
+            )
+
+        assert traces.data["traces"][0]["traceID"] == "trace-1"
+        assert trace.data["error_span_count"] == 1
+        assert trace_summary.data["trace_count"] == 2
+        assert error_spans.data["error_spans"][0]["span_id"] == "span-1"
+        assert logs.data["logs"] == "error line"
+        assert rollout.data["rollout_status"] == "HEALTHY"
+        assert alerts.data["items"][0]["labels"]["alertname"] == "Checkout500"
+        assert sqs.data["resource"] == "sqs_queue_attributes"
+        assert dlq.data["resource"] == "sqs_dlq_attributes"
+        assert alb.data["resource"] == "alb_target_health"
+        assert origin.data["resource"] == "cloudfront_origin_mapping"
+        assert distribution.data["response"]["status"] == "Deployed"
+        assert argocd.data["response"]["sync"]["status"] == "Synced"
+        assert images.data["items"][0]["tag"] == "v1"
+        assert recent.data["items"][0]["deployment_name"] == "api"
+
+    asyncio.run(run())
+
+
+def test_fastmcp_topology_knowledge_tools_return_results(tmp_path) -> None:
+    snapshot = tmp_path / "aws-eks-topology-snapshot-2026-06-11.md"
+    snapshot.write_text(
+        """# AWS/EKS Topology Snapshot - 2026-06-11
+
+## Summary
+
+- CloudFront routes checkout to catalog-api-alb.
+
+## Dependency Map
+
+| Source | Target | Type |
+| --- | --- | --- |
+| checkout | service-catalog | edge-to-eks |
+""",
+        encoding="utf-8",
+    )
+    topology_knowledge = TopologyKnowledgeService(knowledge_dirs=(tmp_path,))
+
+    async def run() -> None:
+        async with Client(
+            create_mcp_server(topology_knowledge_service=topology_knowledge)
+        ) as client:
+            snapshot_result = await client.call_tool(
+                "get_topology_snapshot",
+                {"environment": "aws_eks", "detail": "summary"},
+            )
+            search = await client.call_tool(
+                "search_topology_knowledge",
+                {"query": "checkout", "environment": "all"},
+            )
+            routing = await client.call_tool(
+                "get_service_routing_path",
+                {"service": "checkout", "environment": "all"},
+            )
+            dependencies = await client.call_tool(
+                "get_service_dependency_map",
+                {"service": "checkout", "environment": "all"},
+            )
+
+        assert snapshot_result.data["snapshots"][0]["environment"] == "aws_eks"
+        assert search.data["matches"][0]["section"] == "Summary"
+        assert routing.data["routing_paths"]
+        assert dependencies.data["dependencies"]
 
     asyncio.run(run())
 

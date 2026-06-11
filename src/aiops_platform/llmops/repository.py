@@ -959,6 +959,7 @@ def db_prompt_scope(scope: PromptScope) -> str:
     return {
         "farmer_bnpl": "FARMER_BNPL",
         "admin_copilot": "RISKOPS",
+        "sre_copilot": "ONCALL",
         "rca": "INFRAOPS",
         "ops_report": "REPORT",
         "common": "COMMON",
@@ -969,6 +970,7 @@ def api_prompt_scope(domain: str) -> PromptScope:
     return {
         "FARMER_BNPL": "farmer_bnpl",
         "RISKOPS": "admin_copilot",
+        "ONCALL": "sre_copilot",
         "INFRAOPS": "rca",
         "REPORT": "ops_report",
         "COMMON": "common",
@@ -980,6 +982,8 @@ def infer_domain_and_purpose(prompt_key: str) -> tuple[str, str]:
         return "FARMER_BNPL", "FARMER_CHAT"
     if prompt_key.startswith("admin_copilot"):
         return "RISKOPS", "RISK_ANALYSIS"
+    if prompt_key.startswith("sre_copilot"):
+        return "ONCALL", "ONCALL"
     if prompt_key.startswith("ops_report"):
         if "weekly" in prompt_key:
             return "REPORT", "WEEKLY_REPORT"
@@ -993,6 +997,7 @@ def api_purpose_prompt_key(purpose: str) -> str:
     return {
         "FARMER_CHAT": "farmer_bnpl_chat",
         "RISK_ANALYSIS": "admin_copilot",
+        "ONCALL": "sre_copilot",
         "DAILY_REPORT": "ops_report.daily.v1",
         "WEEKLY_REPORT": "ops_report.weekly.v1",
         "SCALING_REPORT": "ops_report.scaling.v1",
@@ -1005,6 +1010,8 @@ def db_snapshot_type(snapshot_type: str) -> str:
         return "FARM_ADVISORY"
     if snapshot_type in {"admin_copilot", "riskops"}:
         return "RISKOPS"
+    if snapshot_type in {"sre_copilot", "oncall"}:
+        return "ONCALL"
     if snapshot_type in {"ops_report", "report"}:
         return "REPORT"
     if snapshot_type in {"prediction_scaling", "scaling"}:

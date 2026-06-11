@@ -78,9 +78,20 @@ class Settings(BaseSettings):
         gt=0,
         alias="PROMETHEUS_TIMEOUT_SECONDS",
     )
+    alertmanager_base_url: str = Field(
+        default="http://localhost:9093",
+        alias="ALERTMANAGER_BASE_URL",
+    )
+    alertmanager_timeout_seconds: float = Field(
+        default=10.0,
+        gt=0,
+        alias="ALERTMANAGER_TIMEOUT_SECONDS",
+    )
     loki_base_url: str = Field(default="http://localhost:3100", alias="LOKI_BASE_URL")
     loki_source_urls: str = Field(default="", alias="LOKI_SOURCE_URLS")
     loki_timeout_seconds: float = Field(default=10.0, gt=0, alias="LOKI_TIMEOUT_SECONDS")
+    tempo_base_url: str = Field(default="http://localhost:3200", alias="TEMPO_BASE_URL")
+    tempo_timeout_seconds: float = Field(default=10.0, gt=0, alias="TEMPO_TIMEOUT_SECONDS")
     kubernetes_api_base_url: str = Field(
         default="http://localhost:8001",
         alias="KUBERNETES_API_BASE_URL",
@@ -124,6 +135,10 @@ class Settings(BaseSettings):
     )
     batch_timeout_seconds: float = Field(default=10.0, gt=0, alias="BATCH_TIMEOUT_SECONDS")
     infraops_batch_enabled: bool = Field(default=True, alias="INFRAOPS_BATCH_ENABLED")
+    aws_ops_base_url: str = Field(default="", alias="AWS_OPS_BASE_URL")
+    aws_ops_timeout_seconds: float = Field(default=10.0, gt=0, alias="AWS_OPS_TIMEOUT_SECONDS")
+    argocd_read_base_url: str = Field(default="", alias="ARGOCD_READ_BASE_URL")
+    argocd_timeout_seconds: float = Field(default=10.0, gt=0, alias="ARGOCD_TIMEOUT_SECONDS")
     elasticsearch_base_url: str = Field(
         default="http://localhost:9200",
         alias="ELASTICSEARCH_BASE_URL",
@@ -142,6 +157,10 @@ class Settings(BaseSettings):
     kibana_base_url: str = Field(default="http://localhost:5601", alias="KIBANA_BASE_URL")
     infraops_elk_enabled: bool = Field(default=True, alias="INFRAOPS_ELK_ENABLED")
     infraops_kafka_enabled: bool = Field(default=True, alias="INFRAOPS_KAFKA_ENABLED")
+    topology_knowledge_dirs: str = Field(
+        default="runtime_knowledge,docs",
+        alias="TOPOLOGY_KNOWLEDGE_DIRS",
+    )
     rca_default_before_minutes: int = Field(
         default=10,
         ge=0,

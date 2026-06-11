@@ -482,6 +482,11 @@ def build_fake_answer(*, chat_type: ChatType, tool_count: int) -> str:
             f"Agent executed {tool_count} MCP tool checks for the Farmer BNPL flow. "
             "Review tool_results for credit limit, profile, recommendation, and checkout details."
         )
+    if chat_type == "sre_copilot":
+        return (
+            f"Agent executed {tool_count} MCP tool checks for the SRE Copilot flow. "
+            "Review tool_results for logs, metrics, traces, Kubernetes, AWS, and GitOps evidence."
+        )
     return (
         f"Agent executed {tool_count} MCP tool checks for the Admin Copilot flow. "
         "Review tool_results for risk, observability, and scaling evidence."

@@ -34,6 +34,13 @@ class RuleBasedAgentPlanner:
                 message=normalized_message,
                 user_id=user_id,
             )
+        elif chat_type == "sre_copilot":
+            intent = classify_sre_copilot_intent(normalized_message)
+            capability = classify_sre_copilot_capability(normalized_message)
+            tool_plans = plan_sre_copilot_tools(
+                message=normalized_message,
+                capability=capability,
+            )
         else:
             intent = classify_admin_copilot_intent(normalized_message)
             capability = classify_admin_copilot_capability(normalized_message)
@@ -145,8 +152,37 @@ FarmerBnplIntent = Literal[
     "application",
     "general_bnpl",
 ]
+SreCopilotIntent = Literal[
+    "greeting",
+    "thanks",
+    "help",
+    "unsupported",
+    "checkout_500",
+    "sqs_publish_failure",
+    "sqs_consume_failure",
+    "pin_verification_missing",
+    "routing_failure",
+    "pod_crashloop",
+    "db_hikaricp_issue",
+    "general_incident",
+]
+SreCopilotCapability = Literal[
+    "smalltalk",
+    "help",
+    "unsupported",
+    "checkout_500_analysis",
+    "sqs_publish_failure_analysis",
+    "sqs_consume_failure_analysis",
+    "pin_verification_missing_analysis",
+    "edge_routing_analysis",
+    "pod_crashloop_analysis",
+    "db_connection_analysis",
+    "general_incident_analysis",
+]
 ADMIN_COPILOT_CAPABILITY_VALUES = set(get_args(AdminCopilotCapability))
 ADMIN_DIRECT_CAPABILITIES = {"smalltalk", "help", "unsupported"}
+SRE_COPILOT_CAPABILITY_VALUES = set(get_args(SreCopilotCapability))
+SRE_DIRECT_CAPABILITIES = {"smalltalk", "help", "unsupported"}
 ADMIN_INTENT_TO_CAPABILITY: dict[str, AdminCopilotCapability] = {
     "greeting": "smalltalk",
     "thanks": "smalltalk",
@@ -161,6 +197,20 @@ ADMIN_INTENT_TO_CAPABILITY: dict[str, AdminCopilotCapability] = {
     "risk_overview": "risk_overview",
     "action_priority": "ops_action_prioritization",
 }
+SRE_INTENT_TO_CAPABILITY: dict[str, SreCopilotCapability] = {
+    "greeting": "smalltalk",
+    "thanks": "smalltalk",
+    "help": "help",
+    "unsupported": "unsupported",
+    "checkout_500": "checkout_500_analysis",
+    "sqs_publish_failure": "sqs_publish_failure_analysis",
+    "sqs_consume_failure": "sqs_consume_failure_analysis",
+    "pin_verification_missing": "pin_verification_missing_analysis",
+    "routing_failure": "edge_routing_analysis",
+    "pod_crashloop": "pod_crashloop_analysis",
+    "db_hikaricp_issue": "db_connection_analysis",
+    "general_incident": "general_incident_analysis",
+}
 ADMIN_CAPABILITY_TO_INTENT: dict[str, AdminCopilotIntent] = {
     "smalltalk": "greeting",
     "help": "help",
@@ -173,6 +223,19 @@ ADMIN_CAPABILITY_TO_INTENT: dict[str, AdminCopilotIntent] = {
     "evidence_snapshot": "snapshot",
     "risk_overview": "risk_overview",
     "ops_action_prioritization": "action_priority",
+}
+SRE_CAPABILITY_TO_INTENT: dict[str, SreCopilotIntent] = {
+    "smalltalk": "greeting",
+    "help": "help",
+    "unsupported": "unsupported",
+    "checkout_500_analysis": "checkout_500",
+    "sqs_publish_failure_analysis": "sqs_publish_failure",
+    "sqs_consume_failure_analysis": "sqs_consume_failure",
+    "pin_verification_missing_analysis": "pin_verification_missing",
+    "edge_routing_analysis": "routing_failure",
+    "pod_crashloop_analysis": "pod_crashloop",
+    "db_connection_analysis": "db_hikaricp_issue",
+    "general_incident_analysis": "general_incident",
 }
 
 
@@ -525,6 +588,345 @@ def plan_admin_copilot_tools(
     return plans
 
 
+def plan_sre_copilot_tools(
+    *,
+    message: str,
+    capability: SreCopilotCapability | None = None,
+) -> list[AgentToolPlan]:
+    resolved_capability = capability or classify_sre_copilot_capability(message)
+    if resolved_capability in SRE_DIRECT_CAPABILITIES:
+        return []
+
+    intent = sre_intent_for_capability(capability=resolved_capability)
+    context = build_sre_incident_context(message=message, intent=intent)
+    namespace_payload = {"namespace": context["namespace"]}
+    deployment_payload = {
+        "namespace": context["namespace"],
+        "deployment_name": context["deployment_name"],
+    }
+
+    topology_payload = {
+        "service": context["topology_service"],
+        "environment": "all",
+        "masking_level": "secrets_only",
+    }
+
+    plans = [
+        build_sre_tool_plan(
+            "get_topology_snapshot",
+            {"environment": "all", "detail": "summary", "masking_level": "secrets_only"},
+            "Read known on-prem/AWS topology context before live checks.",
+        ),
+        build_sre_tool_plan(
+            "search_topology_knowledge",
+            {
+                "query": f'{intent} {context["topology_service"]}',
+                "environment": "all",
+                "limit": 5,
+                "masking_level": "secrets_only",
+            },
+            "Search topology knowledge for incident-specific routing and risk context.",
+        ),
+        build_sre_tool_plan(
+            "get_service_routing_path",
+            topology_payload,
+            "Read the known traffic path for the suspected service.",
+        ),
+        build_sre_tool_plan(
+            "get_service_dependency_map",
+            topology_payload,
+            "Read known upstream/downstream dependencies for the suspected service.",
+        ),
+        build_sre_tool_plan(
+            "get_alertmanager_alerts",
+            {"active_only": True, "limit": 20},
+            "Read active alerts before correlating logs, metrics, and traces.",
+        ),
+        build_sre_tool_plan(
+            "query_multi_cluster_prometheus",
+            {"query": context["prometheus_query"]},
+            "Read metric evidence for the suspected incident path.",
+        ),
+        build_sre_tool_plan(
+            "query_multi_cluster_loki",
+            {"query": context["loki_query"], "limit": 100},
+            "Read recent application and platform logs for the suspected service.",
+        ),
+        build_sre_tool_plan(
+            "get_k8s_pods",
+            namespace_payload,
+            "Inspect pod readiness, restart count, and node placement.",
+        ),
+        build_sre_tool_plan(
+            "get_k8s_events",
+            namespace_payload,
+            "Inspect Kubernetes warning and scheduling events.",
+        ),
+        build_sre_tool_plan(
+            "get_k8s_deployments",
+            namespace_payload,
+            "Inspect deployment desired/current/available state.",
+        ),
+        build_sre_tool_plan(
+            "get_k8s_hpa",
+            namespace_payload,
+            "Inspect autoscaling status and resource pressure evidence.",
+        ),
+        build_sre_tool_plan(
+            "get_rollout_status",
+            deployment_payload,
+            "Check whether the target deployment rollout is healthy.",
+        ),
+        build_sre_tool_plan(
+            "get_current_image_tags",
+            deployment_payload,
+            "Compare currently running image tags against recent deployment evidence.",
+        ),
+        build_sre_tool_plan(
+            "get_recent_deployments",
+            {"namespace": context["namespace"], "limit": 10},
+            "Check whether a recent deployment correlates with the incident window.",
+        ),
+        build_sre_tool_plan(
+            "get_argocd_application_status",
+            {"application_name": context["deployment_name"]},
+            "Read GitOps sync and health status for the target application.",
+        ),
+        build_sre_tool_plan(
+            "get_service_trace_summary",
+            {"service_name": context["service_name"], "limit": 50},
+            "Read trace latency and error summary for the target service.",
+        ),
+        build_sre_tool_plan(
+            "search_traces",
+            {
+                "service_name": context["service_name"],
+                "operation_name": context["operation_name"],
+                "limit": 20,
+            },
+            "Find recent traces that can connect symptoms to downstream spans.",
+        ),
+    ]
+
+    pod_name = extract_sre_pod_name(message)
+    if pod_name is not None:
+        plans.append(
+            build_sre_tool_plan(
+                "get_pod_logs",
+                {
+                    "namespace": context["namespace"],
+                    "pod_name": pod_name,
+                    "tail_lines": 200,
+                },
+                "Read logs for the pod explicitly named by the monitoring operator.",
+            )
+        )
+
+    if intent in {
+        "sqs_publish_failure",
+        "sqs_consume_failure",
+        "pin_verification_missing",
+    }:
+        plans.extend(
+            [
+                build_sre_tool_plan(
+                    "get_sqs_queue_attributes",
+                    {"queue_name": context["queue_name"]},
+                    "Read SQS queue depth and visibility timeout attributes.",
+                ),
+                build_sre_tool_plan(
+                    "get_sqs_dlq_attributes",
+                    {"queue_name": context["dlq_name"]},
+                    "Read DLQ depth to confirm message failure accumulation.",
+                ),
+            ]
+        )
+
+    if intent in {"routing_failure", "checkout_500", "general_incident"}:
+        plans.extend(
+            [
+                build_sre_tool_plan(
+                    "get_alb_target_health",
+                    {"load_balancer_name": "kkpp-catalog-api"},
+                    "Read ALB target health for the EKS ingress path.",
+                ),
+                build_sre_tool_plan(
+                    "get_cloudfront_origin_mapping",
+                    {},
+                    "Read CloudFront origin mapping for edge to ALB routing.",
+                ),
+                build_sre_tool_plan(
+                    "get_cloudfront_distribution_status",
+                    {},
+                    "Read CloudFront distribution status and deployment state.",
+                ),
+            ]
+        )
+
+    plans.extend(
+        [
+            build_sre_tool_plan(
+                "search_incidents",
+                {"query": intent, "limit": 5},
+                "Search similar incidents for historical context.",
+            ),
+            build_sre_tool_plan(
+                "search_rca_history",
+                {"query": intent, "limit": 5},
+                "Search previous RCA summaries before suggesting actions.",
+            ),
+            build_sre_tool_plan(
+                "create_rca_snapshot",
+                {
+                    "incident_key": intent,
+                    "namespace": context["namespace"],
+                    "prometheus_query": context["prometheus_query"],
+                    "loki_query": context["loki_query"],
+                    "loki_limit": 100,
+                },
+                "Create a read-only RCA evidence snapshot for later analysis.",
+            ),
+        ]
+    )
+    return plans
+
+
+def build_sre_tool_plan(tool_name: str, request_payload: dict[str, Any], reason: str) -> AgentToolPlan:
+    return AgentToolPlan(
+        server_name="infraops-mcp",
+        tool_name=tool_name,
+        request_payload=request_payload,
+        reason=reason,
+    )
+
+
+def build_sre_incident_context(*, message: str, intent: SreCopilotIntent) -> dict[str, str | None]:
+    service_name = infer_sre_service_name(message, intent=intent)
+    namespace = infer_sre_namespace(service_name)
+    deployment_name = infer_sre_deployment_name(message, default=service_name)
+    queue_name, dlq_name = infer_sre_queue_names(intent)
+    return {
+        "service_name": service_name,
+        "namespace": namespace,
+        "deployment_name": deployment_name,
+        "queue_name": queue_name,
+        "dlq_name": dlq_name,
+        "operation_name": infer_sre_operation_name(intent),
+        "topology_service": infer_sre_topology_service(intent, service_name=service_name),
+        "prometheus_query": build_sre_prometheus_query(intent, service_name=service_name),
+        "loki_query": build_sre_loki_query(intent, namespace=namespace, service_name=service_name),
+    }
+
+
+def infer_sre_service_name(message: str, *, intent: SreCopilotIntent) -> str:
+    explicit_services = (
+        "service-catalog",
+        "service-payment",
+        "service-auth",
+        "mcp-aiops-backend",
+    )
+    for service_name in explicit_services:
+        if service_name in message:
+            return service_name
+    if intent in {"sqs_consume_failure"}:
+        return "service-payment"
+    if intent in {"checkout_500", "sqs_publish_failure", "pin_verification_missing"}:
+        return "service-catalog"
+    if "payment" in message or "결제" in message:
+        return "service-payment"
+    if "auth" in message or "인증" in message:
+        return "service-auth"
+    return "service-catalog"
+
+
+def infer_sre_namespace(service_name: str) -> str:
+    if service_name == "service-catalog":
+        return "service-catalog"
+    return "default"
+
+
+def infer_sre_deployment_name(message: str, *, default: str) -> str:
+    match = re.search(r"\bdeployment[/: ]+([a-z0-9][a-z0-9.-]{0,252})\b", message)
+    if match is not None:
+        return match.group(1)
+    return default
+
+
+def infer_sre_queue_names(intent: SreCopilotIntent) -> tuple[str, str]:
+    if intent == "pin_verification_missing":
+        return "payment-pin-verified.fifo", "payment-pin-verified-dlq.fifo"
+    return "credit-payment-requested.fifo", "credit-payment-requested-dlq.fifo"
+
+
+def infer_sre_operation_name(intent: SreCopilotIntent) -> str | None:
+    return {
+        "checkout_500": "POST /checkout",
+        "sqs_publish_failure": "SQS Publish",
+        "sqs_consume_failure": "SQS Consume",
+        "pin_verification_missing": "PIN Verified Event",
+    }.get(intent)
+
+
+def infer_sre_topology_service(intent: SreCopilotIntent, *, service_name: str) -> str:
+    if intent == "checkout_500":
+        return "checkout"
+    if intent in {"sqs_publish_failure", "sqs_consume_failure"}:
+        return "payment"
+    if intent == "pin_verification_missing":
+        return "pin"
+    if intent == "routing_failure":
+        return service_name
+    return service_name
+
+
+def build_sre_prometheus_query(intent: SreCopilotIntent, *, service_name: str) -> str:
+    if intent == "checkout_500":
+        return (
+            'sum(rate(http_server_requests_seconds_count{application="'
+            f'{service_name}",status=~"5..",uri=~".*checkout.*"}}[5m]))'
+        )
+    if intent == "sqs_publish_failure":
+        return 'sum(rate(application_sqs_publish_errors_total{service="' + service_name + '"}[5m]))'
+    if intent == "sqs_consume_failure":
+        return 'sum(rate(application_sqs_consume_errors_total{service="' + service_name + '"}[5m]))'
+    if intent == "pin_verification_missing":
+        return 'sum(rate(pin_verification_events_total{service="' + service_name + '"}[5m]))'
+    if intent == "routing_failure":
+        return "sum(rate(aws_applicationelb_httpcode_target_5_xx_count_sum[5m]))"
+    if intent == "pod_crashloop":
+        return 'sum by (pod) (increase(kube_pod_container_status_restarts_total{pod=~".+"}[15m]))'
+    if intent == "db_hikaricp_issue":
+        return 'max by (pool) (hikaricp_connections_active{application="' + service_name + '"})'
+    return "up"
+
+
+def build_sre_loki_query(intent: SreCopilotIntent, *, namespace: str, service_name: str) -> str:
+    base_query = f'{{namespace="{namespace}"}}'
+    if intent == "checkout_500":
+        return f'{base_query} |= "checkout" |~ "500|Exception|ERROR"'
+    if intent == "sqs_publish_failure":
+        return f'{base_query} |~ "SQS|publish|sendMessage|ERROR|Exception"'
+    if intent == "sqs_consume_failure":
+        return f'{base_query} |~ "SQS|consume|listener|DLQ|ERROR|Exception"'
+    if intent == "pin_verification_missing":
+        return f'{base_query} |~ "PIN|pin|verified|verification|event|ERROR|Exception"'
+    if intent == "routing_failure":
+        return f'{base_query} |~ "ingress|ALB|CloudFront|origin|route|5..|target"'
+    if intent == "pod_crashloop":
+        return f'{base_query} |~ "CrashLoopBackOff|OOMKilled|Exception|ERROR|panic"'
+    if intent == "db_hikaricp_issue":
+        return f'{base_query} |~ "HikariPool|JDBC|connection|timeout|postgres|SQLException"'
+    return f'{base_query} |~ "{service_name}|ERROR|Exception|WARN"'
+
+
+def extract_sre_pod_name(message: str) -> str | None:
+    explicit = re.search(r"\bpod[/: ]+([a-z0-9][a-z0-9.-]{0,252})\b", message)
+    if explicit is not None:
+        return explicit.group(1)
+    generated = re.search(r"\b([a-z0-9][a-z0-9-]+-[a-f0-9]{8,10}-[a-z0-9]{5})\b", message)
+    return generated.group(1) if generated is not None else None
+
+
 def classify_admin_copilot_intent(message: str) -> AdminCopilotIntent:
     normalized = " ".join(message.lower().split())
     compact = normalized.replace(" ", "")
@@ -647,9 +1049,110 @@ def classify_admin_copilot_intent(message: str) -> AdminCopilotIntent:
     return "unsupported"
 
 
+def classify_sre_copilot_intent(message: str) -> SreCopilotIntent:
+    normalized = " ".join(message.lower().split())
+    compact = normalized.replace(" ", "")
+    if not normalized:
+        return "help"
+
+    sre_keywords = (
+        "장애",
+        "incident",
+        "alert",
+        "500",
+        "error",
+        "로그",
+        "log",
+        "metric",
+        "메트릭",
+        "trace",
+        "트레이스",
+        "pod",
+        "파드",
+        "crashloop",
+        "crashloopbackoff",
+        "sqs",
+        "queue",
+        "dlq",
+        "alb",
+        "cloudfront",
+        "route",
+        "routing",
+        "라우팅",
+        "hikari",
+        "db",
+        "database",
+        "checkout",
+        "pin",
+        "eks",
+        "kubernetes",
+    )
+    greeting_keywords = ("안녕", "안녕하세요", "하이", "hello", "hi", "hey")
+    if compact in greeting_keywords or (
+        any(compact.startswith(keyword) for keyword in greeting_keywords)
+        and not any(keyword in normalized for keyword in sre_keywords)
+    ):
+        return "greeting"
+
+    thanks_keywords = ("고마워", "감사", "thanks", "thank you", "thx")
+    if any(keyword in normalized for keyword in thanks_keywords) and not any(
+        keyword in normalized for keyword in sre_keywords
+    ):
+        return "thanks"
+
+    help_keywords = ("도움말", "사용법", "뭐 할 수", "무엇을 할 수", "기능", "help")
+    if any(keyword in normalized for keyword in help_keywords):
+        return "help"
+
+    write_keywords = (
+        "delete pod",
+        "pod delete",
+        "rollout restart",
+        "scale deployment",
+        "kubectl exec",
+        "삭제",
+        "재시작",
+        "스케일",
+        "exec",
+    )
+    if any(keyword in normalized for keyword in write_keywords):
+        return "unsupported"
+
+    if any(keyword in normalized for keyword in ("cloudfront", "alb", "origin", "라우팅", "routing", "route")):
+        return "routing_failure"
+    if any(keyword in normalized for keyword in ("crashloop", "crashloopbackoff", "oomkilled")):
+        return "pod_crashloop"
+    if any(keyword in normalized for keyword in ("hikari", "hikaricp", "db", "database", "postgres", "connection pool")):
+        return "db_hikaricp_issue"
+
+    has_sqs = "sqs" in normalized or "queue" in normalized or "dlq" in normalized
+    if has_sqs and any(keyword in normalized for keyword in ("발행", "publish", "send", "producer")):
+        return "sqs_publish_failure"
+    if has_sqs and any(keyword in normalized for keyword in ("소비", "consume", "consumer", "listener", "lag", "dlq")):
+        return "sqs_consume_failure"
+    if any(keyword in normalized for keyword in ("pin", "핀")) and any(
+        keyword in normalized for keyword in ("검증", "verified", "verification", "미반영", "event", "이벤트")
+    ):
+        return "pin_verification_missing"
+    if "checkout" in normalized and any(keyword in normalized for keyword in ("500", "error", "오류", "장애")):
+        return "checkout_500"
+    if any(keyword in normalized for keyword in ("pod", "파드")) and any(
+        keyword in normalized for keyword in ("restart", "재시작", "error", "오류", "장애")
+    ):
+        return "pod_crashloop"
+    if any(keyword in normalized for keyword in sre_keywords):
+        return "general_incident"
+    return "unsupported"
+
+
 def classify_admin_copilot_capability(message: str) -> AdminCopilotCapability:
     intent = classify_admin_copilot_intent(message)
     return ADMIN_INTENT_TO_CAPABILITY[intent]
+
+
+def classify_sre_copilot_capability(message: str) -> SreCopilotCapability:
+    intent = classify_sre_copilot_intent(message)
+    return SRE_INTENT_TO_CAPABILITY[intent]
 
 
 def normalize_admin_capability(value: object) -> AdminCopilotCapability | None:
@@ -662,6 +1165,16 @@ def normalize_admin_capability(value: object) -> AdminCopilotCapability | None:
     return None
 
 
+def normalize_sre_capability(value: object) -> SreCopilotCapability | None:
+    normalized = normalize_optional_string(value)
+    if normalized is None:
+        return None
+    normalized = normalized.lower().replace("-", "_")
+    if normalized in SRE_COPILOT_CAPABILITY_VALUES:
+        return normalized  # type: ignore[return-value]
+    return None
+
+
 def admin_intent_for_capability(
     *,
     capability: AdminCopilotCapability,
@@ -670,6 +1183,16 @@ def admin_intent_for_capability(
     if capability == "smalltalk" and fallback_intent in {"greeting", "thanks"}:
         return fallback_intent  # type: ignore[return-value]
     return ADMIN_CAPABILITY_TO_INTENT[capability]
+
+
+def sre_intent_for_capability(
+    *,
+    capability: SreCopilotCapability,
+    fallback_intent: str | None = None,
+) -> SreCopilotIntent:
+    if capability == "smalltalk" and fallback_intent in {"greeting", "thanks"}:
+        return fallback_intent  # type: ignore[return-value]
+    return SRE_CAPABILITY_TO_INTENT[capability]
 
 
 def build_llm_planner_prompt() -> str:
@@ -688,11 +1211,61 @@ def build_llm_planner_prompt() -> str:
         "For supported data requests, set requires_tools=true and provide the minimal tool_plans. "
         "Each tool plan must include server_name, tool_name, request_payload, and reason. "
         "Keep request_payload minimal; backend will fill safe defaults such as user_id. "
-        "If requested analysis is unsupported by available_tools, do not choose adjacent tools."
+        "If requested analysis is unsupported by available_tools, do not choose adjacent tools. "
+        "For sre_copilot, use only READ InfraOps tools and never plan kubectl exec, pod delete, "
+        "rollout restart, scaling, or other mutating actions. Choose the scenario capability "
+        "that best matches the incident symptom."
     )
 
 
 def available_capabilities_for_prompt(chat_type: ChatType) -> list[dict[str, str]]:
+    if chat_type == "sre_copilot":
+        return [
+            {
+                "capability": "smalltalk",
+                "description": "Greeting or thanks that does not require incident data.",
+            },
+            {
+                "capability": "help",
+                "description": "Explain what SRE Copilot can analyze.",
+            },
+            {
+                "capability": "unsupported",
+                "description": "Mutating operations or unsupported analysis requests.",
+            },
+            {
+                "capability": "checkout_500_analysis",
+                "description": "Analyze checkout 500 errors using logs, metrics, traces, K8s, AWS, and GitOps.",
+            },
+            {
+                "capability": "sqs_publish_failure_analysis",
+                "description": "Analyze SQS publish failures and queue attributes.",
+            },
+            {
+                "capability": "sqs_consume_failure_analysis",
+                "description": "Analyze SQS consumer, listener, lag, and DLQ failure symptoms.",
+            },
+            {
+                "capability": "pin_verification_missing_analysis",
+                "description": "Analyze missing PIN verification event propagation.",
+            },
+            {
+                "capability": "edge_routing_analysis",
+                "description": "Analyze CloudFront to ALB to EKS routing failures.",
+            },
+            {
+                "capability": "pod_crashloop_analysis",
+                "description": "Analyze pod CrashLoopBackOff, restarts, and Kubernetes events.",
+            },
+            {
+                "capability": "db_connection_analysis",
+                "description": "Analyze DB, PostgreSQL, JDBC, and HikariCP connection issues.",
+            },
+            {
+                "capability": "general_incident_analysis",
+                "description": "General read-only SRE incident triage using available observability evidence.",
+            },
+        ]
     if chat_type != "admin_copilot":
         return []
     return [
@@ -782,6 +1355,42 @@ def allowed_tool_keys(chat_type: ChatType) -> set[tuple[str, str]]:
             ("farmer-bnpl-mcp", "create_bnpl_checkout"),
             ("farm-advisory-mcp", "recommend_fertilizer_requirements"),
         }
+    if chat_type == "sre_copilot":
+        return {
+            ("infraops-mcp", tool_name)
+            for tool_name in (
+                "query_prometheus",
+                "query_loki",
+                "query_multi_cluster_prometheus",
+                "query_multi_cluster_loki",
+                "search_traces",
+                "get_trace_by_id",
+                "get_service_trace_summary",
+                "get_trace_error_spans",
+                "get_k8s_pods",
+                "get_k8s_events",
+                "get_k8s_deployments",
+                "get_k8s_hpa",
+                "get_pod_logs",
+                "get_rollout_status",
+                "get_alertmanager_alerts",
+                "get_sqs_queue_attributes",
+                "get_sqs_dlq_attributes",
+                "get_alb_target_health",
+                "get_cloudfront_origin_mapping",
+                "get_cloudfront_distribution_status",
+                "get_argocd_application_status",
+                "get_current_image_tags",
+                "get_recent_deployments",
+                "get_topology_snapshot",
+                "search_topology_knowledge",
+                "get_service_routing_path",
+                "get_service_dependency_map",
+                "create_rca_snapshot",
+                "search_incidents",
+                "search_rca_history",
+            )
+        }
     return {
         ("admin-riskops-mcp", "get_credit_review_queue"),
         ("admin-riskops-mcp", "get_credit_review_detail"),
@@ -835,6 +1444,33 @@ def build_validated_llm_plan(
         if llm_capability is not None:
             capability = llm_capability
             intent = admin_intent_for_capability(
+                capability=llm_capability,
+                fallback_intent=intent,
+            )
+
+    if chat_type == "sre_copilot":
+        llm_capability = normalize_sre_capability(payload.get("capability"))
+        if llm_capability is not None and llm_capability not in SRE_DIRECT_CAPABILITIES:
+            plans = deduplicate_tool_plans(
+                plan_sre_copilot_tools(
+                    message=message.lower(),
+                    capability=llm_capability,
+                )
+            )
+            if plans:
+                return AgentPlanResult(
+                    provider_name="llm",
+                    chat_type=chat_type,
+                    intent=sre_intent_for_capability(
+                        capability=llm_capability,
+                        fallback_intent=intent,
+                    ),
+                    capability=llm_capability,
+                    tool_plans=plans,
+                )
+        if llm_capability is not None:
+            capability = llm_capability
+            intent = sre_intent_for_capability(
                 capability=llm_capability,
                 fallback_intent=intent,
             )
@@ -913,7 +1549,7 @@ def validate_llm_tool_plan(
     if tool is None:
         return None
     if (
-        chat_type == "admin_copilot"
+        chat_type in {"admin_copilot", "sre_copilot"}
         and McpToolPermission(tool.tool_permission) != McpToolPermission.READ
     ):
         return None
@@ -997,6 +1633,142 @@ def normalize_tool_payload(
             normalize_optional_string(normalized.get("checkout_intent_id"))
             or "checkout-intent-preview"
         )
+    if server_name == "infraops-mcp":
+        normalized = normalize_infraops_tool_payload(
+            tool_name=tool_name,
+            message=message,
+            payload=normalized,
+        )
+    return normalized
+
+
+def normalize_infraops_tool_payload(
+    *,
+    tool_name: str,
+    message: str,
+    payload: dict[str, Any],
+) -> dict[str, Any]:
+    normalized = dict(payload)
+    intent = classify_sre_copilot_intent(message)
+    context = build_sre_incident_context(message=message.lower(), intent=intent)
+
+    if tool_name == "get_topology_snapshot":
+        normalized["environment"] = (
+            normalize_topology_environment(normalized.get("environment")) or "all"
+        )
+        normalized["detail"] = normalize_topology_detail(normalized.get("detail")) or "summary"
+        normalized["masking_level"] = (
+            normalize_topology_masking_level(normalized.get("masking_level"))
+            or "secrets_only"
+        )
+    if tool_name == "search_topology_knowledge":
+        normalized["query"] = (
+            normalize_optional_string(normalized.get("query"))
+            or f'{intent} {context["topology_service"]}'
+        )
+        normalized["environment"] = (
+            normalize_topology_environment(normalized.get("environment")) or "all"
+        )
+        normalized["limit"] = clamp_int(normalized.get("limit"), default=5)
+        normalized["masking_level"] = (
+            normalize_topology_masking_level(normalized.get("masking_level"))
+            or "secrets_only"
+        )
+    if tool_name in {"get_service_routing_path", "get_service_dependency_map"}:
+        normalized["service"] = (
+            normalize_optional_string(normalized.get("service"))
+            or str(context["topology_service"])
+        )
+        normalized["environment"] = (
+            normalize_topology_environment(normalized.get("environment")) or "all"
+        )
+        normalized["masking_level"] = (
+            normalize_topology_masking_level(normalized.get("masking_level"))
+            or "secrets_only"
+        )
+    if tool_name in {"query_prometheus", "query_multi_cluster_prometheus"}:
+        normalized["query"] = (
+            normalize_optional_string(normalized.get("query"))
+            or str(context["prometheus_query"])
+        )
+    if tool_name in {"query_loki", "query_multi_cluster_loki"}:
+        normalized["query"] = (
+            normalize_optional_string(normalized.get("query"))
+            or str(context["loki_query"])
+        )
+        normalized["limit"] = clamp_int(normalized.get("limit"), default=100)
+    if tool_name == "get_alertmanager_alerts":
+        normalized["active_only"] = parse_bool(normalized.get("active_only", True))
+        normalized["limit"] = clamp_int(normalized.get("limit"), default=20)
+    if tool_name in {
+        "get_k8s_pods",
+        "get_k8s_events",
+        "get_k8s_deployments",
+        "get_k8s_hpa",
+        "get_current_image_tags",
+        "get_recent_deployments",
+        "create_rca_snapshot",
+    }:
+        normalized["namespace"] = (
+            normalize_optional_string(normalized.get("namespace"))
+            or str(context["namespace"])
+        )
+    if tool_name in {"get_rollout_status", "get_current_image_tags"}:
+        normalized["deployment_name"] = (
+            normalize_optional_string(normalized.get("deployment_name"))
+            or str(context["deployment_name"])
+        )
+    if tool_name == "get_recent_deployments":
+        normalized["limit"] = clamp_int(normalized.get("limit"), default=10)
+    if tool_name in {"search_traces", "get_service_trace_summary"}:
+        normalized["service_name"] = (
+            normalize_optional_string(normalized.get("service_name"))
+            or str(context["service_name"])
+        )
+        normalized["limit"] = clamp_int(normalized.get("limit"), default=50)
+    if tool_name == "search_traces":
+        operation_name = normalize_optional_string(normalized.get("operation_name"))
+        if operation_name is None and context["operation_name"] is not None:
+            normalized["operation_name"] = context["operation_name"]
+    if tool_name == "get_argocd_application_status":
+        normalized["application_name"] = (
+            normalize_optional_string(normalized.get("application_name"))
+            or str(context["deployment_name"])
+        )
+    if tool_name in {"get_sqs_queue_attributes", "get_sqs_dlq_attributes"}:
+        default_queue = (
+            context["dlq_name"] if tool_name == "get_sqs_dlq_attributes" else context["queue_name"]
+        )
+        if normalize_optional_string(normalized.get("queue_url")) is None:
+            normalized["queue_name"] = (
+                normalize_optional_string(normalized.get("queue_name"))
+                or str(default_queue)
+            )
+    if tool_name == "get_pod_logs":
+        pod_name = normalize_optional_string(normalized.get("pod_name")) or extract_sre_pod_name(message)
+        if pod_name is not None:
+            normalized["pod_name"] = pod_name
+        normalized["namespace"] = (
+            normalize_optional_string(normalized.get("namespace"))
+            or str(context["namespace"])
+        )
+        normalized["tail_lines"] = clamp_int(normalized.get("tail_lines"), default=200)
+    if tool_name in {"search_incidents", "search_rca_history"}:
+        normalized["query"] = normalize_optional_string(normalized.get("query")) or intent
+        normalized["limit"] = clamp_int(normalized.get("limit"), default=5)
+    if tool_name == "create_rca_snapshot":
+        normalized["incident_key"] = normalize_optional_string(normalized.get("incident_key")) or intent
+        normalized["prometheus_query"] = (
+            normalize_optional_string(normalized.get("prometheus_query"))
+            or str(context["prometheus_query"])
+        )
+        normalized["loki_query"] = (
+            normalize_optional_string(normalized.get("loki_query"))
+            or str(context["loki_query"])
+        )
+        normalized["loki_limit"] = clamp_int(normalized.get("loki_limit"), default=100)
+        if not isinstance(normalized.get("context_bundle"), dict):
+            normalized.pop("context_bundle", None)
     return normalized
 
 
@@ -1038,6 +1810,22 @@ def build_direct_answer(*, chat_type: ChatType, intent: str) -> str | None:
                 "인프라/스케일링 상태는 확인할 수 있습니다."
             ),
         }.get(intent)
+    if chat_type == "sre_copilot":
+        return {
+            "greeting": (
+                "안녕하세요. 로그, 메트릭, 트레이스, Kubernetes, AWS, GitOps 근거로 "
+                "장애 원인 분석을 도와드릴 수 있습니다."
+            ),
+            "thanks": "필요하면 장애 증상과 대상 서비스를 알려주세요. READ 기반으로 분석하겠습니다.",
+            "help": (
+                "checkout 500, SQS 발행/소비 실패, PIN 이벤트 미반영, "
+                "CloudFront-ALB-EKS 라우팅 실패, CrashLoopBackOff, DB/HikariCP 문제를 분석할 수 있습니다."
+            ),
+            "unsupported": (
+                "현재 SRE Copilot은 READ 기반 관측/분석만 지원합니다. "
+                "재시작, 삭제, scale, kubectl exec 같은 변경 작업은 실행하지 않습니다."
+            ),
+        }.get(intent)
     return {
         "greeting": (
             "안녕하세요. 외상 한도, 상환 일정, 배송 현황, "
@@ -1060,6 +1848,31 @@ def normalize_optional_string(value: object) -> str | None:
         return None
     normalized = value.strip()
     return normalized or None
+
+
+def normalize_topology_environment(value: object) -> str | None:
+    normalized = normalize_optional_string(value)
+    if normalized in {"onprem", "aws_eks", "all"}:
+        return normalized
+    if normalized in {"aws", "eks", "aws-eks"}:
+        return "aws_eks"
+    if normalized in {"on-prem", "on_prem"}:
+        return "onprem"
+    return None
+
+
+def normalize_topology_detail(value: object) -> str | None:
+    normalized = normalize_optional_string(value)
+    if normalized in {"summary", "full"}:
+        return normalized
+    return None
+
+
+def normalize_topology_masking_level(value: object) -> str | None:
+    normalized = normalize_optional_string(value)
+    if normalized in {"secrets_only", "infrastructure"}:
+        return normalized
+    return None
 
 
 def parse_bool(value: object) -> bool:

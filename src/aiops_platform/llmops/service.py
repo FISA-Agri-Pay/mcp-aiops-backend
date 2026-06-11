@@ -4,6 +4,7 @@ import logging
 from typing import Any, get_args
 from uuid import UUID
 
+from aiops_platform.agent.context_bundle import build_incident_context_bundle
 from aiops_platform.agent.schemas import AgentToolExecutionResult
 from aiops_platform.core.config import settings
 from aiops_platform.llmops.client import LlmClient, LlmCompletionRequest, create_llm_client
@@ -75,6 +76,31 @@ DEFAULT_PROMPTS = {
             "Tool 결과에 해당 기간 필드가 없으면 그 기간의 데이터라고 단정하지 말고 "
             "'현재 조회 가능한 요약 기준'이라고 명시한다. 지원하지 않는 분석이나 "
             "Tool 결과에 없는 항목은 데이터 없음으로 설명한다."
+        ),
+    ),
+    "sre_copilot": (
+        "sre_copilot",
+        (
+            "SRE Monitoring Copilot으로서 MCP Tool 결과만 근거로 한국어 장애 분석 답변을 작성한다. "
+            "반드시 JSON object를 반환하되, answer 필드는 한국어 자연어 문자열이어야 한다. "
+            "answer를 object, array, dict, markdown AST로 반환하지 않는다. "
+            "초기 범위는 READ 기반 관측/분석이며 자동 복구, 재시작, 스케일, 삭제, exec 실행을 "
+            "지시하거나 실행했다고 말하지 않는다. "
+            "input에 incident_context_bundle이 있으면 이를 우선 근거 구조로 사용하고, "
+            "tool_results는 세부 원문 확인용으로만 보조 활용한다. "
+            "incident_context_bundle.failure_boundary_candidates가 있으면 경계별 "
+            "healthy, degraded, unknown 상태를 근거로 어느 구간까지 정상이고 "
+            "어느 경계에서 끊겼는지 우선 판단한다. "
+            "관측 결과를 바탕으로 영향 범위, 유력 원인 후보, 반증/추가 확인 포인트, "
+            "승인 기반 조치 제안을 구분한다. "
+            "answer는 프론트가 plain text로 렌더링해도 읽히도록 짧은 섹션과 줄바꿈을 포함한다. "
+            "굵게 표시, 표, 긴 단일 문단은 사용하지 않는다. "
+            "운영 데이터 기반 답변은 반드시 요약, 관측 근거, 원인 후보, 권장 확인/조치, 데이터 한계 "
+            "5개 섹션 제목만 이 순서대로 사용한다. "
+            "각 섹션 제목은 한 줄로 쓰고, 섹션 사이는 빈 줄로 구분한다. "
+            "각 섹션의 내용은 '- ' 불릿으로 작성하되 섹션당 1~4개로 제한한다. "
+            "로그, 메트릭, 트레이스, Kubernetes, AWS, GitOps 결과 사이의 시간/서비스/리소스 "
+            "일치 여부를 우선 비교한다. 확인되지 않은 내용은 추정으로 단정하지 않는다."
         ),
     ),
     "rca": (
@@ -160,7 +186,11 @@ class LlmOpsService:
         session_id: str | None = None,
         capability: str | None = None,
     ) -> LlmRunResult:
-        scope: PromptScope = "farmer_bnpl" if chat_type == "farmer_bnpl" else "admin_copilot"
+        scope: PromptScope = {
+            "farmer_bnpl": "farmer_bnpl",
+            "admin_copilot": "admin_copilot",
+            "sre_copilot": "sre_copilot",
+        }[chat_type]
         prompt = self.ensure_prompt_version(scope=scope)
         input_payload = {
             "chat_type": chat_type,
@@ -172,6 +202,13 @@ class LlmOpsService:
                 for result in tool_results
             ],
         }
+        if chat_type == "sre_copilot":
+            input_payload["incident_context_bundle"] = build_incident_context_bundle(
+                chat_type=chat_type,
+                message=message,
+                capability=capability,
+                tool_results=tool_results,
+            )
         request = LlmCompletionRequest(
             chat_type=chat_type,
             prompt_key=prompt.prompt_key,
