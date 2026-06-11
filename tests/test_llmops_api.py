@@ -94,9 +94,10 @@ def test_admin_copilot_prompt_requires_readable_plain_text_sections() -> None:
 
     assert "plain text" in template
     assert "긴 단일 문단" in template
-    assert "요약, 주요 지표, 판단, 우선 조치, 데이터 한계" in template
+    assert "요약, 주요 지표, 판단, 우선 조치, 데이터 한계 5개 섹션" in template
     assert "섹션 사이는 빈 줄로 구분" in template
     assert "'- ' 불릿" in template
+    assert "smalltalk, help, unsupported이면 섹션 형식을 강제하지 않고" in template
 
 
 def test_llm_runs_can_be_filtered_for_client_history() -> None:
