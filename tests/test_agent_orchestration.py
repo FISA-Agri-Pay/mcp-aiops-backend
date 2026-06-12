@@ -629,6 +629,48 @@ def test_incident_context_bundle_marks_degraded_edge_boundary() -> None:
     assert boundaries["aws_target_group"]["status"] == "degraded"
 
 
+def test_incident_context_bundle_avoids_substring_health_matches() -> None:
+    bundle = build_incident_context_bundle(
+        chat_type="sre_copilot",
+        message="CloudFront ALB EKS routing failure",
+        capability="edge_routing_analysis",
+        tool_results=[
+            make_sre_tool_result(
+                "get_alb_target_health",
+                {"message": "download completed", "state": "initializing"},
+            ),
+        ],
+    )
+
+    boundaries = {
+        candidate["boundary"]: candidate
+        for candidate in bundle["failure_boundary_candidates"]
+    }
+    assert boundaries["aws_alb"]["status"] == "unknown"
+    assert boundaries["aws_target_group"]["status"] == "unknown"
+
+
+def test_incident_context_bundle_marks_not_ready_as_degraded() -> None:
+    bundle = build_incident_context_bundle(
+        chat_type="sre_copilot",
+        message="CloudFront ALB EKS routing failure",
+        capability="edge_routing_analysis",
+        tool_results=[
+            make_sre_tool_result(
+                "get_alb_target_health",
+                {"conditions": [{"type": "Ready", "reason": "NotReady"}]},
+            ),
+        ],
+    )
+
+    boundaries = {
+        candidate["boundary"]: candidate
+        for candidate in bundle["failure_boundary_candidates"]
+    }
+    assert boundaries["aws_alb"]["status"] == "degraded"
+    assert boundaries["aws_target_group"]["status"] == "degraded"
+
+
 def test_incident_context_bundle_keeps_empty_masked_payloads() -> None:
     tool_result = AgentToolExecutionResult(
         server_name="infraops-mcp",

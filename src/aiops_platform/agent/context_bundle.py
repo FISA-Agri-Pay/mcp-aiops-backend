@@ -150,34 +150,34 @@ BOUNDARY_EXPECTED_SIGNALS = {
     "network": "Network route between domains is known and observable.",
     "aws_service": "AWS managed service status is readable and healthy.",
 }
-DEGRADED_MARKERS = (
-    "unhealthy",
-    "degraded",
-    "failed",
-    "failure",
-    "down",
-    "crashloop",
-    "crashloopbackoff",
-    "imagepullbackoff",
-    "oomkilled",
-    "servfail",
-    "timeout",
-    "exception",
-    "5xx",
-)
 DEGRADED_PATTERNS = (
+    re.compile(r"\bnot[\s_-]*ready\b"),
+    re.compile(r"\bnot[\s_-]*healthy\b"),
+    re.compile(r"\bunhealthy\b"),
+    re.compile(r"\bdegraded\b"),
+    re.compile(r"\bfailed\b"),
+    re.compile(r"\bfailure\b"),
+    re.compile(r"\bdown\b"),
+    re.compile(r"\bcrashloop\b"),
+    re.compile(r"\bcrashloopbackoff\b"),
+    re.compile(r"\bimagepullbackoff\b"),
+    re.compile(r"\boomkilled\b"),
+    re.compile(r"\bservfail\b"),
+    re.compile(r"\btimeout\b"),
+    re.compile(r"\bexception\b"),
     re.compile(r"\berror\b"),
     re.compile(r"\b5\d\d\b"),
+    re.compile(r"\b5xx\b"),
 )
-HEALTHY_MARKERS = (
-    "healthy",
-    "running",
-    "ready",
-    "active",
-    "deployed",
-    "synced",
-    "success",
-    "succeeded",
+HEALTHY_PATTERNS = (
+    re.compile(r"\bhealthy\b"),
+    re.compile(r"\brunning\b"),
+    re.compile(r"\bready\b"),
+    re.compile(r"\bactive\b"),
+    re.compile(r"\bdeployed\b"),
+    re.compile(r"\bsynced\b"),
+    re.compile(r"\bsuccess\b"),
+    re.compile(r"\bsucceeded\b"),
 )
 IGNORED_EVIDENCE_KEYS = {
     "query",
@@ -454,7 +454,7 @@ def assess_boundary_evidence(
     )
     if contains_degraded_signal(evidence_text):
         return "degraded", "medium", "Evidence payload contains degraded/error markers."
-    if any(marker in evidence_text for marker in HEALTHY_MARKERS):
+    if contains_healthy_signal(evidence_text):
         confidence = "high" if len(evidence_results) >= 2 else "medium"
         return "healthy", confidence, "Evidence payload contains healthy/ready markers."
     return "unknown", "low", "Evidence exists but does not contain clear health markers."
@@ -480,6 +480,8 @@ def empty_payload_if_none(payload: Any) -> Any:
 
 
 def contains_degraded_signal(evidence_text: str) -> bool:
-    if any(marker in evidence_text for marker in DEGRADED_MARKERS):
-        return True
     return any(pattern.search(evidence_text) for pattern in DEGRADED_PATTERNS)
+
+
+def contains_healthy_signal(evidence_text: str) -> bool:
+    return any(pattern.search(evidence_text) for pattern in HEALTHY_PATTERNS)
