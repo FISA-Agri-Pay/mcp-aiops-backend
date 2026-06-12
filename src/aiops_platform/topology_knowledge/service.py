@@ -31,7 +31,7 @@ SECRET_ASSIGNMENT_PATTERN = re.compile(
     r"(?i)\b(password|passwd|secret|token|api[_-]?key|authorization|"
     r"access[_-]?key|private[_-]?key)\b(\s*[:=]\s*)([^\s`|,]+)"
 )
-IPV4_PATTERN = re.compile(r"\b(?:\d{1,3}\.){3}\d{1,3}(?::\d{1,5})?\b")
+IPV4_PATTERN = re.compile(r"\b(?:\d{1,3}\.){3}\d{1,3}(?::\d{1,5})?(?:/\d{1,2})?\b")
 AWS_ARN_PATTERN = re.compile(r"arn:aws:[^\s`|,)]+")
 AWS_ACCOUNT_PATTERN = re.compile(r"\b\d{12}\b")
 AWS_DNS_PATTERN = re.compile(

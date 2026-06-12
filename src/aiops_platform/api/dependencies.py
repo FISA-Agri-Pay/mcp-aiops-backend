@@ -3,6 +3,7 @@ from typing import Annotated
 from fastapi import Depends, Request
 
 from aiops_platform.admin_riskops.service import AdminRiskOpsService
+from aiops_platform.alertmanager_agent.service import AlertmanagerSreAgentService
 from aiops_platform.farmer_bnpl.service import FarmerBnplService
 from aiops_platform.infra_rca.service import InfraRcaService
 from aiops_platform.llmops.service import LlmOpsService
@@ -34,6 +35,10 @@ def get_farmer_bnpl_service(request: Request) -> FarmerBnplService:
     return request.app.state.farmer_bnpl_service
 
 
+def get_alertmanager_sre_agent_service(request: Request) -> AlertmanagerSreAgentService:
+    return request.app.state.alertmanager_sre_agent_service
+
+
 OrchestrationServiceDep = Annotated[
     OrchestrationService,
     Depends(get_orchestration_service),
@@ -57,4 +62,8 @@ AdminRiskOpsServiceDep = Annotated[
 FarmerBnplServiceDep = Annotated[
     FarmerBnplService,
     Depends(get_farmer_bnpl_service),
+]
+AlertmanagerSreAgentServiceDep = Annotated[
+    AlertmanagerSreAgentService,
+    Depends(get_alertmanager_sre_agent_service),
 ]

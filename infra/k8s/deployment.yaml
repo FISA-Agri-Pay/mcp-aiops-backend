@@ -31,6 +31,39 @@ spec:
         fsGroup: 10001
         seccompProfile:
           type: RuntimeDefault
+      initContainers:
+        - name: sync-topology-knowledge
+          image: public.ecr.aws/aws-cli/aws-cli:latest
+          imagePullPolicy: IfNotPresent
+          command: ["/bin/sh", "-c"]
+          args:
+            - |
+              set -eu
+              if [ -z "${TOPOLOGY_KNOWLEDGE_S3_URI:-}" ]; then
+                echo "TOPOLOGY_KNOWLEDGE_S3_URI is empty; skipping topology sync."
+                exit 0
+              fi
+              aws s3 sync "${TOPOLOGY_KNOWLEDGE_S3_URI}" /topology \
+                --exclude "*" \
+                --include "*topology-snapshot-*.md" \
+                --only-show-errors
+          securityContext:
+            runAsNonRoot: true
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          envFrom:
+            - configMapRef:
+                name: mcp-aiops-backend-config
+          env:
+            - name: HOME
+              value: /tmp
+          volumeMounts:
+            - name: topology-knowledge
+              mountPath: /topology
+            - name: tmp
+              mountPath: /tmp
       containers:
         - name: api
           image: REPLACE_IMAGE
@@ -80,8 +113,13 @@ spec:
               cpu: "1"
               memory: 1Gi
           volumeMounts:
+            - name: topology-knowledge
+              mountPath: /app/topology-knowledge
+              readOnly: true
             - name: tmp
               mountPath: /tmp
       volumes:
+        - name: topology-knowledge
+          emptyDir: {}
         - name: tmp
           emptyDir: {}
