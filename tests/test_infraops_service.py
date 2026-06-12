@@ -764,6 +764,58 @@ def test_infraops_service_maps_pod_logs_and_rollout_status() -> None:
     assert rollout.conditions == [{"type": "Available", "status": "True"}]
 
 
+def test_infraops_service_preserves_scale_to_zero_deployments() -> None:
+    deployment = {
+        "metadata": {
+            "name": "worker",
+            "creationTimestamp": "2026-06-11T02:00:00Z",
+            "generation": 4,
+        },
+        "spec": {
+            "replicas": 0,
+            "template": {
+                "spec": {
+                    "containers": [
+                        {"name": "worker", "image": "example.com/worker:v2"}
+                    ]
+                }
+            },
+        },
+        "status": {
+            "observedGeneration": 4,
+            "updatedReplicas": 0,
+            "readyReplicas": 0,
+            "availableReplicas": 0,
+            "unavailableReplicas": 0,
+        },
+    }
+    rollout_service = make_infraops_service(
+        kubernetes_client=KubernetesClient(
+            "http://kubernetes:8001",
+            http_client=FakeHttpClient(deployment),
+        ),
+    )
+    recent_service = make_infraops_service(
+        kubernetes_client=KubernetesClient(
+            "http://kubernetes:8001",
+            http_client=FakeHttpClient({"items": [deployment]}),
+        ),
+    )
+
+    rollout = rollout_service.get_rollout_status(
+        deployment_name="worker",
+        namespace="default",
+    )
+    recent = recent_service.get_recent_deployments(namespace="default")
+
+    assert rollout.rollout_status == "HEALTHY"
+    assert rollout.desired_replicas == 0
+    assert rollout.ready_replicas == 0
+    assert recent.items[0]["desired_replicas"] == 0
+    assert recent.items[0]["ready_replicas"] == 0
+    assert recent.items[0]["available_replicas"] == 0
+
+
 def test_infraops_service_maps_current_images_and_recent_deployments() -> None:
     deployments = {
         "items": [

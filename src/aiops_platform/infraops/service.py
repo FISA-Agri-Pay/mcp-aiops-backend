@@ -1584,6 +1584,15 @@ def is_error_span(span: dict[str, Any]) -> bool:
     return False
 
 
+def extract_desired_replicas(spec: dict[str, Any]) -> int:
+    replicas = spec.get("replicas")
+    if isinstance(replicas, bool):
+        return 1
+    if isinstance(replicas, int):
+        return max(replicas, 0)
+    return 1
+
+
 def build_rollout_status_result(
     *,
     source: str,
@@ -1594,7 +1603,7 @@ def build_rollout_status_result(
     metadata = deployment.get("metadata", {})
     spec = deployment.get("spec", {})
     status = deployment.get("status", {})
-    desired_replicas = spec.get("replicas") or 1
+    desired_replicas = extract_desired_replicas(spec)
     generation = metadata.get("generation")
     observed_generation = status.get("observedGeneration")
     updated_replicas = status.get("updatedReplicas") or 0
@@ -1660,7 +1669,7 @@ def summarize_deployment_item(deployment: dict[str, Any]) -> dict[str, Any]:
         "deployment_name": metadata.get("name"),
         "created_at": metadata.get("creationTimestamp"),
         "generation": metadata.get("generation"),
-        "desired_replicas": spec.get("replicas") or 1,
+        "desired_replicas": extract_desired_replicas(spec),
         "updated_replicas": status.get("updatedReplicas") or 0,
         "ready_replicas": status.get("readyReplicas") or 0,
         "available_replicas": status.get("availableReplicas") or 0,
