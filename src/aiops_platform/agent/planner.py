@@ -681,10 +681,14 @@ def plan_sre_copilot_tools(
     intent = sre_intent_for_capability(capability=resolved_capability)
     context = build_sre_incident_context(message=message, intent=intent)
     namespace_payload = {"namespace": context["namespace"]}
+    if context["kubernetes_source"] is not None:
+        namespace_payload["source"] = context["kubernetes_source"]
     deployment_payload = {
         "namespace": context["namespace"],
         "deployment_name": context["deployment_name"],
     }
+    if context["kubernetes_source"] is not None:
+        deployment_payload["source"] = context["kubernetes_source"]
 
     topology_payload = {
         "service": context["topology_service"],
@@ -765,7 +769,7 @@ def plan_sre_copilot_tools(
         ),
         build_sre_tool_plan(
             "get_recent_deployments",
-            {"namespace": context["namespace"], "limit": 10},
+            {**namespace_payload, "limit": 10},
             "Check whether a recent deployment correlates with the incident window.",
         ),
         build_sre_tool_plan(
@@ -896,14 +900,20 @@ def build_sre_alb_target_health_payload(context: dict[str, str | None]) -> dict[
 
 def build_sre_incident_context(*, message: str, intent: SreCopilotIntent) -> dict[str, str | None]:
     service_name = infer_sre_service_name(message, intent=intent)
-    namespace = infer_sre_namespace(service_name)
+    namespace = infer_sre_namespace(message, service_name=service_name)
     deployment_name = infer_sre_deployment_name(message, default=service_name)
     queue_name, dlq_name = infer_sre_queue_names(intent)
     edge_target = infer_sre_edge_target(message, intent=intent, service_name=service_name)
+    kubernetes_source = infer_sre_kubernetes_source(
+        message,
+        service_name=service_name,
+        edge_target=edge_target,
+    )
     return {
         "service_name": service_name,
         "namespace": namespace,
         "deployment_name": deployment_name,
+        "kubernetes_source": kubernetes_source,
         "queue_name": queue_name,
         "dlq_name": dlq_name,
         "edge_target": edge_target,
@@ -985,10 +995,37 @@ def infer_sre_load_balancer_name(
     return None
 
 
-def infer_sre_namespace(service_name: str) -> str:
+def infer_sre_namespace(message: str, *, service_name: str) -> str:
+    match = re.search(
+        r"\bnamespace[=:]\s*([a-z0-9][a-z0-9.-]{0,62})\b",
+        message,
+    )
+    if match is not None:
+        return match.group(1)
     if service_name == "service-catalog":
         return "service-catalog"
+    if service_name in {"service-auth", "service-payment", "service-core", "service-admin"}:
+        return "kkpp"
     return "default"
+
+
+def infer_sre_kubernetes_source(
+    message: str,
+    *,
+    service_name: str,
+    edge_target: str,
+) -> str | None:
+    if re.search(r"\bcluster[=:]\s*(aws-eks|eks)\b", message):
+        return "eks"
+    if re.search(r"\bcluster[=:]\s*(onprem|on-prem|on_prem)\b", message):
+        return "onprem"
+    if edge_target == "aws_eks":
+        return "eks"
+    if edge_target == "onprem":
+        return "onprem"
+    if service_name in {"service-auth", "service-payment", "service-core", "service-admin"}:
+        return "onprem"
+    return None
 
 
 def infer_sre_deployment_name(message: str, *, default: str) -> str:
@@ -1973,6 +2010,21 @@ def normalize_infraops_tool_payload(
             normalize_optional_string(normalized.get("namespace"))
             or str(context["namespace"])
         )
+    if tool_name in {
+        "get_k8s_pods",
+        "get_k8s_events",
+        "get_k8s_deployments",
+        "get_k8s_hpa",
+        "get_current_image_tags",
+        "get_recent_deployments",
+        "get_rollout_status",
+        "get_pod_logs",
+    }:
+        kubernetes_source = normalize_optional_string(
+            normalized.get("source")
+        ) or normalize_optional_string(context.get("kubernetes_source"))
+        if kubernetes_source is not None:
+            normalized["source"] = kubernetes_source
     if tool_name in {"get_rollout_status", "get_current_image_tags"}:
         normalized["deployment_name"] = (
             normalize_optional_string(normalized.get("deployment_name"))
@@ -2029,6 +2081,11 @@ def normalize_infraops_tool_payload(
             normalize_optional_string(normalized.get("namespace"))
             or str(context["namespace"])
         )
+        kubernetes_source = normalize_optional_string(
+            normalized.get("source")
+        ) or normalize_optional_string(context.get("kubernetes_source"))
+        if kubernetes_source is not None:
+            normalized["source"] = kubernetes_source
         normalized["tail_lines"] = clamp_int(normalized.get("tail_lines"), default=200)
     if tool_name in {"search_incidents", "search_rca_history"}:
         normalized["query"] = normalize_optional_string(normalized.get("query")) or intent

@@ -242,9 +242,10 @@ def test_alertmanager_sre_agent_dry_run_cloudfront_alb_onprem_routing_tool_plan(
     payload = build_firing_payload(
         alertname="OnpremMetalLBRoutingFailure",
         service="service-payment",
-        namespace="default",
+        namespace="kkpp",
         cluster="onprem",
         summary="CloudFront to ALB to on-prem MetalLB routing failed",
+        extra_labels={"deployment": "service-payment"},
     )
 
     result = plan_from_payload(payload)
@@ -257,6 +258,12 @@ def test_alertmanager_sre_agent_dry_run_cloudfront_alb_onprem_routing_tool_plan(
     assert "get_cloudfront_origin_mapping" in names
     assert "get_cloudfront_distribution_status" in names
     assert "get_alb_target_health" not in names
+    rollout = next(tool for tool in result.planned_tools if tool.tool_name == "get_rollout_status")
+    assert rollout.request_payload == {
+        "namespace": "kkpp",
+        "deployment_name": "service-payment",
+        "source": "onprem",
+    }
 
 
 def test_alertmanager_sre_agent_dry_run_db_hikaricp_tool_plan() -> None:
