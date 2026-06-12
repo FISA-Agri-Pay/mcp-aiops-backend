@@ -482,6 +482,11 @@ def build_fake_answer(*, chat_type: ChatType, tool_count: int) -> str:
             f"요청하신 내용을 확인하기 위해 관련 정보 {tool_count}건을 조회했습니다. "
             "외상 한도, 추천 상품, 상환 또는 배송 정보를 기준으로 안내드릴게요."
         )
+    if chat_type == "sre_copilot":
+        return (
+            f"Agent executed {tool_count} MCP tool checks for the SRE Copilot flow. "
+            "Review tool_results for logs, metrics, traces, Kubernetes, AWS, and GitOps evidence."
+        )
     return (
         f"운영 판단에 필요한 데이터 {tool_count}건을 조회했습니다. "
         "조회된 지표를 기준으로 리스크와 다음 조치를 정리하겠습니다."

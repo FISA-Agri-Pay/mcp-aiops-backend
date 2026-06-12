@@ -74,6 +74,8 @@ def test_client_contract_openapi_includes_chat_history_and_mcp_paths() -> None:
         "/api/v1/aiops/farmer/orders/latest/delivery",
         "/admin/copilot/sessions",
         "/admin/copilot/ask",
+        "/sre/copilot/sessions",
+        "/sre/copilot/ask",
         "/admin/risk/credit-reviews",
         "/admin/risk/bnpl/summary",
         "/admin/risk/overdues/summary",

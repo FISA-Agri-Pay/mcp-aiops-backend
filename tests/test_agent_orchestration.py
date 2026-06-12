@@ -1,4 +1,6 @@
 from aiops_platform.agent.dispatcher import McpToolDispatcher
+from aiops_platform.agent.context_bundle import build_incident_context_bundle
+from aiops_platform.agent.orchestrator import AgentOrchestrator
 from aiops_platform.agent.planner import (
     LlmAgentPlanner,
     RuleBasedAgentPlanner,
@@ -6,9 +8,11 @@ from aiops_platform.agent.planner import (
     classify_admin_copilot_intent,
     classify_farmer_bnpl_capability,
     classify_farmer_bnpl_intent,
+    classify_sre_copilot_capability,
+    classify_sre_copilot_intent,
     farmer_intent_for_capability,
 )
-from aiops_platform.agent.schemas import AgentToolExecutionResult, AgentToolPlan
+from aiops_platform.agent.schemas import AgentPlanResult, AgentToolExecutionResult, AgentToolPlan
 from aiops_platform.llmops.client import LlmCompletionResponse
 from aiops_platform.mcp.schemas import (
     McpConfirmationPolicy,
@@ -39,6 +43,109 @@ class FakePlannerLlmClient:
             content="{}",
             output_payload=self.payload,
         )
+
+
+class FakeInfraOpsService:
+    def query_multi_cluster_prometheus(self, **payload):
+        return {"query": payload["query"], "partial": False, "sources": []}
+
+    def query_multi_cluster_loki(self, **payload):
+        return {"query": payload["query"], "limit": payload["limit"], "sources": []}
+
+    def get_alertmanager_alerts(self, **payload):
+        return {"items": [], "active_only": payload["active_only"]}
+
+
+class FakeTopologyKnowledgeService:
+    def get_topology_snapshot(self, **payload):
+        return {"environment": payload["environment"], "snapshots": []}
+
+    def search_topology_knowledge(self, **payload):
+        return {"query": payload["query"], "matches": []}
+
+    def get_service_routing_path(self, **payload):
+        return {"service": payload["service"], "routing_paths": []}
+
+    def get_service_dependency_map(self, **payload):
+        return {"service": payload["service"], "dependencies": []}
+
+
+class FakeSreRcaPlanner:
+    provider_name = "fake"
+
+    def plan(self, *, chat_type, message, user_id):
+        return AgentPlanResult(
+            provider_name="rule_based",
+            chat_type=chat_type,
+            intent="checkout_500",
+            capability="checkout_500_analysis",
+            tool_plans=[
+                AgentToolPlan(
+                    server_name="infraops-mcp",
+                    tool_name="get_topology_snapshot",
+                    request_payload={"environment": "all"},
+                    reason="Read topology.",
+                ),
+                AgentToolPlan(
+                    server_name="infraops-mcp",
+                    tool_name="query_multi_cluster_loki",
+                    request_payload={"query": '{namespace="service-catalog"}', "limit": 10},
+                    reason="Read logs.",
+                ),
+                AgentToolPlan(
+                    server_name="infraops-mcp",
+                    tool_name="create_rca_snapshot",
+                    request_payload={"incident_key": "checkout_500"},
+                    reason="Create RCA snapshot.",
+                ),
+            ],
+        )
+
+
+class RecordingDispatcher:
+    def __init__(self) -> None:
+        self.plans: list[AgentToolPlan] = []
+
+    def execute(self, plan: AgentToolPlan) -> AgentToolExecutionResult:
+        self.plans.append(plan)
+        return AgentToolExecutionResult(
+            server_name=plan.server_name,
+            tool_name=plan.tool_name,
+            tool_permission=McpToolPermission.READ,
+            confirmation_policy=McpConfirmationPolicy.NONE,
+            execution_policy=McpExecutionPolicy.ALLOWED,
+            call_status=McpToolCallStatus.SUCCESS,
+            will_execute=True,
+            requires_approval=False,
+            is_blocked=False,
+            request_payload=plan.request_payload,
+            masked_request_payload=plan.request_payload,
+            response_payload={"tool_name": plan.tool_name},
+            masked_response_payload={"tool_name": plan.tool_name},
+        )
+
+
+def make_sre_tool_result(
+    tool_name: str,
+    response_payload: dict,
+    *,
+    status: McpToolCallStatus = McpToolCallStatus.SUCCESS,
+) -> AgentToolExecutionResult:
+    return AgentToolExecutionResult(
+        server_name="infraops-mcp",
+        tool_name=tool_name,
+        tool_permission=McpToolPermission.READ,
+        confirmation_policy=McpConfirmationPolicy.NONE,
+        execution_policy=McpExecutionPolicy.ALLOWED,
+        call_status=status,
+        will_execute=True,
+        requires_approval=False,
+        is_blocked=False,
+        request_payload={},
+        masked_request_payload={},
+        response_payload=response_payload,
+        masked_response_payload=response_payload,
+    )
 
 
 def test_rule_based_planner_selects_farmer_bnpl_purchase_tools() -> None:
@@ -290,6 +397,141 @@ def test_rule_based_planner_selects_ops_tools_for_admin_action_priority() -> Non
     ]
 
 
+def test_rule_based_planner_selects_sre_checkout_500_tool_bundle() -> None:
+    planner = RuleBasedAgentPlanner()
+
+    plan = planner.plan(
+        chat_type="sre_copilot",
+        message="checkout 500 장애 분석해줘",
+        user_id="sre-1",
+    )
+
+    tool_names = [tool.tool_name for tool in plan.tool_plans]
+    assert classify_sre_copilot_intent("checkout 500 장애 분석해줘") == "checkout_500"
+    assert classify_sre_copilot_capability("checkout 500 장애 분석해줘") == (
+        "checkout_500_analysis"
+    )
+    assert plan.intent == "checkout_500"
+    assert plan.capability == "checkout_500_analysis"
+    assert tool_names[:4] == [
+        "get_topology_snapshot",
+        "search_topology_knowledge",
+        "get_service_routing_path",
+        "get_service_dependency_map",
+    ]
+    assert tool_names[4:8] == [
+        "get_alertmanager_alerts",
+        "query_multi_cluster_prometheus",
+        "query_multi_cluster_loki",
+        "get_k8s_pods",
+    ]
+    assert "get_service_trace_summary" in tool_names
+    assert "get_argocd_application_status" in tool_names
+    assert "create_rca_snapshot" in tool_names
+    rollout = next(tool for tool in plan.tool_plans if tool.tool_name == "get_rollout_status")
+    assert rollout.request_payload == {
+        "namespace": "service-catalog",
+        "deployment_name": "service-catalog",
+    }
+    alb = next(tool for tool in plan.tool_plans if tool.tool_name == "get_alb_target_health")
+    assert alb.request_payload == {"load_balancer_name": "kkpp-catalog-api"}
+
+
+def test_rule_based_planner_does_not_reuse_catalog_alb_for_onprem_routing() -> None:
+    planner = RuleBasedAgentPlanner()
+
+    plan = planner.plan(
+        chat_type="sre_copilot",
+        message="service-payment CloudFront ALB on-prem MetalLB 라우팅 실패 분석해줘",
+        user_id="sre-1",
+    )
+
+    tool_names = [tool.tool_name for tool in plan.tool_plans]
+    assert plan.intent == "routing_failure"
+    assert "get_cloudfront_origin_mapping" in tool_names
+    assert "get_cloudfront_distribution_status" in tool_names
+    assert "get_alb_target_health" not in tool_names
+    rollout = next(tool for tool in plan.tool_plans if tool.tool_name == "get_rollout_status")
+    assert rollout.request_payload == {
+        "namespace": "default",
+        "deployment_name": "service-payment",
+    }
+
+
+def test_rule_based_planner_uses_explicit_alb_name_for_non_catalog_routing() -> None:
+    planner = RuleBasedAgentPlanner()
+
+    plan = planner.plan(
+        chat_type="sre_copilot",
+        message=(
+            "service-payment CloudFront ALB on-prem 라우팅 실패 "
+            "lb_name=kkpp-onprem-edge 분석해줘"
+        ),
+        user_id="sre-1",
+    )
+
+    alb = next(tool for tool in plan.tool_plans if tool.tool_name == "get_alb_target_health")
+    assert alb.request_payload == {"load_balancer_name": "kkpp-onprem-edge"}
+
+
+def test_rule_based_planner_keeps_sre_mutating_request_unsupported() -> None:
+    planner = RuleBasedAgentPlanner()
+
+    plan = planner.plan(
+        chat_type="sre_copilot",
+        message="service-catalog pod delete 해줘",
+        user_id="sre-1",
+    )
+
+    assert plan.intent == "unsupported"
+    assert plan.capability == "unsupported"
+    assert plan.tool_plans == []
+
+    restart_plan = planner.plan(
+        chat_type="sre_copilot",
+        message="service-catalog 파드 재시작해줘",
+        user_id="sre-1",
+    )
+    assert restart_plan.intent == "unsupported"
+    assert restart_plan.capability == "unsupported"
+    assert restart_plan.tool_plans == []
+
+
+def test_rule_based_planner_allows_readonly_restart_count_question() -> None:
+    planner = RuleBasedAgentPlanner()
+
+    plan = planner.plan(
+        chat_type="sre_copilot",
+        message="service-catalog 파드 재시작 횟수 확인해줘",
+        user_id="sre-1",
+    )
+
+    tool_names = [tool.tool_name for tool in plan.tool_plans]
+    assert classify_sre_copilot_intent("service-catalog 파드 재시작 횟수 확인해줘") == (
+        "pod_crashloop"
+    )
+    assert plan.intent == "pod_crashloop"
+    assert plan.capability == "pod_crashloop_analysis"
+    assert "get_k8s_pods" in tool_names
+    assert "get_k8s_events" in tool_names
+
+
+def test_rule_based_planner_allows_readonly_hpa_scale_status_question() -> None:
+    planner = RuleBasedAgentPlanner()
+
+    plan = planner.plan(
+        chat_type="sre_copilot",
+        message="HPA 스케일 상태 보여줘",
+        user_id="sre-1",
+    )
+
+    tool_names = [tool.tool_name for tool in plan.tool_plans]
+    assert classify_sre_copilot_intent("HPA 스케일 상태 보여줘") == "general_incident"
+    assert plan.intent == "general_incident"
+    assert plan.capability == "general_incident_analysis"
+    assert "get_k8s_hpa" in tool_names
+
+
 def test_llm_planner_maps_admin_capability_to_backend_tool_bundle() -> None:
     planner = LlmAgentPlanner(
         llm_client=FakePlannerLlmClient(
@@ -319,6 +561,35 @@ def test_llm_planner_maps_admin_capability_to_backend_tool_bundle() -> None:
         "get_overdue_summary",
         "search_overdue_users",
     ]
+
+
+def test_llm_planner_maps_sre_capability_to_backend_tool_bundle() -> None:
+    planner = LlmAgentPlanner(
+        llm_client=FakePlannerLlmClient(
+            {
+                "intent": "routing_failure",
+                "capability": "edge_routing_analysis",
+                "requires_tools": True,
+                "tool_plans": [],
+            }
+        )
+    )
+
+    plan = planner.plan(
+        chat_type="sre_copilot",
+        message="CloudFront ALB EKS 라우팅 실패 분석해줘",
+        user_id="sre-1",
+    )
+
+    tool_names = [tool.tool_name for tool in plan.tool_plans]
+    assert plan.provider_name == "llm"
+    assert plan.intent == "routing_failure"
+    assert plan.capability == "edge_routing_analysis"
+    assert "get_cloudfront_origin_mapping" in tool_names
+    assert "get_alb_target_health" in tool_names
+    assert "get_service_routing_path" in tool_names
+    assert "get_service_dependency_map" in tool_names
+    assert all(tool.server_name == "infraops-mcp" for tool in plan.tool_plans)
 
 
 def test_llm_planner_falls_back_when_supported_admin_request_skips_tools() -> None:
@@ -372,6 +643,224 @@ def test_dispatcher_executes_read_tool_and_masks_payload() -> None:
     assert result.response_payload["available_limit"] == 2550000
     assert "access_token" not in result.request_payload
     assert "access_token" not in result.masked_request_payload
+
+
+def test_dispatcher_executes_sre_infraops_read_tool() -> None:
+    dispatcher = McpToolDispatcher(infraops_service=FakeInfraOpsService())
+
+    result = dispatcher.execute(
+        AgentToolPlan(
+            server_name="infraops-mcp",
+            tool_name="query_multi_cluster_loki",
+            request_payload={"query": '{namespace="service-catalog"}', "limit": 50},
+            reason="Read logs.",
+        )
+    )
+
+    assert result.call_status == McpToolCallStatus.SUCCESS
+    assert result.will_execute is True
+    assert result.response_payload["query"] == '{namespace="service-catalog"}'
+    assert result.response_payload["limit"] == 50
+
+
+def test_dispatcher_executes_sre_topology_knowledge_tool() -> None:
+    dispatcher = McpToolDispatcher(
+        infraops_service=FakeInfraOpsService(),
+        topology_knowledge_service=FakeTopologyKnowledgeService(),
+    )
+
+    result = dispatcher.execute(
+        AgentToolPlan(
+            server_name="infraops-mcp",
+            tool_name="get_service_routing_path",
+            request_payload={"service": "checkout", "environment": "all"},
+            reason="Read topology routing path.",
+        )
+    )
+
+    assert result.call_status == McpToolCallStatus.SUCCESS
+    assert result.will_execute is True
+    assert result.response_payload["service"] == "checkout"
+
+
+def test_sre_orchestrator_enriches_rca_snapshot_with_context_bundle() -> None:
+    dispatcher = RecordingDispatcher()
+    orchestrator = AgentOrchestrator(
+        planner=FakeSreRcaPlanner(),
+        dispatcher=dispatcher,
+    )
+
+    result = orchestrator.run(
+        chat_type="sre_copilot",
+        message="checkout 500 장애 분석해줘",
+        user_id="sre-1",
+    )
+
+    assert [plan.tool_name for plan in dispatcher.plans] == [
+        "get_topology_snapshot",
+        "query_multi_cluster_loki",
+        "create_rca_snapshot",
+    ]
+    rca_payload = dispatcher.plans[-1].request_payload
+    assert "context_bundle" in rca_payload
+    bundle = rca_payload["context_bundle"]
+    assert bundle["schema_version"] == "incident_context_bundle.v1"
+    assert "snapshots" in bundle["topology"]
+    assert "multi_cluster_loki" in bundle["observability"]["logs"]
+    assert bundle["cross_domain"]["scenario"] == "edge_to_eks_routing"
+    assert bundle["summary_for_llm"]["cross_domain_scenario"] == "edge_to_eks_routing"
+    assert [candidate["boundary"] for candidate in bundle["failure_boundary_candidates"]] == [
+        "cloudfront",
+        "aws_alb",
+        "aws_target_group",
+        "eks_ingress",
+        "k8s_service",
+        "pod_application",
+    ]
+    assert result.tool_results[-1].tool_name == "create_rca_snapshot"
+
+
+def test_incident_context_bundle_identifies_onprem_to_sqs_path() -> None:
+    bundle = build_incident_context_bundle(
+        chat_type="sre_copilot",
+        message="pin event sqs publish failure",
+        capability="sqs_publish_failure_analysis",
+        tool_results=[
+            make_sre_tool_result(
+                "get_sqs_queue_attributes",
+                {"queue_name": "pin-events", "health": "healthy"},
+            ),
+            make_sre_tool_result(
+                "query_multi_cluster_loki",
+                {"sources": [{"cluster": "onprem", "status": "ready"}]},
+            ),
+        ],
+    )
+
+    boundaries = {
+        candidate["boundary"]: candidate
+        for candidate in bundle["failure_boundary_candidates"]
+    }
+    assert bundle["cross_domain"]["scenario"] == "onprem_to_sqs"
+    assert bundle["cross_domain"]["path"] == [
+        "pod_application",
+        "dns",
+        "vpn_route",
+        "aws_sqs",
+    ]
+    assert boundaries["aws_sqs"]["status"] == "healthy"
+    assert boundaries["aws_sqs"]["evidence_tools"] == ["get_sqs_queue_attributes"]
+
+
+def test_incident_context_bundle_marks_degraded_edge_boundary() -> None:
+    bundle = build_incident_context_bundle(
+        chat_type="sre_copilot",
+        message="CloudFront ALB EKS routing failure",
+        capability="edge_routing_analysis",
+        tool_results=[
+            make_sre_tool_result(
+                "get_alb_target_health",
+                {"target_health": [{"target": "pod-ip", "state": "unhealthy"}]},
+            ),
+            make_sre_tool_result(
+                "get_cloudfront_distribution_status",
+                {"distribution_id": "EDFDVBD6EXAMPLE", "status": "Deployed"},
+            ),
+        ],
+    )
+
+    boundaries = {
+        candidate["boundary"]: candidate
+        for candidate in bundle["failure_boundary_candidates"]
+    }
+    assert bundle["cross_domain"]["scenario"] == "edge_to_eks_routing"
+    assert boundaries["cloudfront"]["status"] == "healthy"
+    assert boundaries["aws_alb"]["status"] == "degraded"
+    assert boundaries["aws_target_group"]["status"] == "degraded"
+
+
+def test_incident_context_bundle_avoids_substring_health_matches() -> None:
+    bundle = build_incident_context_bundle(
+        chat_type="sre_copilot",
+        message="CloudFront ALB EKS routing failure",
+        capability="edge_routing_analysis",
+        tool_results=[
+            make_sre_tool_result(
+                "get_alb_target_health",
+                {"message": "download completed", "state": "initializing"},
+            ),
+        ],
+    )
+
+    boundaries = {
+        candidate["boundary"]: candidate
+        for candidate in bundle["failure_boundary_candidates"]
+    }
+    assert boundaries["aws_alb"]["status"] == "unknown"
+    assert boundaries["aws_target_group"]["status"] == "unknown"
+
+
+def test_incident_context_bundle_marks_not_ready_as_degraded() -> None:
+    bundle = build_incident_context_bundle(
+        chat_type="sre_copilot",
+        message="CloudFront ALB EKS routing failure",
+        capability="edge_routing_analysis",
+        tool_results=[
+            make_sre_tool_result(
+                "get_alb_target_health",
+                {"conditions": [{"type": "Ready", "reason": "NotReady"}]},
+            ),
+        ],
+    )
+
+    boundaries = {
+        candidate["boundary"]: candidate
+        for candidate in bundle["failure_boundary_candidates"]
+    }
+    assert boundaries["aws_alb"]["status"] == "degraded"
+    assert boundaries["aws_target_group"]["status"] == "degraded"
+
+
+def test_incident_context_bundle_keeps_empty_masked_payloads() -> None:
+    tool_result = AgentToolExecutionResult(
+        server_name="infraops-mcp",
+        tool_name="get_alb_target_health",
+        tool_permission=McpToolPermission.READ,
+        confirmation_policy=McpConfirmationPolicy.NONE,
+        execution_policy=McpExecutionPolicy.ALLOWED,
+        call_status=McpToolCallStatus.SUCCESS,
+        will_execute=True,
+        requires_approval=False,
+        is_blocked=False,
+        request_payload={"authorization": "Bearer raw-token"},
+        masked_request_payload={},
+        response_payload={
+            "target_health": [{"target": "pod-ip", "state": "unhealthy"}],
+            "secret": "raw-secret",
+        },
+        masked_response_payload={},
+    )
+
+    bundle = build_incident_context_bundle(
+        chat_type="sre_copilot",
+        message="CloudFront ALB EKS routing failure",
+        capability="edge_routing_analysis",
+        tool_results=[tool_result],
+    )
+
+    alb_entry = bundle["live_state"]["aws"]["alb_target_health"][0]
+    raw_entry = bundle["raw_tool_results"][0]
+    boundaries = {
+        candidate["boundary"]: candidate
+        for candidate in bundle["failure_boundary_candidates"]
+    }
+
+    assert alb_entry["request_payload"] == {}
+    assert alb_entry["response_payload"] == {}
+    assert raw_entry["request_payload"] == {}
+    assert boundaries["aws_alb"]["status"] == "unknown"
+    assert "raw-token" not in str(bundle)
+    assert "raw-secret" not in str(bundle)
 
 
 def test_dispatcher_blocks_user_confirmed_write_tool() -> None:

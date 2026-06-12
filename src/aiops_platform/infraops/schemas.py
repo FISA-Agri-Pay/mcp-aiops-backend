@@ -48,11 +48,160 @@ class MultiClusterLokiQueryResult(BaseModel):
     sources: list[MultiClusterQuerySourceResult]
 
 
+class TraceSearchRequest(BaseModel):
+    traceql: str | None = Field(default=None, min_length=1)
+    service_name: str | None = Field(default=None, max_length=253)
+    operation_name: str | None = Field(default=None, max_length=253)
+    start: str | None = None
+    end: str | None = None
+    min_duration: str | None = Field(default=None, max_length=40)
+    max_duration: str | None = Field(default=None, max_length=40)
+    limit: int = Field(default=20, ge=1, le=100)
+
+
+class TraceSearchResult(BaseModel):
+    source: str = "tempo"
+    query: dict[str, Any]
+    traces: list[dict[str, Any]]
+    raw: dict[str, Any]
+    note: str | None = None
+
+
+class TraceByIdRequest(BaseModel):
+    trace_id: str = Field(min_length=1, max_length=128)
+
+
+class TraceByIdResult(BaseModel):
+    source: str = "tempo"
+    trace_id: str
+    trace: dict[str, Any]
+    span_count: int
+    error_span_count: int
+    note: str | None = None
+
+
+class TraceServiceSummaryResult(BaseModel):
+    source: str = "tempo"
+    service_name: str
+    start: str | None = None
+    end: str | None = None
+    limit: int
+    trace_count: int
+    error_trace_count: int
+    duration_ms_summary: dict[str, float | None]
+    traces: list[dict[str, Any]]
+    raw: dict[str, Any]
+    note: str | None = None
+
+
+class TraceErrorSpansResult(BaseModel):
+    source: str = "tempo"
+    trace_id: str
+    span_count: int
+    error_span_count: int
+    error_spans: list[dict[str, Any]]
+    note: str | None = None
+
+
 class KubernetesResourceResult(BaseModel):
     source: str = "default"
     namespace: str
     items: list[dict[str, Any]]
     raw: dict[str, Any]
+
+
+class PodLogsRequest(BaseModel):
+    namespace: str | None = None
+    pod_name: str = Field(min_length=1, max_length=253)
+    container: str | None = Field(default=None, max_length=253)
+    since_seconds: int | None = Field(default=None, ge=1, le=604800)
+    tail_lines: int = Field(default=200, ge=1, le=5000)
+    source: str | None = None
+
+
+class PodLogsResult(BaseModel):
+    source: str = "default"
+    namespace: str
+    pod_name: str
+    container: str | None = None
+    since_seconds: int | None = None
+    tail_lines: int
+    logs: str
+
+
+class RolloutStatusRequest(BaseModel):
+    namespace: str | None = None
+    deployment_name: str = Field(min_length=1, max_length=253)
+    source: str | None = None
+
+
+class RolloutStatusResult(BaseModel):
+    source: str = "default"
+    namespace: str
+    deployment_name: str
+    rollout_status: Literal["HEALTHY", "PROGRESSING", "DEGRADED"]
+    generation: int | None = None
+    observed_generation: int | None = None
+    desired_replicas: int | None = None
+    updated_replicas: int | None = None
+    ready_replicas: int | None = None
+    available_replicas: int | None = None
+    unavailable_replicas: int | None = None
+    conditions: list[dict[str, Any]]
+    raw: dict[str, Any]
+
+
+class AlertmanagerAlertsRequest(BaseModel):
+    active_only: bool = True
+    receiver: str | None = Field(default=None, max_length=200)
+    alertname: str | None = Field(default=None, max_length=200)
+    severity: str | None = Field(default=None, max_length=80)
+    limit: int = Field(default=100, ge=1, le=500)
+
+
+class AlertmanagerAlertsResult(BaseModel):
+    source: str = "alertmanager"
+    active_only: bool
+    receiver: str | None = None
+    alertname: str | None = None
+    severity: str | None = None
+    limit: int
+    items: list[dict[str, Any]]
+    raw_count: int
+
+
+class InfraOpsExternalReadResult(BaseModel):
+    source: str
+    resource: str
+    request: dict[str, Any]
+    response: Any
+    note: str | None = None
+
+
+class CurrentImageTagsRequest(BaseModel):
+    namespace: str | None = None
+    deployment_name: str | None = Field(default=None, min_length=1, max_length=253)
+    source: str | None = None
+
+
+class CurrentImageTagsResult(BaseModel):
+    source: str = "default"
+    namespace: str
+    deployment_name: str | None = None
+    items: list[dict[str, Any]]
+
+
+class RecentDeploymentsRequest(BaseModel):
+    namespace: str | None = None
+    source: str | None = None
+    limit: int = Field(default=20, ge=1, le=100)
+
+
+class RecentDeploymentsResult(BaseModel):
+    source: str = "default"
+    namespace: str
+    limit: int
+    items: list[dict[str, Any]]
 
 
 class ScaleDeploymentPreviewRequest(BaseModel):
@@ -168,6 +317,7 @@ class RcaSnapshotRequest(BaseModel):
     kafka_consumer_group: str | None = Field(default=None, max_length=253)
     kafka_topic: str | None = Field(default=None, max_length=253)
     batch_job_name: str | None = Field(default=None, max_length=253)
+    context_bundle: dict[str, Any] | None = None
 
 
 class RcaSnapshotResult(BaseModel):

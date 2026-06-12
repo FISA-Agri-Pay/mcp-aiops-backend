@@ -10,7 +10,7 @@ from aiops_platform.mcp.schemas import (
 )
 
 AgentProviderName = Literal["rule_based", "llm", "llm_with_rule_fallback"]
-AgentChatType = Literal["farmer_bnpl", "admin_copilot"]
+AgentChatType = Literal["farmer_bnpl", "admin_copilot", "sre_copilot"]
 
 
 class AgentToolPlan(BaseModel):

@@ -5,6 +5,7 @@ from pydantic import BaseModel, Field
 PromptScope = Literal[
     "farmer_bnpl",
     "admin_copilot",
+    "sre_copilot",
     "rca",
     "ops_report",
     "common",

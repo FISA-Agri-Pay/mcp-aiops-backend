@@ -9,6 +9,7 @@ from aiops_platform.agent.orchestrator import AgentOrchestrator
 from aiops_platform.agent.planner import (
     classify_admin_copilot_intent,
     classify_farmer_bnpl_intent,
+    classify_sre_copilot_intent,
 )
 from aiops_platform.agent.schemas import AgentToolExecutionResult
 from aiops_platform.llmops.schemas import LlmRunResult
@@ -154,6 +155,26 @@ class OrchestrationService:
             message=message,
             user_id=user_id,
             job_type="admin_copilot",
+        )
+
+    def ask_sre_copilot(
+        self,
+        *,
+        message: str,
+        user_id: str,
+        session_id: str | None = None,
+    ) -> ChatAskResult:
+        session = self._resolve_or_create_session(
+            session_id=session_id,
+            chat_type="sre_copilot",
+            user_id=user_id,
+            title=build_session_title(message),
+        )
+        return self._answer_chat(
+            session=session,
+            message=message,
+            user_id=user_id,
+            job_type="sre_copilot",
         )
 
     def list_jobs(
@@ -882,6 +903,8 @@ def resolve_assistant_content(
     capability: str | None = None,
 ) -> str:
     if llm_run_status != "SUCCESS":
+        if chat_type == "sre_copilot":
+            return build_sre_copilot_llm_failure_fallback(tool_results or [])
         if chat_type == "admin_copilot":
             return build_admin_copilot_llm_failure_fallback(tool_results or [])
         return build_farmer_bnpl_llm_failure_fallback(
@@ -906,6 +929,8 @@ def build_direct_chat_response(
 ) -> dict[str, str] | None:
     if chat_type == "admin_copilot":
         return build_direct_admin_copilot_response(message)
+    if chat_type == "sre_copilot":
+        return build_direct_sre_copilot_response(message)
     if chat_type == "farmer_bnpl":
         return build_direct_farmer_bnpl_response(message)
     return None
@@ -926,6 +951,27 @@ def build_direct_admin_copilot_response(message: str) -> dict[str, str] | None:
         "unsupported": (
             "현재 Admin Copilot에서 해당 분석에 필요한 운영 데이터를 조회할 수 없습니다. "
             "BNPL 현황, 연체 위험 고객, 심사 대기 건, 인프라/스케일링 상태는 확인할 수 있습니다."
+        ),
+    }
+    answer = responses.get(intent)
+    return {"intent": intent, "answer": answer} if answer is not None else None
+
+
+def build_direct_sre_copilot_response(message: str) -> dict[str, str] | None:
+    intent = classify_sre_copilot_intent(message)
+    responses = {
+        "greeting": (
+            "안녕하세요. 장애 원인 분석을 위해 로그, 메트릭, 트레이스, Kubernetes, "
+            "AWS, GitOps 조회를 도와드릴 수 있습니다."
+        ),
+        "thanks": "필요하면 장애 증상과 대상 서비스를 알려주세요. READ 기반으로 근거를 모아 분석하겠습니다.",
+        "help": (
+            "checkout 500, SQS 발행/소비 실패, PIN 검증 이벤트 미반영, "
+            "CloudFront-ALB-EKS 라우팅 실패, CrashLoopBackOff, DB/HikariCP 문제를 분석할 수 있습니다."
+        ),
+        "unsupported": (
+            "현재 SRE Copilot은 READ 기반 관측/분석만 지원합니다. "
+            "pod delete, rollout restart, scale, kubectl exec 같은 변경 작업은 실행하지 않습니다."
         ),
     }
     answer = responses.get(intent)
@@ -979,6 +1025,32 @@ def build_admin_copilot_llm_failure_fallback(
             f"현재 확인된 주요 지표는 {', '.join(metrics)}입니다."
         )
     return "운영 데이터를 조회했지만 AI 요약 생성에 실패했습니다. 잠시 후 다시 시도해주세요."
+
+
+def build_sre_copilot_llm_failure_fallback(
+    tool_results: list[AgentToolExecutionResult],
+) -> str:
+    successful_tools = [
+        result.tool_name
+        for result in tool_results
+        if McpToolCallStatus(result.call_status) == McpToolCallStatus.SUCCESS
+    ]
+    failed_tools = [
+        result.tool_name
+        for result in tool_results
+        if McpToolCallStatus(result.call_status) == McpToolCallStatus.FAILED
+    ]
+    parts: list[str] = []
+    if successful_tools:
+        parts.append(f"성공한 조회: {', '.join(successful_tools[:8])}")
+    if failed_tools:
+        parts.append(f"실패한 조회: {', '.join(failed_tools[:5])}")
+    if parts:
+        return (
+            "장애 분석 데이터 조회는 진행했지만 AI 요약 생성에 실패했습니다. "
+            f"{'; '.join(parts)}. MCP tool_results에서 상세 근거를 확인해 주세요."
+        )
+    return "장애 분석 중 AI 답변 생성에 실패했습니다. 잠시 후 다시 시도해주세요."
 
 
 def build_farmer_bnpl_llm_failure_fallback(

@@ -83,6 +83,39 @@ def test_mcp_tools_include_elk_registry_entries() -> None:
     assert ELK_TOOL_NAMES.issubset(tool_names)
 
 
+def test_mcp_tools_include_sre_mvp_read_registry_entries() -> None:
+    tools = list_mcp_tools(server_name="infraops-mcp")
+    tool_permissions = {tool.tool_name: tool.tool_permission for tool in tools}
+
+    expected_tool_names = {
+        "get_alertmanager_alerts",
+        "search_traces",
+        "get_trace_by_id",
+        "get_service_trace_summary",
+        "get_trace_error_spans",
+        "get_pod_logs",
+        "get_rollout_status",
+        "get_sqs_queue_attributes",
+        "get_sqs_dlq_attributes",
+        "get_alb_target_health",
+        "get_cloudfront_origin_mapping",
+        "get_cloudfront_distribution_status",
+        "get_argocd_application_status",
+        "get_current_image_tags",
+        "get_recent_deployments",
+        "get_topology_snapshot",
+        "search_topology_knowledge",
+        "get_service_routing_path",
+        "get_service_dependency_map",
+    }
+
+    assert expected_tool_names.issubset(tool_permissions)
+    assert all(
+        tool_permissions[tool_name] == "READ"
+        for tool_name in expected_tool_names
+    )
+
+
 def test_mcp_registry_can_hide_elk_tools() -> None:
     tools = list_mcp_tools(server_name="infraops-mcp", include_elk=False)
     servers = list_mcp_servers(include_elk=False)

@@ -11,7 +11,7 @@ from aiops_platform.mcp.schemas import (
     McpToolPermission,
 )
 
-ChatType = Literal["farmer_bnpl", "admin_copilot"]
+ChatType = Literal["farmer_bnpl", "admin_copilot", "sre_copilot"]
 ChatStatus = Literal["OPEN", "CLOSED"]
 MessageRole = Literal["USER", "ASSISTANT", "SYSTEM"]
 JobStatus = Literal["QUEUED", "RUNNING", "SUCCEEDED", "FAILED", "CANCELED"]

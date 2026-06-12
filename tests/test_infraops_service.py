@@ -1,6 +1,9 @@
 import pytest
 
 from aiops_platform.infraops.clients import (
+    AlertmanagerClient,
+    ArgoCdClient,
+    AwsOpsClient,
     BatchClient,
     ElasticsearchClient,
     InfraOpsClientError,
@@ -10,6 +13,7 @@ from aiops_platform.infraops.clients import (
     KubernetesClient,
     LokiClient,
     PrometheusClient,
+    TempoClient,
 )
 from aiops_platform.infraops.service import (
     InfraOpsService,
@@ -34,6 +38,10 @@ class FakeHttpClient:
         self.calls.append({"method": "GET", "url": url, **kwargs})
         return self.response
 
+    def get_text(self, url, **kwargs):
+        self.calls.append({"method": "GET", "url": url, **kwargs})
+        return self.response if isinstance(self.response, str) else ""
+
     def post_json(self, url, **kwargs):
         self.calls.append({"method": "POST", "url": url, **kwargs})
         return self.response
@@ -51,6 +59,7 @@ def make_infraops_service(**overrides) -> InfraOpsService:
     dependencies = {
         "prometheus_client": PrometheusClient("http://prometheus:9090"),
         "loki_client": LokiClient("http://loki:3100"),
+        "tempo_client": TempoClient("http://tempo:3200"),
         "kubernetes_client": KubernetesClient("http://kubernetes:8001"),
         "kafka_admin_client": KafkaAdminClient("http://kafka-admin:8080"),
         "batch_client": BatchClient("http://batch-api:8081"),
@@ -104,6 +113,44 @@ def test_loki_client_calls_query_range_api() -> None:
     }
 
 
+def test_tempo_client_searches_traces_and_reads_trace_by_id() -> None:
+    search_http_client = FakeHttpClient({"traces": [{"traceID": "abc"}]})
+    search_client = TempoClient(
+        "http://tempo:3200",
+        timeout_seconds=3,
+        http_client=search_http_client,
+    )
+
+    assert search_client.search(
+        service_name="service-catalog",
+        operation_name="POST /checkout",
+        start="100",
+        end="200",
+        min_duration="100ms",
+        limit=10,
+    ) == {"traces": [{"traceID": "abc"}]}
+    assert search_http_client.calls[0]["url"] == "http://tempo:3200/api/search"
+    assert search_http_client.calls[0]["params"] == {
+        "limit": "10",
+        "tags": "service.name=service-catalog name=POST /checkout",
+        "start": "100",
+        "end": "200",
+        "minDuration": "100ms",
+    }
+
+    trace_http_client = FakeHttpClient({"batches": []})
+    trace_client = TempoClient(
+        "http://tempo:3200",
+        timeout_seconds=3,
+        http_client=trace_http_client,
+    )
+
+    assert trace_client.trace("abc/123") == {"batches": []}
+    assert trace_http_client.calls[0]["url"] == (
+        "http://tempo:3200/api/traces/abc%2F123"
+    )
+
+
 def test_kubernetes_client_calls_namespaced_read_apis() -> None:
     http_client = FakeHttpClient({"items": []})
     client = KubernetesClient(
@@ -127,6 +174,43 @@ def test_kubernetes_client_calls_namespaced_read_apis() -> None:
         "horizontalpodautoscalers"
     )
     assert http_client.calls[0]["headers"]["Authorization"] == "Bearer token"
+
+
+def test_kubernetes_client_reads_pod_logs_and_single_deployment() -> None:
+    log_http_client = FakeHttpClient("line 1\nline 2\n")
+    log_client = KubernetesClient(
+        "http://kubernetes:8001",
+        bearer_token="token",
+        timeout_seconds=3,
+        http_client=log_http_client,
+    )
+
+    assert log_client.pod_logs(
+        "default",
+        "api-123",
+        container="api",
+        since_seconds=60,
+        tail_lines=10,
+    ) == "line 1\nline 2\n"
+    assert log_http_client.calls[0]["url"] == (
+        "http://kubernetes:8001/api/v1/namespaces/default/pods/api-123/log"
+    )
+    assert log_http_client.calls[0]["params"] == {
+        "tailLines": "10",
+        "container": "api",
+        "sinceSeconds": "60",
+    }
+
+    deployment_http_client = FakeHttpClient({"metadata": {"name": "api"}})
+    deployment_client = KubernetesClient(
+        "http://kubernetes:8001",
+        http_client=deployment_http_client,
+    )
+
+    assert deployment_client.deployment("default", "api") == {"metadata": {"name": "api"}}
+    assert deployment_http_client.calls[0]["url"] == (
+        "http://kubernetes:8001/apis/apps/v1/namespaces/default/deployments/api"
+    )
 
 
 def test_kubernetes_client_creates_namespaced_job() -> None:
@@ -207,6 +291,62 @@ def test_kafka_admin_client_encodes_consumer_group_path_segment() -> None:
     assert http_client.calls[0]["url"] == (
         "http://kafka-admin:8080/kafka/consumer-groups/team%2Fa/lag"
     )
+
+
+def test_alertmanager_client_calls_alerts_api() -> None:
+    http_client = FakeHttpClient([{"labels": {"alertname": "HighErrorRate"}}])
+    client = AlertmanagerClient(
+        "http://alertmanager:9093",
+        timeout_seconds=3,
+        http_client=http_client,
+    )
+
+    assert client.alerts(active_only=True, severity="critical") == [
+        {"labels": {"alertname": "HighErrorRate"}}
+    ]
+    assert http_client.calls[0]["url"] == "http://alertmanager:9093/api/v2/alerts"
+    assert http_client.calls[0]["params"] == {
+        "active": "true",
+        "severity": "critical",
+    }
+
+
+def test_aws_and_argocd_read_clients_call_proxy_apis() -> None:
+    aws_http_client = FakeHttpClient({"Attributes": {"ApproximateNumberOfMessages": "0"}})
+    aws_client = AwsOpsClient(
+        "http://ops-proxy:8080",
+        timeout_seconds=3,
+        http_client=aws_http_client,
+    )
+
+    assert aws_client.sqs_queue_attributes(
+        queue_name="credit-payment-requested.fifo",
+        region="ap-northeast-2",
+    ) == {"Attributes": {"ApproximateNumberOfMessages": "0"}}
+    assert aws_http_client.calls[0]["url"] == (
+        "http://ops-proxy:8080/aws/sqs/queue-attributes"
+    )
+    assert aws_http_client.calls[0]["params"] == {
+        "queue_name": "credit-payment-requested.fifo",
+        "region": "ap-northeast-2",
+    }
+
+    argocd_http_client = FakeHttpClient({"sync": {"status": "Synced"}})
+    argocd_client = ArgoCdClient(
+        "http://ops-proxy:8080",
+        timeout_seconds=3,
+        http_client=argocd_http_client,
+    )
+
+    assert argocd_client.application_status(application_name="service-catalog") == {
+        "sync": {"status": "Synced"}
+    }
+    assert argocd_http_client.calls[0]["url"] == (
+        "http://ops-proxy:8080/argocd/application-status"
+    )
+    assert argocd_http_client.calls[0]["params"] == {
+        "application_name": "service-catalog"
+    }
 
 
 def test_batch_client_calls_run_status_api() -> None:
@@ -467,6 +607,96 @@ def test_infraops_service_maps_multi_cluster_loki_results() -> None:
     assert result.sources[0].data == {"status": "success", "data": {"result": []}}
 
 
+def test_infraops_service_maps_tempo_trace_search_and_summary() -> None:
+    response = {
+        "traces": [
+            {"traceID": "trace-1", "durationMs": 120, "status": "ok"},
+            {"traceID": "trace-2", "durationMs": 250, "status": "error"},
+        ]
+    }
+    service = make_infraops_service(
+        tempo_client=TempoClient(
+            "http://tempo:3200",
+            http_client=FakeHttpClient(response),
+        ),
+    )
+
+    search = service.search_traces(service_name="service-catalog", limit=2)
+    summary = service.get_service_trace_summary(
+        service_name="service-catalog",
+        limit=2,
+    )
+
+    assert search.traces == response["traces"]
+    assert search.query["service_name"] == "service-catalog"
+    assert summary.trace_count == 2
+    assert summary.error_trace_count == 1
+    assert summary.duration_ms_summary == {
+        "min": 120.0,
+        "max": 250.0,
+        "avg": 185.0,
+    }
+
+
+def test_infraops_service_extracts_trace_error_spans() -> None:
+    trace = {
+        "batches": [
+            {
+                "resource": {
+                    "attributes": [
+                        {
+                            "key": "service.name",
+                            "value": {"stringValue": "service-catalog"},
+                        }
+                    ]
+                },
+                "scopeSpans": [
+                    {
+                        "spans": [
+                            {
+                                "traceId": "trace-1",
+                                "spanId": "span-1",
+                                "name": "POST /checkout",
+                                "startTimeUnixNano": "1000000",
+                                "endTimeUnixNano": "6000000",
+                                "status": {"code": 2},
+                                "attributes": [
+                                    {
+                                        "key": "http.status_code",
+                                        "value": {"intValue": 500},
+                                    }
+                                ],
+                            },
+                            {
+                                "traceId": "trace-1",
+                                "spanId": "span-2",
+                                "name": "SELECT product",
+                                "status": {"code": 1},
+                            },
+                        ]
+                    }
+                ],
+            }
+        ]
+    }
+    service = make_infraops_service(
+        tempo_client=TempoClient(
+            "http://tempo:3200",
+            http_client=FakeHttpClient(trace),
+        ),
+    )
+
+    trace_result = service.get_trace_by_id("trace-1")
+    errors = service.get_trace_error_spans("trace-1")
+
+    assert trace_result.span_count == 2
+    assert trace_result.error_span_count == 1
+    assert errors.error_span_count == 1
+    assert errors.error_spans[0]["name"] == "POST /checkout"
+    assert errors.error_spans[0]["service_name"] == "service-catalog"
+    assert errors.error_spans[0]["duration_ms"] == 5.0
+
+
 def test_infraops_service_maps_kubernetes_resources() -> None:
     http_client = FakeHttpClient({"items": [{"metadata": {"name": "api-pod"}}]})
     service = make_infraops_service(
@@ -483,6 +713,193 @@ def test_infraops_service_maps_kubernetes_resources() -> None:
     assert http_client.calls[0]["url"] == (
         "http://kubernetes:8001/api/v1/namespaces/default/pods"
     )
+
+
+def test_infraops_service_maps_pod_logs_and_rollout_status() -> None:
+    log_http_client = FakeHttpClient("error line\n")
+    log_service = make_infraops_service(
+        kubernetes_client=KubernetesClient(
+            "http://kubernetes:8001",
+            http_client=log_http_client,
+        ),
+    )
+
+    logs = log_service.get_pod_logs(
+        pod_name="api-123",
+        namespace="default",
+        tail_lines=10,
+    )
+
+    assert logs.logs == "error line\n"
+    assert logs.tail_lines == 10
+    assert log_http_client.calls[0]["url"] == (
+        "http://kubernetes:8001/api/v1/namespaces/default/pods/api-123/log"
+    )
+
+    deployment = {
+        "metadata": {"name": "api", "generation": 3},
+        "spec": {"replicas": 2},
+        "status": {
+            "observedGeneration": 3,
+            "updatedReplicas": 2,
+            "readyReplicas": 2,
+            "availableReplicas": 2,
+            "conditions": [{"type": "Available", "status": "True"}],
+        },
+    }
+    rollout_service = make_infraops_service(
+        kubernetes_client=KubernetesClient(
+            "http://kubernetes:8001",
+            http_client=FakeHttpClient(deployment),
+        ),
+    )
+
+    rollout = rollout_service.get_rollout_status(
+        deployment_name="api",
+        namespace="default",
+    )
+
+    assert rollout.rollout_status == "HEALTHY"
+    assert rollout.ready_replicas == 2
+    assert rollout.conditions == [{"type": "Available", "status": "True"}]
+
+
+def test_infraops_service_preserves_scale_to_zero_deployments() -> None:
+    deployment = {
+        "metadata": {
+            "name": "worker",
+            "creationTimestamp": "2026-06-11T02:00:00Z",
+            "generation": 4,
+        },
+        "spec": {
+            "replicas": 0,
+            "template": {
+                "spec": {
+                    "containers": [
+                        {"name": "worker", "image": "example.com/worker:v2"}
+                    ]
+                }
+            },
+        },
+        "status": {
+            "observedGeneration": 4,
+            "updatedReplicas": 0,
+            "readyReplicas": 0,
+            "availableReplicas": 0,
+            "unavailableReplicas": 0,
+        },
+    }
+    rollout_service = make_infraops_service(
+        kubernetes_client=KubernetesClient(
+            "http://kubernetes:8001",
+            http_client=FakeHttpClient(deployment),
+        ),
+    )
+    recent_service = make_infraops_service(
+        kubernetes_client=KubernetesClient(
+            "http://kubernetes:8001",
+            http_client=FakeHttpClient({"items": [deployment]}),
+        ),
+    )
+
+    rollout = rollout_service.get_rollout_status(
+        deployment_name="worker",
+        namespace="default",
+    )
+    recent = recent_service.get_recent_deployments(namespace="default")
+
+    assert rollout.rollout_status == "HEALTHY"
+    assert rollout.desired_replicas == 0
+    assert rollout.ready_replicas == 0
+    assert recent.items[0]["desired_replicas"] == 0
+    assert recent.items[0]["ready_replicas"] == 0
+    assert recent.items[0]["available_replicas"] == 0
+
+
+def test_infraops_service_maps_current_images_and_recent_deployments() -> None:
+    deployments = {
+        "items": [
+            {
+                "metadata": {
+                    "name": "api",
+                    "creationTimestamp": "2026-06-11T01:00:00Z",
+                    "generation": 2,
+                },
+                "spec": {
+                    "replicas": 2,
+                    "template": {
+                        "spec": {
+                            "containers": [
+                                {
+                                    "name": "api",
+                                    "image": "example.com/service-catalog:v1",
+                                }
+                            ]
+                        }
+                    },
+                },
+                "status": {"readyReplicas": 1, "updatedReplicas": 2},
+            }
+        ]
+    }
+    service = make_infraops_service(
+        kubernetes_client=KubernetesClient(
+            "http://kubernetes:8001",
+            http_client=FakeHttpClient(deployments),
+        ),
+    )
+
+    images = service.get_current_image_tags(namespace="default")
+    recent = service.get_recent_deployments(namespace="default")
+
+    assert images.items == [
+        {
+            "deployment_name": "api",
+            "container_name": "api",
+            "image": "example.com/service-catalog:v1",
+            "repository": "example.com/service-catalog",
+            "tag": "v1",
+            "digest": None,
+        }
+    ]
+    assert recent.items[0]["deployment_name"] == "api"
+    assert recent.items[0]["images"][0]["tag"] == "v1"
+
+
+def test_infraops_service_returns_read_placeholders_for_unconfigured_external_tools() -> None:
+    service = make_infraops_service()
+
+    sqs = service.get_sqs_queue_attributes(queue_name="credit-payment-requested.fifo")
+    argocd = service.get_argocd_application_status(application_name="service-catalog")
+
+    assert sqs.source == "aws"
+    assert sqs.resource == "sqs_queue_attributes"
+    assert sqs.note == "AWS ops read proxy is not configured."
+    assert argocd.source == "argocd"
+    assert argocd.resource == "application_status"
+    assert argocd.note == "ArgoCD read API is not configured."
+
+
+def test_infraops_service_maps_alertmanager_alerts() -> None:
+    service = make_infraops_service(
+        alertmanager_client=AlertmanagerClient(
+            "http://alertmanager:9093",
+            http_client=FakeHttpClient(
+                [
+                    {"labels": {"alertname": "Checkout500", "severity": "critical"}},
+                    {"labels": {"alertname": "InfoOnly", "severity": "info"}},
+                ]
+            ),
+        )
+    )
+
+    result = service.get_alertmanager_alerts(active_only=True, limit=1)
+
+    assert result.source == "alertmanager"
+    assert result.raw_count == 2
+    assert result.items == [
+        {"labels": {"alertname": "Checkout500", "severity": "critical"}}
+    ]
 
 
 def test_infraops_service_maps_onprem_kubernetes_source() -> None:
@@ -654,6 +1071,17 @@ def test_infraops_service_creates_partial_rca_snapshot() -> None:
         "kubernetes": "SUCCESS",
         "kafka": "SKIPPED",
         "batch": "SKIPPED",
+    }
+
+    enriched = service.create_rca_snapshot(
+        incident_key="INC-1",
+        namespace="default",
+        context_bundle={"schema_version": "incident_context_bundle.v1"},
+    )
+    sources = {source.source: source for source in enriched.sources}
+    assert sources["incident_context_bundle"].status == "SUCCESS"
+    assert sources["incident_context_bundle"].data == {
+        "schema_version": "incident_context_bundle.v1"
     }
 
 

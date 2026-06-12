@@ -905,6 +905,7 @@ def db_session_type(chat_type: ChatType) -> str:
     return {
         "farmer_bnpl": "FARMER_BNPL",
         "admin_copilot": "ADMIN_RISKOPS",
+        "sre_copilot": "ADMIN_INFRAOPS",
     }[chat_type]
 
 
@@ -912,6 +913,8 @@ def api_chat_type(session_type: str) -> ChatType:
     return {
         "FARMER_BNPL": "farmer_bnpl",
         "ADMIN_RISKOPS": "admin_copilot",
+        "ADMIN_INFRAOPS": "sre_copilot",
+        "ONCALL": "sre_copilot",
     }.get(session_type, "admin_copilot")
 
 
@@ -919,6 +922,7 @@ def db_job_type(job_type: str) -> str:
     return {
         "farmer_chat": "FARMER_CHAT",
         "admin_copilot": "RISK_ANALYSIS",
+        "sre_copilot": "ONCALL",
     }.get(job_type, job_type.upper())
 
 
@@ -926,6 +930,7 @@ def api_job_type_from_db(job_type: str) -> str:
     return {
         "FARMER_CHAT": "farmer_chat",
         "RISK_ANALYSIS": "admin_copilot",
+        "ONCALL": "sre_copilot",
     }.get(job_type, job_type.lower())
 
 

@@ -55,6 +55,24 @@ class JsonHttpClient:
             ssl_context=ssl_context,
         )
 
+    def get_text(
+        self,
+        url: str,
+        *,
+        params: Mapping[str, str] | None = None,
+        headers: Mapping[str, str] | None = None,
+        timeout: float = 10.0,
+        ssl_context: ssl.SSLContext | None = None,
+    ) -> str:
+        return self._request_text(
+            "GET",
+            url,
+            params=params,
+            headers=headers,
+            timeout=timeout,
+            ssl_context=ssl_context,
+        )
+
     def _request_json(
         self,
         method: str,
@@ -66,6 +84,35 @@ class JsonHttpClient:
         data: bytes | None = None,
         ssl_context: ssl.SSLContext | None = None,
     ) -> Any:
+        body = self._request_text(
+            method,
+            url,
+            params=params,
+            headers=headers,
+            timeout=timeout,
+            data=data,
+            ssl_context=ssl_context,
+        )
+
+        if not body:
+            return {}
+
+        try:
+            return json.loads(body)
+        except json.JSONDecodeError as exc:
+            raise InfraOpsClientError(f"Invalid JSON from {url}") from exc
+
+    def _request_text(
+        self,
+        method: str,
+        url: str,
+        *,
+        params: Mapping[str, str] | None = None,
+        headers: Mapping[str, str] | None = None,
+        timeout: float = 10.0,
+        data: bytes | None = None,
+        ssl_context: ssl.SSLContext | None = None,
+    ) -> str:
         request_url = url
         if params:
             request_url = f"{url}?{urlencode(params)}"
@@ -89,13 +136,7 @@ class JsonHttpClient:
         except URLError as exc:
             raise InfraOpsClientError(f"Failed to call {request_url}: {exc.reason}") from exc
 
-        if not body:
-            return {}
-
-        try:
-            return json.loads(body)
-        except json.JSONDecodeError as exc:
-            raise InfraOpsClientError(f"Invalid JSON from {request_url}") from exc
+        return body
 
 
 class PrometheusClient:
@@ -155,6 +196,128 @@ class LokiClient:
         )
 
 
+class TempoClient:
+    def __init__(
+        self,
+        base_url: str,
+        *,
+        timeout_seconds: float = 10.0,
+        http_client: JsonHttpClient | None = None,
+    ) -> None:
+        self._base_url = base_url.rstrip("/") + "/" if base_url else ""
+        self._timeout_seconds = timeout_seconds
+        self._http_client = http_client or JsonHttpClient()
+
+    @property
+    def is_configured(self) -> bool:
+        return bool(self._base_url)
+
+    def search(
+        self,
+        *,
+        traceql: str | None = None,
+        service_name: str | None = None,
+        operation_name: str | None = None,
+        start: str | None = None,
+        end: str | None = None,
+        min_duration: str | None = None,
+        max_duration: str | None = None,
+        limit: int = 20,
+    ) -> dict[str, Any]:
+        if not self.is_configured:
+            raise InfraOpsClientError("Tempo base URL is not configured.")
+
+        params = {"limit": str(limit)}
+        if traceql:
+            params["q"] = traceql
+        else:
+            tags = build_tempo_search_tags(
+                service_name=service_name,
+                operation_name=operation_name,
+            )
+            if tags:
+                params["tags"] = tags
+        if start is not None:
+            params["start"] = start
+        if end is not None:
+            params["end"] = end
+        if min_duration is not None:
+            params["minDuration"] = min_duration
+        if max_duration is not None:
+            params["maxDuration"] = max_duration
+
+        return self._http_client.get_json(
+            urljoin(self._base_url, "api/search"),
+            params=params,
+            timeout=self._timeout_seconds,
+        )
+
+    def trace(self, trace_id: str) -> dict[str, Any]:
+        if not self.is_configured:
+            raise InfraOpsClientError("Tempo base URL is not configured.")
+        encoded_trace_id = quote(trace_id, safe="")
+        return self._http_client.get_json(
+            urljoin(self._base_url, f"api/traces/{encoded_trace_id}"),
+            timeout=self._timeout_seconds,
+        )
+
+
+def build_tempo_search_tags(
+    *,
+    service_name: str | None,
+    operation_name: str | None,
+) -> str:
+    tags = []
+    if service_name:
+        tags.append(f"service.name={service_name}")
+    if operation_name:
+        tags.append(f"name={operation_name}")
+    return " ".join(tags)
+
+
+class AlertmanagerClient:
+    def __init__(
+        self,
+        base_url: str,
+        *,
+        timeout_seconds: float = 10.0,
+        http_client: JsonHttpClient | None = None,
+    ) -> None:
+        self._base_url = base_url.rstrip("/") + "/" if base_url else ""
+        self._timeout_seconds = timeout_seconds
+        self._http_client = http_client or JsonHttpClient()
+
+    @property
+    def is_configured(self) -> bool:
+        return bool(self._base_url)
+
+    def alerts(
+        self,
+        *,
+        active_only: bool = True,
+        receiver: str | None = None,
+        alertname: str | None = None,
+        severity: str | None = None,
+    ) -> list[dict[str, Any]]:
+        if not self.is_configured:
+            raise InfraOpsClientError("Alertmanager base URL is not configured.")
+
+        params = {"active": str(active_only).lower()}
+        if receiver is not None:
+            params["receiver"] = receiver
+        if alertname is not None:
+            params["alertname"] = alertname
+        if severity is not None:
+            params["severity"] = severity
+
+        response = self._http_client.get_json(
+            urljoin(self._base_url, "api/v2/alerts"),
+            params=params,
+            timeout=self._timeout_seconds,
+        )
+        return response if isinstance(response, list) else response.get("alerts", [])
+
+
 class KubernetesClient:
     def __init__(
         self,
@@ -198,6 +361,44 @@ class KubernetesClient:
                 self._base_url,
                 f"apis/autoscaling/v2/namespaces/{namespace}/horizontalpodautoscalers",
             ),
+            headers=self._headers,
+            timeout=self._timeout_seconds,
+            ssl_context=self._ssl_context,
+        )
+
+    def deployment(self, namespace: str, deployment_name: str) -> dict[str, Any]:
+        encoded_deployment_name = quote(deployment_name, safe="")
+        return self._http_client.get_json(
+            urljoin(
+                self._base_url,
+                f"apis/apps/v1/namespaces/{namespace}/deployments/{encoded_deployment_name}",
+            ),
+            headers=self._headers,
+            timeout=self._timeout_seconds,
+            ssl_context=self._ssl_context,
+        )
+
+    def pod_logs(
+        self,
+        namespace: str,
+        pod_name: str,
+        *,
+        container: str | None = None,
+        since_seconds: int | None = None,
+        tail_lines: int = 200,
+    ) -> str:
+        encoded_pod_name = quote(pod_name, safe="")
+        params = {"tailLines": str(tail_lines)}
+        if container is not None:
+            params["container"] = container
+        if since_seconds is not None:
+            params["sinceSeconds"] = str(since_seconds)
+        return self._http_client.get_text(
+            urljoin(
+                self._base_url,
+                f"api/v1/namespaces/{namespace}/pods/{encoded_pod_name}/log",
+            ),
+            params=params,
             headers=self._headers,
             timeout=self._timeout_seconds,
             ssl_context=self._ssl_context,
@@ -300,6 +501,81 @@ class BatchClient:
             params["job_name"] = job_name
         return self._http_client.get_json(
             urljoin(self._base_url, "batch/runs/status"),
+            params=params,
+            timeout=self._timeout_seconds,
+        )
+
+
+class AwsOpsClient:
+    def __init__(
+        self,
+        base_url: str,
+        *,
+        timeout_seconds: float = 10.0,
+        http_client: JsonHttpClient | None = None,
+    ) -> None:
+        self._base_url = base_url.rstrip("/") + "/" if base_url else ""
+        self._timeout_seconds = timeout_seconds
+        self._http_client = http_client or JsonHttpClient()
+
+    @property
+    def is_configured(self) -> bool:
+        return bool(self._base_url)
+
+    def sqs_queue_attributes(self, **params: str) -> dict[str, Any]:
+        return self._get("aws/sqs/queue-attributes", params=params)
+
+    def sqs_dlq_attributes(self, **params: str) -> dict[str, Any]:
+        return self._get("aws/sqs/dlq-attributes", params=params)
+
+    def alb_target_health(self, **params: str) -> dict[str, Any]:
+        return self._get("aws/alb/target-health", params=params)
+
+    def cloudfront_origin_mapping(self, **params: str) -> dict[str, Any]:
+        return self._get("aws/cloudfront/origin-mapping", params=params)
+
+    def cloudfront_distribution_status(self, **params: str) -> dict[str, Any]:
+        return self._get("aws/cloudfront/distribution-status", params=params)
+
+    def _get(self, path: str, *, params: Mapping[str, str]) -> dict[str, Any]:
+        if not self.is_configured:
+            raise InfraOpsClientError("AWS ops read proxy base URL is not configured.")
+        return self._http_client.get_json(
+            urljoin(self._base_url, path),
+            params={key: value for key, value in params.items() if value},
+            timeout=self._timeout_seconds,
+        )
+
+
+class ArgoCdClient:
+    def __init__(
+        self,
+        base_url: str,
+        *,
+        timeout_seconds: float = 10.0,
+        http_client: JsonHttpClient | None = None,
+    ) -> None:
+        self._base_url = base_url.rstrip("/") + "/" if base_url else ""
+        self._timeout_seconds = timeout_seconds
+        self._http_client = http_client or JsonHttpClient()
+
+    @property
+    def is_configured(self) -> bool:
+        return bool(self._base_url)
+
+    def application_status(
+        self,
+        *,
+        application_name: str,
+        project: str | None = None,
+    ) -> dict[str, Any]:
+        if not self.is_configured:
+            raise InfraOpsClientError("ArgoCD read API base URL is not configured.")
+        params = {"application_name": application_name}
+        if project is not None:
+            params["project"] = project
+        return self._http_client.get_json(
+            urljoin(self._base_url, "argocd/application-status"),
             params=params,
             timeout=self._timeout_seconds,
         )

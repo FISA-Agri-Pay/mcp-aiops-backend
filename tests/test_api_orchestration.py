@@ -354,6 +354,26 @@ def test_admin_copilot_greeting_does_not_execute_tools_or_llm() -> None:
     assert answer["assistant_message"]["metadata"]["response_source"] == "direct"
 
 
+def test_sre_copilot_greeting_is_separate_from_admin_copilot() -> None:
+    client = create_orchestration_test_client()
+
+    ask_response = client.post(
+        "/sre/copilot/ask",
+        json={"user_id": "sre-1", "message": "안녕"},
+    )
+
+    assert ask_response.status_code == 200
+    answer = ask_response.json()
+    assert answer["session"]["chat_type"] == "sre_copilot"
+    assert answer["job"]["job_type"] == "sre_copilot"
+    assert answer["planned_tools"] == []
+    assert answer["tool_results"] == []
+    assert answer["llm_run"] is None
+    assert "로그, 메트릭, 트레이스" in answer["assistant_message"]["content"]
+    assert answer["assistant_message"]["metadata"]["intent"] == "greeting"
+    assert answer["assistant_message"]["metadata"]["response_source"] == "direct"
+
+
 def test_admin_copilot_llm_failure_uses_user_safe_fallback() -> None:
     client = create_orchestration_test_client(llm_client=FailingLlmClient())
 

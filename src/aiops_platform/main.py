@@ -11,6 +11,7 @@ from aiops_platform.api.llmops import router as llmops_router
 from aiops_platform.api.mcp import router as mcp_router
 from aiops_platform.api.rca import router as rca_router
 from aiops_platform.api.reports import router as reports_router
+from aiops_platform.api.sre import router as sre_router
 from aiops_platform.core.config import settings
 from aiops_platform.farmer_bnpl.service import FarmerBnplService
 from aiops_platform.infra_rca.service import InfraRcaService
@@ -58,6 +59,8 @@ def create_app() -> FastAPI:
     app.include_router(mcp_router, prefix=EXTERNAL_API_PREFIX)
     app.include_router(rca_router)
     app.include_router(reports_router)
+    app.include_router(sre_router)
+    app.include_router(sre_router, prefix=f"{EXTERNAL_API_PREFIX}/aiops")
     app.mount(MCP_TRANSPORT_MOUNT_PATH, mcp_asgi_app)
     app.mount(f"{EXTERNAL_API_PREFIX}{MCP_TRANSPORT_MOUNT_PATH}", mcp_asgi_app)
     return app
