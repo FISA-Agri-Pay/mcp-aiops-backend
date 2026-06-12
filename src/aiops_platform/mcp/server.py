@@ -2688,7 +2688,6 @@ def create_mcp_server(
         request_payload = {
             "incident_key": incident_key,
             "namespace": namespace,
-            "source": source,
             "index_pattern": index_pattern,
             "prometheus_query": prometheus_query,
             "loki_query": loki_query,
@@ -2697,6 +2696,8 @@ def create_mcp_server(
             "kafka_topic": kafka_topic,
             "batch_job_name": batch_job_name,
         }
+        if source is not None:
+            request_payload["source"] = source
         if context_bundle is not None:
             request_payload["context_bundle"] = context_bundle
 
