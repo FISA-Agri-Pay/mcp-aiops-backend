@@ -452,7 +452,7 @@ def test_rule_based_planner_selects_sre_checkout_500_tool_bundle() -> None:
     rollout = next(tool for tool in plan.tool_plans if tool.tool_name == "get_rollout_status")
     assert rollout.request_payload == {
         "namespace": "service-catalog",
-        "deployment_name": "service-catalog",
+        "deployment_name": "service-catalog-deployment",
     }
     alb = next(tool for tool in plan.tool_plans if tool.tool_name == "get_alb_target_health")
     assert alb.request_payload == {"load_balancer_name": "kkpp-catalog-api"}
