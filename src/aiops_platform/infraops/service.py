@@ -50,15 +50,15 @@ from aiops_platform.infraops.schemas import (
     MultiClusterLokiQueryResult,
     MultiClusterPrometheusQueryResult,
     MultiClusterQuerySourceResult,
-    PodOperationPreviewRequest,
     PodLogsRequest,
     PodLogsResult,
+    PodOperationPreviewRequest,
     PrometheusQueryRequest,
     PrometheusQueryResult,
-    RecentDeploymentsRequest,
-    RecentDeploymentsResult,
     RcaSnapshotRequest,
     RcaSnapshotResult,
+    RecentDeploymentsRequest,
+    RecentDeploymentsResult,
     RolloutStatusRequest,
     RolloutStatusResult,
     ScaleDeploymentPreviewRequest,
@@ -885,6 +885,7 @@ class InfraOpsService:
         self,
         incident_key: str | None = None,
         namespace: str | None = None,
+        source: str | None = None,
         index_pattern: str | None = None,
         prometheus_query: str = "up",
         loki_query: str = '{job=~".+"}',
@@ -897,6 +898,7 @@ class InfraOpsService:
         request = RcaSnapshotRequest(
             incident_key=incident_key,
             namespace=namespace,
+            source=source,
             index_pattern=index_pattern,
             prometheus_query=prometheus_query,
             loki_query=loki_query,
@@ -938,18 +940,22 @@ class InfraOpsService:
             self._capture_source(
                 "kubernetes",
                 lambda: {
-                    "pods": self.get_k8s_pods(namespace=request.namespace).model_dump(
-                        mode="json"
-                    ),
-                    "events": self.get_k8s_events(namespace=request.namespace).model_dump(
-                        mode="json"
-                    ),
+                    "pods": self.get_k8s_pods(
+                        namespace=request.namespace,
+                        source=request.source,
+                    ).model_dump(mode="json"),
+                    "events": self.get_k8s_events(
+                        namespace=request.namespace,
+                        source=request.source,
+                    ).model_dump(mode="json"),
                     "deployments": self.get_k8s_deployments(
                         namespace=request.namespace,
+                        source=request.source,
                     ).model_dump(mode="json"),
-                    "hpa": self.get_k8s_hpa(namespace=request.namespace).model_dump(
-                        mode="json"
-                    ),
+                    "hpa": self.get_k8s_hpa(
+                        namespace=request.namespace,
+                        source=request.source,
+                    ).model_dump(mode="json"),
                 },
             ),
             self._capture_optional_source(
@@ -1107,7 +1113,10 @@ class InfraOpsService:
             raw=response,
         )
 
-    def _resolve_kubernetes_source(self, source: str | None) -> tuple[str, KubernetesClient, tuple[str, ...]]:
+    def _resolve_kubernetes_source(
+        self,
+        source: str | None,
+    ) -> tuple[str, KubernetesClient, tuple[str, ...]]:
         resolved_source = source.strip() if source else "eks"
         if resolved_source not in self._kubernetes_sources:
             available_sources = ", ".join(sorted(self._kubernetes_sources))

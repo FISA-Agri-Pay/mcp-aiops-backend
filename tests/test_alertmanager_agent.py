@@ -1,3 +1,4 @@
+import json
 from datetime import UTC, datetime
 
 from fastapi.testclient import TestClient
@@ -501,6 +502,7 @@ def test_alertmanager_sre_agent_execute_collects_read_only_evidence_bundle() -> 
     rca_plan = dispatcher.plans[-1]
     assert rca_plan.tool_name == "create_rca_snapshot"
     assert rca_plan.request_payload["incident_key"] == result.incident_key
+    assert rca_plan.request_payload["source"] == "onprem"
     assert rca_plan.request_payload["context_bundle"]["schema_version"] == (
         "incident_context_bundle.v1"
     )
@@ -584,6 +586,13 @@ def test_alertmanager_sre_agent_execute_notify_sends_email_and_slack() -> None:
     )
     assert "hooks.slack.com" not in str(notification_service.notifications[1].payload)
     assert notification_service.rca_runs
+    llm_input = notification_service.rca_runs[0]
+    assert len(json.dumps(llm_input, ensure_ascii=False, default=str)) < 70000
+    assert "context_bundle" not in json.dumps(
+        llm_input["evidence"],
+        ensure_ascii=False,
+        default=str,
+    )
 
 
 def test_alertmanager_sre_webhook_execute_notify_query_sends_notifications() -> None:

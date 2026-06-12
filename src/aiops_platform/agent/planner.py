@@ -854,6 +854,16 @@ def plan_sre_copilot_tools(
         )
         plans.extend(routing_plans)
 
+    rca_snapshot_payload = {
+        "incident_key": intent,
+        "namespace": context["namespace"],
+        "prometheus_query": context["prometheus_query"],
+        "loki_query": context["loki_query"],
+        "loki_limit": 100,
+    }
+    if context["kubernetes_source"] is not None:
+        rca_snapshot_payload["source"] = context["kubernetes_source"]
+
     plans.extend(
         [
             build_sre_tool_plan(
@@ -868,13 +878,7 @@ def plan_sre_copilot_tools(
             ),
             build_sre_tool_plan(
                 "create_rca_snapshot",
-                {
-                    "incident_key": intent,
-                    "namespace": context["namespace"],
-                    "prometheus_query": context["prometheus_query"],
-                    "loki_query": context["loki_query"],
-                    "loki_limit": 100,
-                },
+                rca_snapshot_payload,
                 "Create a read-only RCA evidence snapshot for later analysis.",
             ),
         ]
@@ -882,7 +886,11 @@ def plan_sre_copilot_tools(
     return plans
 
 
-def build_sre_tool_plan(tool_name: str, request_payload: dict[str, Any], reason: str) -> AgentToolPlan:
+def build_sre_tool_plan(
+    tool_name: str,
+    request_payload: dict[str, Any],
+    reason: str,
+) -> AgentToolPlan:
     return AgentToolPlan(
         server_name="infraops-mcp",
         tool_name=tool_name,
@@ -1301,23 +1309,37 @@ def classify_sre_copilot_intent(message: str) -> SreCopilotIntent:
     if is_sre_mutating_request(normalized):
         return "unsupported"
 
-    if any(keyword in normalized for keyword in ("cloudfront", "alb", "origin", "라우팅", "routing", "route")):
+    if any(
+        keyword in normalized
+        for keyword in ("cloudfront", "alb", "origin", "라우팅", "routing", "route")
+    ):
         return "routing_failure"
     if any(keyword in normalized for keyword in ("crashloop", "crashloopbackoff", "oomkilled")):
         return "pod_crashloop"
-    if any(keyword in normalized for keyword in ("hikari", "hikaricp", "db", "database", "postgres", "connection pool")):
+    if any(
+        keyword in normalized
+        for keyword in ("hikari", "hikaricp", "db", "database", "postgres", "connection pool")
+    ):
         return "db_hikaricp_issue"
 
     has_sqs = "sqs" in normalized or "queue" in normalized or "dlq" in normalized
-    if has_sqs and any(keyword in normalized for keyword in ("발행", "publish", "send", "producer")):
+    if has_sqs and any(
+        keyword in normalized for keyword in ("발행", "publish", "send", "producer")
+    ):
         return "sqs_publish_failure"
-    if has_sqs and any(keyword in normalized for keyword in ("소비", "consume", "consumer", "listener", "lag", "dlq")):
+    if has_sqs and any(
+        keyword in normalized
+        for keyword in ("소비", "consume", "consumer", "listener", "lag", "dlq")
+    ):
         return "sqs_consume_failure"
     if any(keyword in normalized for keyword in ("pin", "핀")) and any(
-        keyword in normalized for keyword in ("검증", "verified", "verification", "미반영", "event", "이벤트")
+        keyword in normalized
+        for keyword in ("검증", "verified", "verification", "미반영", "event", "이벤트")
     ):
         return "pin_verification_missing"
-    if "checkout" in normalized and any(keyword in normalized for keyword in ("500", "error", "오류", "장애")):
+    if "checkout" in normalized and any(
+        keyword in normalized for keyword in ("500", "error", "오류", "장애")
+    ):
         return "checkout_500"
     if any(keyword in normalized for keyword in ("pod", "파드")) and any(
         keyword in normalized for keyword in ("restart", "재시작", "error", "오류", "장애")
@@ -1474,7 +1496,10 @@ def available_capabilities_for_prompt(chat_type: ChatType) -> list[dict[str, str
             },
             {
                 "capability": "checkout_500_analysis",
-                "description": "Analyze checkout 500 errors using logs, metrics, traces, K8s, AWS, and GitOps.",
+                "description": (
+                    "Analyze checkout 500 errors using logs, metrics, traces, "
+                    "K8s, AWS, and GitOps."
+                ),
             },
             {
                 "capability": "sqs_publish_failure_analysis",
@@ -1502,7 +1527,10 @@ def available_capabilities_for_prompt(chat_type: ChatType) -> list[dict[str, str
             },
             {
                 "capability": "general_incident_analysis",
-                "description": "General read-only SRE incident triage using available observability evidence.",
+                "description": (
+                    "General read-only SRE incident triage using available "
+                    "observability evidence."
+                ),
             },
         ]
     if chat_type == "farmer_bnpl":
@@ -2074,7 +2102,9 @@ def normalize_infraops_tool_payload(
         ) and context["load_balancer_name"] is not None:
             normalized["load_balancer_name"] = context["load_balancer_name"]
     if tool_name == "get_pod_logs":
-        pod_name = normalize_optional_string(normalized.get("pod_name")) or extract_sre_pod_name(message)
+        pod_name = normalize_optional_string(normalized.get("pod_name")) or extract_sre_pod_name(
+            message
+        )
         if pod_name is not None:
             normalized["pod_name"] = pod_name
         normalized["namespace"] = (
@@ -2091,7 +2121,14 @@ def normalize_infraops_tool_payload(
         normalized["query"] = normalize_optional_string(normalized.get("query")) or intent
         normalized["limit"] = clamp_int(normalized.get("limit"), default=5)
     if tool_name == "create_rca_snapshot":
-        normalized["incident_key"] = normalize_optional_string(normalized.get("incident_key")) or intent
+        normalized["incident_key"] = (
+            normalize_optional_string(normalized.get("incident_key")) or intent
+        )
+        kubernetes_source = normalize_optional_string(
+            normalized.get("source")
+        ) or normalize_optional_string(context.get("kubernetes_source"))
+        if kubernetes_source is not None:
+            normalized["source"] = kubernetes_source
         normalized["prometheus_query"] = (
             normalize_optional_string(normalized.get("prometheus_query"))
             or str(context["prometheus_query"])
@@ -2150,10 +2187,14 @@ def build_direct_answer(*, chat_type: ChatType, intent: str) -> str | None:
                 "안녕하세요. 로그, 메트릭, 트레이스, Kubernetes, AWS, GitOps 근거로 "
                 "장애 원인 분석을 도와드릴 수 있습니다."
             ),
-            "thanks": "필요하면 장애 증상과 대상 서비스를 알려주세요. READ 기반으로 분석하겠습니다.",
+            "thanks": (
+                "필요하면 장애 증상과 대상 서비스를 알려주세요. "
+                "READ 기반으로 분석하겠습니다."
+            ),
             "help": (
                 "checkout 500, SQS 발행/소비 실패, PIN 이벤트 미반영, "
-                "CloudFront-ALB-EKS 라우팅 실패, CrashLoopBackOff, DB/HikariCP 문제를 분석할 수 있습니다."
+                "CloudFront-ALB-EKS 라우팅 실패, CrashLoopBackOff, "
+                "DB/HikariCP 문제를 분석할 수 있습니다."
             ),
             "unsupported": (
                 "현재 SRE Copilot은 READ 기반 관측/분석만 지원합니다. "

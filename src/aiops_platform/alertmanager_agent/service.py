@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import html
+import json
 import logging
 import re
 from collections.abc import Callable, Mapping
@@ -33,6 +34,11 @@ from aiops_platform.mcp.schemas import McpToolPermission
 from aiops_platform.ops_reports.email_delivery import EmailSender, SmtpEmailSender
 
 logger = logging.getLogger(__name__)
+
+LLM_SNAPSHOT_CHAR_BUDGET = 24000
+LLM_EVIDENCE_CHAR_BUDGET = 32000
+LLM_SECTION_CHAR_BUDGET = 6000
+LLM_TOOL_RESULT_LIMIT = 24
 
 SRE_INTENT_BY_ALERT_NAME: dict[str, str] = {
     "checkout500high": "checkout_500",
@@ -728,14 +734,25 @@ def build_rca_llm_incident_payload(result: AlertmanagerSrePlanResult) -> dict[st
 
 def build_rca_llm_snapshot_payload(result: AlertmanagerSrePlanResult) -> dict[str, Any]:
     bundle = result.context_bundle or {}
-    return {
-        "context_summary": trim_payload_for_llm(bundle.get("summary_for_llm")),
-        "cross_domain": trim_payload_for_llm(bundle.get("cross_domain")),
-        "failure_boundary_candidates": trim_payload_for_llm(
-            bundle.get("failure_boundary_candidates")
+    payload = {
+        "context_summary": compact_payload_for_llm(
+            bundle.get("summary_for_llm"),
+            char_budget=4000,
         ),
-        "rca_snapshot": trim_payload_for_llm(result.rca_snapshot),
+        "cross_domain": compact_payload_for_llm(
+            bundle.get("cross_domain"),
+            char_budget=5000,
+        ),
+        "failure_boundary_candidates": trim_boundary_candidates(
+            bundle.get("failure_boundary_candidates"),
+            limit=8,
+        ),
+        "rca_snapshot": summarize_rca_snapshot_for_llm(result.rca_snapshot),
     }
+    return compact_payload_for_llm(
+        payload,
+        char_budget=LLM_SNAPSHOT_CHAR_BUDGET,
+    )
 
 
 def build_rca_llm_evidence(result: AlertmanagerSrePlanResult) -> list[dict[str, Any]]:
@@ -753,19 +770,23 @@ def build_rca_llm_evidence(result: AlertmanagerSrePlanResult) -> list[dict[str, 
             evidence.append(
                 {
                     "section": section_name,
-                    "payload": trim_payload_for_llm(payload),
+                    "payload": compact_payload_for_llm(
+                        payload,
+                        char_budget=LLM_SECTION_CHAR_BUDGET,
+                    ),
                 }
             )
     evidence.append(
         {
             "section": "tool_results",
-            "payload": [
-                compact_tool_result(tool_result, include_response=False)
-                for tool_result in result.executed_tools
-            ],
+            "payload": summarize_tool_results_for_llm(result),
         }
     )
-    return evidence
+    return compact_payload_for_llm(
+        evidence,
+        char_budget=LLM_EVIDENCE_CHAR_BUDGET,
+        list_limit=len(evidence),
+    )
 
 
 def build_rca_analysis_payload(llm_run: LlmRunResult) -> dict[str, Any]:
@@ -854,6 +875,202 @@ def build_analysis_notification_html(result: AlertmanagerSrePlanResult) -> str:
         "<p>Destructive remediation was not executed.</p>"
         "</body></html>"
     )
+
+
+def summarize_rca_snapshot_for_llm(value: Any) -> Any:
+    if not isinstance(value, dict):
+        return compact_payload_for_llm(value, char_budget=4000)
+
+    sources = value.get("sources")
+    source_summaries = []
+    if isinstance(sources, list):
+        for source in sources[:12]:
+            if not isinstance(source, dict):
+                continue
+            source_summaries.append(
+                {
+                    "source": source.get("source"),
+                    "status": source.get("status"),
+                    "error_message": truncate_text(
+                        str(source.get("error_message") or ""),
+                        limit=500,
+                    ),
+                    "summary": compact_payload_for_llm(
+                        remove_large_llm_fields(source),
+                        char_budget=1800,
+                        max_depth=3,
+                        list_limit=3,
+                        string_limit=400,
+                    ),
+                }
+            )
+
+    return {
+        "snapshot_id": value.get("snapshot_id") or value.get("id"),
+        "incident_key": value.get("incident_key"),
+        "status": value.get("status"),
+        "partial": value.get("partial"),
+        "created_at": value.get("created_at"),
+        "sources": source_summaries,
+        "truncated_sources": (
+            max(len(sources) - len(source_summaries), 0)
+            if isinstance(sources, list)
+            else 0
+        ),
+    }
+
+
+def summarize_tool_results_for_llm(result: AlertmanagerSrePlanResult) -> list[dict[str, Any]]:
+    tool_summaries = []
+    for tool_result in result.executed_tools[:LLM_TOOL_RESULT_LIMIT]:
+        request_payload = (
+            tool_result.masked_request_payload
+            if tool_result.masked_request_payload is not None
+            else tool_result.request_payload
+        )
+        response_payload = (
+            tool_result.masked_response_payload
+            if tool_result.masked_response_payload is not None
+            else tool_result.response_payload
+        )
+        summary = {
+            "server_name": tool_result.server_name,
+            "tool_name": tool_result.tool_name,
+            "call_status": enum_value(tool_result.call_status),
+            "will_execute": tool_result.will_execute,
+            "request_payload": compact_payload_for_llm(
+                remove_large_llm_fields(request_payload),
+                char_budget=1200,
+                max_depth=3,
+                list_limit=3,
+                string_limit=300,
+            ),
+        }
+        if tool_result.error_message:
+            summary["error_message"] = truncate_text(tool_result.error_message, limit=800)
+        response_summary = summarize_tool_response_for_llm(response_payload)
+        if response_summary:
+            summary["response_summary"] = response_summary
+        tool_summaries.append(summary)
+
+    if len(result.executed_tools) > LLM_TOOL_RESULT_LIMIT:
+        tool_summaries.append(
+            {"truncated_tools": len(result.executed_tools) - LLM_TOOL_RESULT_LIMIT}
+        )
+    return tool_summaries
+
+
+def summarize_tool_response_for_llm(value: Any) -> Any:
+    if not isinstance(value, dict):
+        return None
+
+    summary: dict[str, Any] = {}
+    for key in (
+        "status",
+        "source",
+        "query",
+        "namespace",
+        "deployment_name",
+        "resource",
+        "partial",
+        "error_message",
+    ):
+        if key in value:
+            summary[key] = compact_payload_for_llm(
+                value.get(key),
+                char_budget=500,
+                max_depth=2,
+                list_limit=3,
+                string_limit=300,
+            )
+
+    for key in ("items", "sources", "results", "alerts", "events", "data"):
+        if key in value:
+            summary[f"{key}_summary"] = summarize_collection_for_llm(value.get(key))
+    return summary
+
+
+def summarize_collection_for_llm(value: Any) -> Any:
+    if isinstance(value, list):
+        return {
+            "count": len(value),
+            "sample": compact_payload_for_llm(
+                value[:3],
+                char_budget=1600,
+                max_depth=3,
+                list_limit=3,
+                string_limit=300,
+            ),
+        }
+    if isinstance(value, dict):
+        return compact_payload_for_llm(
+            value,
+            char_budget=1600,
+            max_depth=3,
+            list_limit=3,
+            string_limit=300,
+        )
+    return compact_payload_for_llm(value, char_budget=500)
+
+
+def compact_payload_for_llm(
+    value: Any,
+    *,
+    char_budget: int,
+    max_depth: int = 4,
+    list_limit: int = 4,
+    string_limit: int = 800,
+) -> Any:
+    compacted = trim_payload_for_llm(
+        remove_large_llm_fields(value),
+        max_depth=max_depth,
+        list_limit=list_limit,
+        string_limit=string_limit,
+    )
+    if payload_char_size(compacted) <= char_budget:
+        return compacted
+
+    smaller = trim_payload_for_llm(
+        remove_large_llm_fields(value),
+        max_depth=max_depth - 1,
+        list_limit=max(1, list_limit // 2),
+        string_limit=max(120, string_limit // 2),
+    )
+    if payload_char_size(smaller) <= char_budget:
+        return smaller
+
+    return {
+        "truncated": True,
+        "excerpt": truncate_text(
+            json.dumps(smaller, ensure_ascii=False, default=str),
+            limit=char_budget,
+        ),
+    }
+
+
+def payload_char_size(value: Any) -> int:
+    return len(json.dumps(value, ensure_ascii=False, default=str))
+
+
+def remove_large_llm_fields(value: Any) -> Any:
+    if isinstance(value, dict):
+        filtered = {}
+        for key, item in value.items():
+            key_text = str(key)
+            if key_text in {
+                "context_bundle",
+                "raw",
+                "raw_tool_results",
+                "response_payload",
+                "masked_response_payload",
+            }:
+                filtered[key_text] = summarize_trimmed_value(item)
+                continue
+            filtered[key_text] = remove_large_llm_fields(item)
+        return filtered
+    if isinstance(value, list):
+        return [remove_large_llm_fields(item) for item in value]
+    return value
 
 
 def trim_payload_for_llm(

@@ -2673,6 +2673,7 @@ def create_mcp_server(
     def create_rca_snapshot_tool(
         incident_key: str | None = None,
         namespace: str | None = None,
+        source: str | None = None,
         index_pattern: str | None = None,
         prometheus_query: str = "up",
         loki_query: str = '{job=~".+"}',
@@ -2687,6 +2688,7 @@ def create_mcp_server(
         request_payload = {
             "incident_key": incident_key,
             "namespace": namespace,
+            "source": source,
             "index_pattern": index_pattern,
             "prometheus_query": prometheus_query,
             "loki_query": loki_query,

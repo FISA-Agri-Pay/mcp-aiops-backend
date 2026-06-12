@@ -310,6 +310,7 @@ class InfraOpsSourceResult(BaseModel):
 class RcaSnapshotRequest(BaseModel):
     incident_key: str | None = Field(default=None, max_length=120)
     namespace: str | None = None
+    source: str | None = None
     index_pattern: str | None = None
     prometheus_query: str = Field(default="up", min_length=1)
     loki_query: str = Field(default='{job=~".+"}', min_length=1)

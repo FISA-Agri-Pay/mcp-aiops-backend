@@ -1085,6 +1085,61 @@ def test_infraops_service_creates_partial_rca_snapshot() -> None:
     }
 
 
+def test_infraops_service_rca_snapshot_uses_requested_kubernetes_source() -> None:
+    eks_http_client = FakeHttpClient({"items": []})
+    onprem_http_client = FakeHttpClient({"items": []})
+    service = make_infraops_service(
+        prometheus_client=PrometheusClient(
+            "http://prometheus:9090",
+            http_client=FakeHttpClient({"status": "success", "data": {"result": []}}),
+        ),
+        loki_client=LokiClient(
+            "http://loki:3100",
+            http_client=FakeHttpClient({"status": "success", "data": {"result": []}}),
+        ),
+        elasticsearch_client=ElasticsearchClient(
+            "http://elasticsearch:9200",
+            http_client=FailingHttpClient(),
+        ),
+        kubernetes_client=KubernetesClient(
+            "http://kubernetes:8001",
+            http_client=eks_http_client,
+        ),
+        kubernetes_sources={
+            "eks": (
+                KubernetesClient("http://kubernetes:8001", http_client=eks_http_client),
+                parse_allowlist("default,kube-system"),
+            ),
+            "onprem": (
+                KubernetesClient(
+                    "https://10.30.2.51:6443",
+                    http_client=onprem_http_client,
+                ),
+                parse_allowlist("kkpp,monitoring"),
+            ),
+        },
+        batch_client=BatchClient(
+            "http://batch-api:8081",
+            http_client=FakeHttpClient({"runs": []}),
+        ),
+    )
+
+    result = service.create_rca_snapshot(
+        incident_key="INC-ONPREM",
+        namespace="kkpp",
+        source="onprem",
+    )
+
+    sources = {source.source: source for source in result.sources}
+    assert sources["kubernetes"].status == "SUCCESS"
+    assert eks_http_client.calls == []
+    assert onprem_http_client.calls
+    assert all(
+        "/namespaces/kkpp/" in call["url"]
+        for call in onprem_http_client.calls
+    )
+
+
 def test_infraops_service_aggregates_daily_ops_metrics() -> None:
     service = make_infraops_service(
         prometheus_client=PrometheusClient(
