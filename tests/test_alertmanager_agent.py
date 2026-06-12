@@ -4,6 +4,12 @@ from aiops_platform.alertmanager_agent.service import AlertmanagerSreAgentServic
 from aiops_platform.infra_rca.schemas import AlertmanagerWebhookRequest
 from aiops_platform.main import create_app
 
+MUTATING_TOOL_NAMES = {
+    "scale_deployment",
+    "restart_pod",
+    "delete_pod",
+    "run_kubectl_exec",
+}
 
 POD_CRASH_PAYLOAD = {
     "receiver": "aiops-platform",
@@ -29,25 +35,129 @@ POD_CRASH_PAYLOAD = {
 }
 
 
-def test_alertmanager_sre_agent_plans_pod_crashloop_read_tools() -> None:
+def build_firing_payload(
+    *,
+    alertname: str,
+    service: str,
+    namespace: str,
+    cluster: str = "onprem",
+    severity: str = "critical",
+    summary: str,
+    extra_labels: dict[str, str] | None = None,
+    extra_annotations: dict[str, str] | None = None,
+) -> dict[str, object]:
+    labels = {
+        "alertname": alertname,
+        "cluster": cluster,
+        "namespace": namespace,
+        "service": service,
+        "severity": severity,
+    }
+    if extra_labels is not None:
+        labels.update(extra_labels)
+    annotations = {"summary": summary}
+    if extra_annotations is not None:
+        annotations.update(extra_annotations)
+    return {
+        "receiver": "aiops-platform",
+        "status": "firing",
+        "alerts": [
+            {
+                "status": "firing",
+                "labels": labels,
+                "annotations": annotations,
+                "fingerprint": f"{alertname.lower()}-001",
+            }
+        ],
+    }
+
+
+def plan_from_payload(payload: dict[str, object]):
     service = AlertmanagerSreAgentService()
+    return service.plan_from_webhook(AlertmanagerWebhookRequest.model_validate(payload))
 
-    result = service.plan_from_webhook(
-        AlertmanagerWebhookRequest.model_validate(POD_CRASH_PAYLOAD)
-    )
 
-    tool_names = {tool.tool_name for tool in result.planned_tools}
+def tool_names(result) -> set[str]:
+    return {tool.tool_name for tool in result.planned_tools}
+
+
+def assert_dry_run_read_only_plan(result) -> None:
+    assert result.dry_run is True
     assert result.status == "PLANNED"
+    assert MUTATING_TOOL_NAMES.isdisjoint(tool_names(result))
+
+
+def assert_common_rca_context_tools(result) -> None:
+    names = tool_names(result)
+    assert {
+        "get_topology_snapshot",
+        "search_topology_knowledge",
+        "get_service_routing_path",
+        "get_service_dependency_map",
+        "get_alertmanager_alerts",
+        "query_multi_cluster_prometheus",
+        "query_multi_cluster_loki",
+        "get_service_trace_summary",
+        "search_traces",
+        "get_recent_deployments",
+        "create_rca_snapshot",
+    }.issubset(names)
+
+
+def test_alertmanager_sre_agent_plans_pod_crashloop_read_tools() -> None:
+    result = plan_from_payload(POD_CRASH_PAYLOAD)
+
+    names = tool_names(result)
+    assert_dry_run_read_only_plan(result)
     assert result.incident_key == (
         "alertmanager:podcrashlooping:onprem:service-catalog:service-catalog:critical"
     )
     assert result.intent == "pod_crashloop"
     assert result.capability == "pod_crashloop_analysis"
-    assert "get_k8s_pods" in tool_names
-    assert "get_k8s_events" in tool_names
-    assert "get_pod_logs" in tool_names
-    assert "delete_pod" not in tool_names
-    assert "run_kubectl_exec" not in tool_names
+    assert "get_k8s_pods" in names
+    assert "get_k8s_events" in names
+    assert "get_pod_logs" in names
+
+
+def test_alertmanager_sre_agent_dry_run_checkout_500_tool_plan() -> None:
+    payload = build_firing_payload(
+        alertname="Checkout5xxHigh",
+        service="service-catalog",
+        namespace="service-catalog",
+        cluster="aws-eks",
+        summary="checkout endpoint returns HTTP 500 from the catalog API",
+    )
+
+    result = plan_from_payload(payload)
+
+    names = tool_names(result)
+    assert_dry_run_read_only_plan(result)
+    assert_common_rca_context_tools(result)
+    assert result.intent == "checkout_500"
+    assert result.capability == "checkout_500_analysis"
+    assert "get_alb_target_health" in names
+    assert "get_cloudfront_origin_mapping" in names
+    assert "get_cloudfront_distribution_status" in names
+    assert "get_rollout_status" in names
+
+
+def test_alertmanager_sre_agent_dry_run_sqs_publish_failure_tool_plan() -> None:
+    payload = build_firing_payload(
+        alertname="SqsPublishFailure",
+        service="service-catalog",
+        namespace="service-catalog",
+        summary="service-catalog failed to sendMessage to SQS",
+    )
+
+    result = plan_from_payload(payload)
+
+    names = tool_names(result)
+    assert_dry_run_read_only_plan(result)
+    assert_common_rca_context_tools(result)
+    assert result.intent == "sqs_publish_failure"
+    assert result.capability == "sqs_publish_failure_analysis"
+    assert "get_sqs_queue_attributes" in names
+    assert "get_sqs_dlq_attributes" in names
 
 
 def test_alertmanager_sre_agent_maps_sqs_dlq_to_consume_failure() -> None:
@@ -69,15 +179,98 @@ def test_alertmanager_sre_agent_maps_sqs_dlq_to_consume_failure() -> None:
             }
         ],
     }
-    service = AlertmanagerSreAgentService()
 
-    result = service.plan_from_webhook(AlertmanagerWebhookRequest.model_validate(payload))
+    result = plan_from_payload(payload)
 
-    tool_names = [tool.tool_name for tool in result.planned_tools]
+    names = tool_names(result)
+    assert_dry_run_read_only_plan(result)
+    assert_common_rca_context_tools(result)
     assert result.intent == "sqs_consume_failure"
     assert result.capability == "sqs_consume_failure_analysis"
-    assert "get_sqs_queue_attributes" in tool_names
-    assert "get_sqs_dlq_attributes" in tool_names
+    assert "get_sqs_queue_attributes" in names
+    assert "get_sqs_dlq_attributes" in names
+
+
+def test_alertmanager_sre_agent_dry_run_pin_event_missing_tool_plan() -> None:
+    payload = build_firing_payload(
+        alertname="PinVerificationEventMissing",
+        service="service-payment",
+        namespace="default",
+        summary="PIN verification completed but downstream event was not observed",
+    )
+
+    result = plan_from_payload(payload)
+
+    names = tool_names(result)
+    assert_dry_run_read_only_plan(result)
+    assert_common_rca_context_tools(result)
+    assert result.intent == "pin_verification_missing"
+    assert result.capability == "pin_verification_missing_analysis"
+    assert "get_sqs_queue_attributes" in names
+    assert "get_sqs_dlq_attributes" in names
+
+
+def test_alertmanager_sre_agent_dry_run_cloudfront_alb_eks_routing_tool_plan() -> None:
+    payload = build_firing_payload(
+        alertname="ALBTargetUnhealthy",
+        service="service-catalog",
+        namespace="service-catalog",
+        cluster="aws-eks",
+        summary="CloudFront to ALB to EKS target health is unhealthy",
+    )
+
+    result = plan_from_payload(payload)
+
+    names = tool_names(result)
+    assert_dry_run_read_only_plan(result)
+    assert_common_rca_context_tools(result)
+    assert result.intent == "routing_failure"
+    assert result.capability == "edge_routing_analysis"
+    assert "get_alb_target_health" in names
+    assert "get_cloudfront_origin_mapping" in names
+    assert "get_cloudfront_distribution_status" in names
+
+
+def test_alertmanager_sre_agent_dry_run_cloudfront_alb_onprem_routing_tool_plan() -> None:
+    payload = build_firing_payload(
+        alertname="OnpremMetalLBRoutingFailure",
+        service="service-payment",
+        namespace="default",
+        cluster="onprem",
+        summary="CloudFront to ALB to on-prem MetalLB routing failed",
+    )
+
+    result = plan_from_payload(payload)
+
+    names = tool_names(result)
+    assert_dry_run_read_only_plan(result)
+    assert_common_rca_context_tools(result)
+    assert result.intent == "routing_failure"
+    assert result.capability == "edge_routing_analysis"
+    assert "get_cloudfront_origin_mapping" in names
+    assert "get_cloudfront_distribution_status" in names
+    assert "get_alb_target_health" not in names
+
+
+def test_alertmanager_sre_agent_dry_run_db_hikaricp_tool_plan() -> None:
+    payload = build_firing_payload(
+        alertname="HikariPoolExhausted",
+        service="service-payment",
+        namespace="default",
+        summary="HikariCP connection pool is exhausted and PostgreSQL connections time out",
+    )
+
+    result = plan_from_payload(payload)
+
+    names = tool_names(result)
+    assert_dry_run_read_only_plan(result)
+    assert_common_rca_context_tools(result)
+    assert result.intent == "db_hikaricp_issue"
+    assert result.capability == "db_connection_analysis"
+    assert "get_rollout_status" in names
+    assert "query_multi_cluster_prometheus" in names
+    assert "query_multi_cluster_loki" in names
+    assert "get_service_trace_summary" in names
 
 
 def test_alertmanager_sre_agent_skips_resolved_payload() -> None:
@@ -86,9 +279,8 @@ def test_alertmanager_sre_agent_skips_resolved_payload() -> None:
         "status": "resolved",
         "alerts": [{**POD_CRASH_PAYLOAD["alerts"][0], "status": "resolved"}],
     }
-    service = AlertmanagerSreAgentService()
 
-    result = service.plan_from_webhook(AlertmanagerWebhookRequest.model_validate(payload))
+    result = plan_from_payload(payload)
 
     assert result.status == "SKIPPED"
     assert result.planned_tools == []

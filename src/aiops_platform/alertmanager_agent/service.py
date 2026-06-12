@@ -11,6 +11,36 @@ from aiops_platform.alertmanager_agent.schemas import (
 )
 from aiops_platform.infra_rca.schemas import AlertmanagerAlert, AlertmanagerWebhookRequest
 
+SRE_INTENT_BY_ALERT_NAME: dict[str, str] = {
+    "checkout500high": "checkout_500",
+    "checkout5xxhigh": "checkout_500",
+    "checkouthttperrorhigh": "checkout_500",
+    "sqsproducererrors": "sqs_publish_failure",
+    "sqspublishfailure": "sqs_publish_failure",
+    "sqssendmessagefailure": "sqs_publish_failure",
+    "sqssendmessageerrors": "sqs_publish_failure",
+    "sqsconsumerlaghigh": "sqs_consume_failure",
+    "sqsconsumefailure": "sqs_consume_failure",
+    "sqsdlqmessagesvisible": "sqs_consume_failure",
+    "sqsdlqnotempty": "sqs_consume_failure",
+    "pinverificationeventmissing": "pin_verification_missing",
+    "pinverificationmissing": "pin_verification_missing",
+    "cloudfront5xxhigh": "routing_failure",
+    "alb5xxhigh": "routing_failure",
+    "albtargetunhealthy": "routing_failure",
+    "ingress5xxhigh": "routing_failure",
+    "onpremmetallbroutingfailure": "routing_failure",
+    "podcrashlooping": "pod_crashloop",
+    "podcrashloopbackoff": "pod_crashloop",
+    "kubepodcrashlooping": "pod_crashloop",
+    "kubepodcontainerwaiting": "pod_crashloop",
+    "kubepodcontainerstatuswaitingreason": "pod_crashloop",
+    "hikaripoolexhausted": "db_hikaricp_issue",
+    "hikariconnectionpoolstarvation": "db_hikaricp_issue",
+    "dbconnectionfailure": "db_hikaricp_issue",
+    "postgresconnectionfailure": "db_hikaricp_issue",
+}
+
 
 class AlertmanagerSreAgentService:
     def __init__(self, planner: RuleBasedAgentPlanner | None = None) -> None:
@@ -138,12 +168,20 @@ def slugify(value: str) -> str:
     return slug.strip("-") or "unknown"
 
 
+def normalize_alert_name(value: str) -> str:
+    return re.sub(r"[^a-z0-9]+", "", value.lower())
+
+
 def infer_sre_intent(
     *,
     context: AlertmanagerSreAlertContext,
     labels: Mapping[str, str],
     annotations: Mapping[str, str],
 ) -> str:
+    alert_intent = SRE_INTENT_BY_ALERT_NAME.get(normalize_alert_name(context.alert_name))
+    if alert_intent is not None:
+        return alert_intent
+
     signal = " ".join(
         value
         for value in [
@@ -159,26 +197,33 @@ def infer_sre_intent(
         if value
     ).lower()
 
+    if any(
+        term in signal
+        for term in (
+            "cloudfront",
+            "alb",
+            "targetunhealthy",
+            "target unhealthy",
+            "ingress",
+            "metallb",
+        )
+    ):
+        return "routing_failure"
     if "checkout" in signal and any(term in signal for term in ("500", "5xx", "http")):
         return "checkout_500"
     if "sqs" in signal and any(
-        term in signal for term in ("publish", "producer", "send", "발행")
+        term in signal for term in ("publish", "producer", "send", "sendmessage")
     ):
         return "sqs_publish_failure"
     if any(term in signal for term in ("sqs", "queue", "dlq")) and any(
         term in signal
-        for term in ("consume", "consumer", "listener", "lag", "dlq", "messagesvisible", "소비")
+        for term in ("consume", "consumer", "listener", "lag", "dlq", "messagesvisible")
     ):
         return "sqs_consume_failure"
-    if any(term in signal for term in ("pin", "핀")) and any(
-        term in signal for term in ("verification", "verified", "event", "missing", "미반영", "검증")
+    if "pin" in signal and any(
+        term in signal for term in ("verification", "verified", "event", "missing")
     ):
         return "pin_verification_missing"
-    if any(
-        term in signal
-        for term in ("cloudfront", "alb", "targetunhealthy", "target unhealthy", "ingress", "metallb")
-    ):
-        return "routing_failure"
     if any(
         term in signal
         for term in ("crashloop", "crash loop", "imagepullbackoff", "oomkilled", "pod")
@@ -193,15 +238,16 @@ def infer_sre_intent(
 
 
 def build_sre_analysis_message(*, intent: str, context: AlertmanagerSreAlertContext) -> str:
+    routing_phrase = build_routing_analysis_phrase(context)
     intent_phrases = {
-        "checkout_500": "checkout 500 장애 분석",
-        "sqs_publish_failure": "SQS 발행 실패 장애 분석",
-        "sqs_consume_failure": "SQS 소비 실패 DLQ lag 장애 분석",
-        "pin_verification_missing": "PIN 검증 이벤트 미반영 장애 분석",
-        "routing_failure": "CloudFront ALB EKS on-prem MetalLB 라우팅 실패 분석",
-        "pod_crashloop": "pod CrashLoopBackOff 재시작 장애 분석",
-        "db_hikaricp_issue": "DB HikariCP connection pool 장애 분석",
-        "general_incident": "on-prem AWS Kubernetes SRE 일반 장애 분석",
+        "checkout_500": "checkout 500 error analysis",
+        "sqs_publish_failure": "SQS publish failure analysis",
+        "sqs_consume_failure": "SQS consume failure DLQ lag analysis",
+        "pin_verification_missing": "PIN verification event missing analysis",
+        "routing_failure": routing_phrase,
+        "pod_crashloop": "pod CrashLoopBackOff restart analysis",
+        "db_hikaricp_issue": "DB HikariCP connection pool analysis",
+        "general_incident": "on-prem AWS Kubernetes SRE general incident analysis",
     }
     details = [
         intent_phrases.get(intent, intent_phrases["general_incident"]),
@@ -221,3 +267,25 @@ def build_sre_analysis_message(*, intent: str, context: AlertmanagerSreAlertCont
     if context.summary:
         details.append(f"summary={context.summary}")
     return " ".join(details)
+
+
+def build_routing_analysis_phrase(context: AlertmanagerSreAlertContext) -> str:
+    signal = " ".join(
+        value
+        for value in [
+            context.cluster or "",
+            context.service_name or "",
+            context.workload or "",
+            context.summary or "",
+            context.description or "",
+        ]
+        if value
+    ).lower()
+    onprem_services = {"service-auth", "service-payment", "service-core", "service-admin"}
+    if context.service_name in onprem_services or any(
+        term in signal for term in ("on-prem", "onprem", "metallb", "metal lb")
+    ):
+        return "CloudFront ALB on-prem MetalLB routing failure analysis"
+    if any(term in signal for term in ("eks", "aws", "service-catalog", "catalog")):
+        return "CloudFront ALB EKS routing failure analysis"
+    return "CloudFront ALB routing failure analysis"

@@ -4,7 +4,6 @@ from pydantic import BaseModel, Field
 
 from aiops_platform.agent.schemas import AgentToolPlan
 
-
 AlertmanagerSrePlanStatus = Literal["PLANNED", "SKIPPED"]
 
 
