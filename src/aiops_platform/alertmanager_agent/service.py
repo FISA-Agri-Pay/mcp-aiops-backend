@@ -1210,6 +1210,10 @@ def build_notification_idempotency_key(
     recipient: str | None,
     stage: str = "sre_collection",
 ) -> str:
+    analysis_run_id = ""
+    if stage == "sre_analysis":
+        analysis = result.rca_analysis or {}
+        analysis_run_id = str(analysis.get("llm_run_id") or "")
     seed = "|".join(
         [
             result.incident_key or "unknown-incident",
@@ -1221,6 +1225,7 @@ def build_notification_idempotency_key(
             channel,
             recipient or "",
             stage,
+            analysis_run_id,
         ]
     )
     digest = hashlib.sha256(seed.encode("utf-8")).hexdigest()[:32]

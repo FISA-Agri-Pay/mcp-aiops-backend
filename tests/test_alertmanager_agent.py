@@ -5,7 +5,14 @@ from fastapi.testclient import TestClient
 
 from aiops_platform.agent.dispatcher import build_tool_result, resolve_registered_tool
 from aiops_platform.agent.schemas import AgentToolExecutionResult, AgentToolPlan
-from aiops_platform.alertmanager_agent.service import AlertmanagerSreAgentService
+from aiops_platform.alertmanager_agent.schemas import (
+    AlertmanagerSreAlertContext,
+    AlertmanagerSrePlanResult,
+)
+from aiops_platform.alertmanager_agent.service import (
+    AlertmanagerSreAgentService,
+    build_notification_idempotency_key,
+)
 from aiops_platform.core.config import Settings
 from aiops_platform.infra_rca.schemas import AlertmanagerWebhookRequest
 from aiops_platform.llmops.schemas import LlmRunResult, NotificationOutboxResult
@@ -454,6 +461,51 @@ class FakeSlackSender:
                 "channel": channel,
             }
         )
+
+
+def test_analysis_notification_idempotency_key_includes_llm_run_id() -> None:
+    base_result = AlertmanagerSrePlanResult(
+        status="ANALYZED",
+        incident_key="alertmanager:onpremmetallbroutingfailure:onprem:kkpp:service-payment:critical",
+        alert=AlertmanagerSreAlertContext(
+            alert_name="OnpremMetalLBRoutingFailure",
+            status="firing",
+            fingerprint="synthetic-aiops-rca-llm-test-001",
+        ),
+    )
+
+    collection_key = build_notification_idempotency_key(
+        result=base_result,
+        channel="SLACK",
+        recipient="#aiops-alerts",
+        stage="sre_collection",
+    )
+    first_analysis_key = build_notification_idempotency_key(
+        result=base_result.model_copy(
+            update={"rca_analysis": {"llm_run_id": "llm-run-1"}}
+        ),
+        channel="SLACK",
+        recipient="#aiops-alerts",
+        stage="sre_analysis",
+    )
+    second_analysis_key = build_notification_idempotency_key(
+        result=base_result.model_copy(
+            update={"rca_analysis": {"llm_run_id": "llm-run-2"}}
+        ),
+        channel="SLACK",
+        recipient="#aiops-alerts",
+        stage="sre_analysis",
+    )
+
+    assert first_analysis_key != second_analysis_key
+    assert collection_key == build_notification_idempotency_key(
+        result=base_result.model_copy(
+            update={"rca_analysis": {"llm_run_id": "llm-run-2"}}
+        ),
+        channel="SLACK",
+        recipient="#aiops-alerts",
+        stage="sre_collection",
+    )
 
 
 def test_alertmanager_sre_agent_execute_collects_read_only_evidence_bundle() -> None:
