@@ -743,13 +743,18 @@ def plan_sre_copilot_tools(
         )
 
     if intent in {"routing_failure", "checkout_500", "general_incident"}:
-        plans.extend(
-            [
+        routing_plans = []
+        alb_payload = build_sre_alb_target_health_payload(context)
+        if alb_payload:
+            routing_plans.append(
                 build_sre_tool_plan(
                     "get_alb_target_health",
-                    {"load_balancer_name": "kkpp-catalog-api"},
-                    "Read ALB target health for the EKS ingress path.",
-                ),
+                    alb_payload,
+                    "Read ALB target health for the inferred edge path.",
+                )
+            )
+        routing_plans.extend(
+            [
                 build_sre_tool_plan(
                     "get_cloudfront_origin_mapping",
                     {},
@@ -762,6 +767,7 @@ def plan_sre_copilot_tools(
                 ),
             ]
         )
+        plans.extend(routing_plans)
 
     plans.extend(
         [
@@ -800,17 +806,32 @@ def build_sre_tool_plan(tool_name: str, request_payload: dict[str, Any], reason:
     )
 
 
+def build_sre_alb_target_health_payload(context: dict[str, str | None]) -> dict[str, Any]:
+    load_balancer_name = context.get("load_balancer_name")
+    if load_balancer_name is None:
+        return {}
+    return {"load_balancer_name": load_balancer_name}
+
+
 def build_sre_incident_context(*, message: str, intent: SreCopilotIntent) -> dict[str, str | None]:
     service_name = infer_sre_service_name(message, intent=intent)
     namespace = infer_sre_namespace(service_name)
     deployment_name = infer_sre_deployment_name(message, default=service_name)
     queue_name, dlq_name = infer_sre_queue_names(intent)
+    edge_target = infer_sre_edge_target(message, intent=intent, service_name=service_name)
     return {
         "service_name": service_name,
         "namespace": namespace,
         "deployment_name": deployment_name,
         "queue_name": queue_name,
         "dlq_name": dlq_name,
+        "edge_target": edge_target,
+        "load_balancer_name": infer_sre_load_balancer_name(
+            message,
+            intent=intent,
+            service_name=service_name,
+            edge_target=edge_target,
+        ),
         "operation_name": infer_sre_operation_name(intent),
         "topology_service": infer_sre_topology_service(intent, service_name=service_name),
         "prometheus_query": build_sre_prometheus_query(intent, service_name=service_name),
@@ -823,6 +844,8 @@ def infer_sre_service_name(message: str, *, intent: SreCopilotIntent) -> str:
         "service-catalog",
         "service-payment",
         "service-auth",
+        "service-core",
+        "service-admin",
         "mcp-aiops-backend",
     )
     for service_name in explicit_services:
@@ -837,6 +860,48 @@ def infer_sre_service_name(message: str, *, intent: SreCopilotIntent) -> str:
     if "auth" in message or "인증" in message:
         return "service-auth"
     return "service-catalog"
+
+
+def infer_sre_edge_target(
+    message: str,
+    *,
+    intent: SreCopilotIntent,
+    service_name: str,
+) -> str:
+    onprem_services = {"service-auth", "service-payment", "service-core", "service-admin"}
+    if service_name in onprem_services or any(
+        keyword in message
+        for keyword in ("on-prem", "onprem", "온프렘", "metallb", "metal lb")
+    ):
+        return "onprem"
+    if intent == "checkout_500" or any(
+        keyword in message for keyword in ("eks", "service-catalog", "catalog")
+    ):
+        return "aws_eks"
+    return "unknown"
+
+
+def infer_sre_load_balancer_name(
+    message: str,
+    *,
+    intent: SreCopilotIntent,
+    service_name: str,
+    edge_target: str,
+) -> str | None:
+    explicit_match = re.search(
+        r"\b(?:load_balancer_name|load-balancer-name|alb_name|alb-name|lb_name|lb-name)"
+        r"[=: ]+([a-z0-9][a-z0-9.-]{0,252})\b",
+        message,
+    )
+    if explicit_match is not None:
+        return explicit_match.group(1)
+    if edge_target == "aws_eks" and (
+        intent == "checkout_500"
+        or service_name == "service-catalog"
+        or any(keyword in message for keyword in ("eks", "service-catalog", "catalog"))
+    ):
+        return "kkpp-catalog-api"
+    return None
 
 
 def infer_sre_namespace(service_name: str) -> str:
@@ -1744,6 +1809,23 @@ def normalize_infraops_tool_payload(
                 normalize_optional_string(normalized.get("queue_name"))
                 or str(default_queue)
             )
+    if tool_name == "get_alb_target_health":
+        for key in (
+            "target_group_arn",
+            "target_group_name",
+            "load_balancer_name",
+            "region",
+        ):
+            value = normalize_optional_string(normalized.get(key))
+            if value is None:
+                normalized.pop(key, None)
+            else:
+                normalized[key] = value
+        if not any(
+            normalized.get(key)
+            for key in ("target_group_arn", "target_group_name", "load_balancer_name")
+        ) and context["load_balancer_name"] is not None:
+            normalized["load_balancer_name"] = context["load_balancer_name"]
     if tool_name == "get_pod_logs":
         pod_name = normalize_optional_string(normalized.get("pod_name")) or extract_sre_pod_name(message)
         if pod_name is not None:

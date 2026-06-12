@@ -366,6 +366,45 @@ def test_rule_based_planner_selects_sre_checkout_500_tool_bundle() -> None:
         "namespace": "service-catalog",
         "deployment_name": "service-catalog",
     }
+    alb = next(tool for tool in plan.tool_plans if tool.tool_name == "get_alb_target_health")
+    assert alb.request_payload == {"load_balancer_name": "kkpp-catalog-api"}
+
+
+def test_rule_based_planner_does_not_reuse_catalog_alb_for_onprem_routing() -> None:
+    planner = RuleBasedAgentPlanner()
+
+    plan = planner.plan(
+        chat_type="sre_copilot",
+        message="service-payment CloudFront ALB on-prem MetalLB 라우팅 실패 분석해줘",
+        user_id="sre-1",
+    )
+
+    tool_names = [tool.tool_name for tool in plan.tool_plans]
+    assert plan.intent == "routing_failure"
+    assert "get_cloudfront_origin_mapping" in tool_names
+    assert "get_cloudfront_distribution_status" in tool_names
+    assert "get_alb_target_health" not in tool_names
+    rollout = next(tool for tool in plan.tool_plans if tool.tool_name == "get_rollout_status")
+    assert rollout.request_payload == {
+        "namespace": "default",
+        "deployment_name": "service-payment",
+    }
+
+
+def test_rule_based_planner_uses_explicit_alb_name_for_non_catalog_routing() -> None:
+    planner = RuleBasedAgentPlanner()
+
+    plan = planner.plan(
+        chat_type="sre_copilot",
+        message=(
+            "service-payment CloudFront ALB on-prem 라우팅 실패 "
+            "lb_name=kkpp-onprem-edge 분석해줘"
+        ),
+        user_id="sre-1",
+    )
+
+    alb = next(tool for tool in plan.tool_plans if tool.tool_name == "get_alb_target_health")
+    assert alb.request_payload == {"load_balancer_name": "kkpp-onprem-edge"}
 
 
 def test_rule_based_planner_keeps_sre_mutating_request_unsupported() -> None:
