@@ -121,7 +121,8 @@ DEFAULT_PROMPTS = {
             "승인 기반 조치 제안을 구분한다. "
             "answer는 프론트가 plain text로 렌더링해도 읽히도록 짧은 섹션과 줄바꿈을 포함한다. "
             "굵게 표시, 표, 긴 단일 문단은 사용하지 않는다. "
-            "운영 데이터 기반 답변은 반드시 요약, 관측 근거, 원인 후보, 권장 확인/조치, 데이터 한계 "
+            "운영 데이터 기반 답변은 반드시 요약, 관측 근거, 원인 후보, "
+            "권장 확인/조치, 데이터 한계 "
             "5개 섹션 제목만 이 순서대로 사용한다. "
             "각 섹션 제목은 한 줄로 쓰고, 섹션 사이는 빈 줄로 구분한다. "
             "각 섹션의 내용은 '- ' 불릿으로 작성하되 섹션당 1~4개로 제한한다. "
@@ -299,8 +300,12 @@ class LlmOpsService:
             prompt_key="rca.infra.v1",
             template=(
                 "Create an infrastructure RCA from Alertmanager, observability, "
-                "prediction, and autoscaling evidence. Return a concise answer "
-                "with probable root cause, impact, confidence, and recommended actions."
+                "prediction, and autoscaling evidence. Write the answer in Korean. "
+                "Return a concise answer with these sections only: Summary, "
+                "Evidence, Probable Root Cause, Recommended Checks/Actions, "
+                "Data Limits. Do not claim destructive remediation was executed. "
+                "Keep Kubernetes resource names, metric names, alert names, and "
+                "tool names in their original English form."
             ),
         )
         input_payload = {

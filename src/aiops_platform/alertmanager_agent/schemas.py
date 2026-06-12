@@ -4,7 +4,7 @@ from pydantic import BaseModel, Field
 
 from aiops_platform.agent.schemas import AgentToolExecutionResult, AgentToolPlan
 
-AlertmanagerSrePlanStatus = Literal["PLANNED", "COLLECTED", "SKIPPED"]
+AlertmanagerSrePlanStatus = Literal["PLANNED", "COLLECTED", "ANALYZED", "SKIPPED"]
 AlertmanagerSreNotificationStatus = Literal["SENT", "FAILED", "SKIPPED"]
 
 
@@ -55,6 +55,7 @@ class AlertmanagerSrePlanResult(BaseModel):
     executed_tools: list[AgentToolExecutionResult] = Field(default_factory=list)
     context_bundle: dict | None = None
     rca_snapshot: dict | None = None
+    rca_analysis: dict | None = None
     notification_results: list[AlertmanagerSreNotificationResult] = Field(
         default_factory=list
     )

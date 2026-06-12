@@ -7,7 +7,7 @@ from aiops_platform.agent.schemas import AgentToolExecutionResult, AgentToolPlan
 from aiops_platform.alertmanager_agent.service import AlertmanagerSreAgentService
 from aiops_platform.core.config import Settings
 from aiops_platform.infra_rca.schemas import AlertmanagerWebhookRequest
-from aiops_platform.llmops.schemas import NotificationOutboxResult
+from aiops_platform.llmops.schemas import LlmRunResult, NotificationOutboxResult
 from aiops_platform.main import create_app
 from aiops_platform.mcp.schemas import McpExecutionPolicy, McpToolCallStatus
 
@@ -355,6 +355,7 @@ class FakeNotificationService:
     def __init__(self) -> None:
         self.notifications: list[NotificationOutboxResult] = []
         self.status_updates: list[dict[str, object]] = []
+        self.rca_runs: list[dict[str, object]] = []
 
     def create_notification(self, **kwargs: object) -> NotificationOutboxResult:
         notification = NotificationOutboxResult(
@@ -393,6 +394,30 @@ class FakeNotificationService:
         )
         return notification.model_copy(
             update={"notification_status": status, "last_error": last_error}
+        )
+
+    def run_rca_completion(self, **kwargs: object) -> LlmRunResult:
+        self.rca_runs.append(kwargs)
+        return LlmRunResult(
+            llm_run_id="llm-run-1",
+            provider="fake",
+            model="fake-rca",
+            prompt_version_id="prompt-1",
+            prompt_key="rca.infra.v1",
+            run_status="SUCCESS",
+            masked_input=kwargs,
+            masked_output={
+                "answer": (
+                    "Summary\n"
+                    "- Synthetic RCA analysis completed.\n\n"
+                    "Probable Root Cause\n"
+                    "- The failing boundary is the simulated routing path."
+                )
+            },
+            output_schema={"type": "object"},
+            validation_errors=[],
+            latency_ms=1,
+            created_at="2026-06-12T01:20:02",
         )
 
 
@@ -526,13 +551,30 @@ def test_alertmanager_sre_agent_execute_notify_sends_email_and_slack() -> None:
         notify=True,
     )
 
-    assert [item.status for item in result.notification_results] == ["SENT", "SENT"]
-    assert [item.channel for item in result.notification_results] == ["EMAIL", "SLACK"]
+    assert [item.status for item in result.notification_results] == [
+        "SENT",
+        "SENT",
+        "SENT",
+        "SENT",
+    ]
+    assert [item.channel for item in result.notification_results] == [
+        "EMAIL",
+        "SLACK",
+        "EMAIL",
+        "SLACK",
+    ]
+    assert result.status == "ANALYZED"
+    assert result.rca_analysis is not None
+    assert result.rca_analysis["run_status"] == "SUCCESS"
     assert email_sender.sent_messages[0]["recipient"] == "ops@example.com"
     assert "RCA evidence collected" in email_sender.sent_messages[0]["subject"]
+    assert "RCA analysis completed" in email_sender.sent_messages[1]["subject"]
     assert "raw logs" in slack_sender.sent_messages[0]["text"].lower()
+    assert "Synthetic RCA analysis completed" in slack_sender.sent_messages[1]["text"]
     assert slack_sender.sent_messages[0]["channel"] == "#sre-alerts"
     assert [item.channel for item in notification_service.notifications] == [
+        "EMAIL",
+        "SLACK",
         "EMAIL",
         "SLACK",
     ]
@@ -541,6 +583,7 @@ def test_alertmanager_sre_agent_execute_notify_sends_email_and_slack() -> None:
         for update in notification_service.status_updates
     )
     assert "hooks.slack.com" not in str(notification_service.notifications[1].payload)
+    assert notification_service.rca_runs
 
 
 def test_alertmanager_sre_webhook_execute_notify_query_sends_notifications() -> None:
@@ -568,8 +611,11 @@ def test_alertmanager_sre_webhook_execute_notify_query_sends_notifications() -> 
 
     assert response.status_code == 200
     body = response.json()
-    assert body["status"] == "COLLECTED"
+    assert body["status"] == "ANALYZED"
     assert [item["status"] for item in body["notification_results"]] == [
         "SENT",
         "SENT",
+        "SENT",
+        "SENT",
     ]
+    assert body["rca_analysis"]["run_status"] == "SUCCESS"

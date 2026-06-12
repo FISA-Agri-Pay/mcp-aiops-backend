@@ -27,6 +27,7 @@ from aiops_platform.alertmanager_agent.slack_delivery import (
 )
 from aiops_platform.core.config import Settings, settings
 from aiops_platform.infra_rca.schemas import AlertmanagerAlert, AlertmanagerWebhookRequest
+from aiops_platform.llmops.schemas import LlmRunResult
 from aiops_platform.llmops.service import LlmOpsService
 from aiops_platform.mcp.schemas import McpToolPermission
 from aiops_platform.ops_reports.email_delivery import EmailSender, SmtpEmailSender
@@ -240,9 +241,40 @@ class AlertmanagerSreAgentService:
         if not notify:
             return collected_result
         notification_results = self._send_collection_notifications(collected_result)
-        return collected_result.model_copy(
+        rca_analysis = self._run_rca_analysis(collected_result)
+        analyzed_result = collected_result.model_copy(
+            update={
+                "status": "ANALYZED",
+                "rca_analysis": rca_analysis,
+            }
+        )
+        notification_results.extend(self._send_analysis_notifications(analyzed_result))
+        return analyzed_result.model_copy(
             update={"notification_results": notification_results}
         )
+
+    def _run_rca_analysis(self, result: AlertmanagerSrePlanResult) -> dict[str, Any]:
+        try:
+            llm_run = self._get_llmops_service().run_rca_completion(
+                incident=build_rca_llm_incident_payload(result),
+                alert=(
+                    result.alert.model_dump(mode="json")
+                    if result.alert is not None
+                    else {}
+                ),
+                snapshot=build_rca_llm_snapshot_payload(result),
+                evidence=build_rca_llm_evidence(result),
+            )
+            return build_rca_analysis_payload(llm_run)
+        except Exception as exc:
+            error_message = format_delivery_error(exc)
+            logger.exception("Alertmanager SRE RCA LLM analysis failed.")
+            return {
+                "run_status": "FAILED",
+                "answer": "",
+                "last_error": error_message,
+                "validation_errors": [],
+            }
 
     def _send_collection_notifications(
         self,
@@ -284,6 +316,48 @@ class AlertmanagerSreAgentService:
         )
         return notifications
 
+    def _send_analysis_notifications(
+        self,
+        result: AlertmanagerSrePlanResult,
+    ) -> list[AlertmanagerSreNotificationResult]:
+        subject = build_analysis_notification_subject(result)
+        html_body = build_analysis_notification_html(result)
+        slack_text = build_analysis_notification_text(result)
+        payload = build_analysis_notification_payload(result)
+        notifications = []
+
+        email_recipients = self._resolve_email_recipients()
+        if not email_recipients:
+            notifications.append(
+                AlertmanagerSreNotificationResult(
+                    channel="EMAIL",
+                    status="SKIPPED",
+                    error_message="RCA_EMAIL_RECIPIENTS is empty.",
+                )
+            )
+        for recipient in email_recipients:
+            notifications.append(
+                self._deliver_email_notification(
+                    recipient=recipient,
+                    subject=subject,
+                    html_body=html_body,
+                    payload=payload,
+                    result=result,
+                    notification_stage="sre_analysis",
+                )
+            )
+
+        notifications.append(
+            self._deliver_slack_notification(
+                text=slack_text,
+                subject=subject,
+                payload=payload,
+                result=result,
+                notification_stage="sre_analysis",
+            )
+        )
+        return notifications
+
     def _deliver_email_notification(
         self,
         *,
@@ -292,6 +366,7 @@ class AlertmanagerSreAgentService:
         html_body: str,
         payload: dict[str, Any],
         result: AlertmanagerSrePlanResult,
+        notification_stage: str = "sre_collection",
     ) -> AlertmanagerSreNotificationResult:
         notification = self._create_notification_record(
             channel="email",
@@ -300,6 +375,7 @@ class AlertmanagerSreAgentService:
             content=html_body,
             payload=payload,
             result=result,
+            notification_stage=notification_stage,
         )
         if isinstance(notification, AlertmanagerSreNotificationResult):
             return notification
@@ -355,6 +431,7 @@ class AlertmanagerSreAgentService:
         subject: str,
         payload: dict[str, Any],
         result: AlertmanagerSrePlanResult,
+        notification_stage: str = "sre_collection",
     ) -> AlertmanagerSreNotificationResult:
         webhook_url = self._settings.rca_slack_webhook_url.strip()
         recipient = self._resolve_slack_recipient()
@@ -372,6 +449,7 @@ class AlertmanagerSreAgentService:
             content=text,
             payload=payload,
             result=result,
+            notification_stage=notification_stage,
         )
         if isinstance(notification, AlertmanagerSreNotificationResult):
             return notification
@@ -428,6 +506,7 @@ class AlertmanagerSreAgentService:
         content: str,
         payload: dict[str, Any],
         result: AlertmanagerSrePlanResult,
+        notification_stage: str = "sre_collection",
     ):
         normalized_channel = channel.strip().upper()
         try:
@@ -443,6 +522,7 @@ class AlertmanagerSreAgentService:
                     result=result,
                     channel=normalized_channel,
                     recipient=recipient,
+                    stage=notification_stage,
                 ),
             )
         except Exception as exc:
@@ -629,6 +709,207 @@ def build_collection_notification_html(result: AlertmanagerSrePlanResult) -> str
     )
 
 
+def build_rca_llm_incident_payload(result: AlertmanagerSrePlanResult) -> dict[str, Any]:
+    stats = summarize_tool_execution(result)
+    return {
+        "incident_key": result.incident_key,
+        "status": result.status,
+        "intent": result.intent,
+        "capability": result.capability,
+        "target": format_alert_target(result.alert),
+        "incident_window": (
+            result.incident_window.model_dump(mode="json")
+            if result.incident_window is not None
+            else None
+        ),
+        "tool_execution": stats,
+    }
+
+
+def build_rca_llm_snapshot_payload(result: AlertmanagerSrePlanResult) -> dict[str, Any]:
+    bundle = result.context_bundle or {}
+    return {
+        "context_summary": trim_payload_for_llm(bundle.get("summary_for_llm")),
+        "cross_domain": trim_payload_for_llm(bundle.get("cross_domain")),
+        "failure_boundary_candidates": trim_payload_for_llm(
+            bundle.get("failure_boundary_candidates")
+        ),
+        "rca_snapshot": trim_payload_for_llm(result.rca_snapshot),
+    }
+
+
+def build_rca_llm_evidence(result: AlertmanagerSrePlanResult) -> list[dict[str, Any]]:
+    bundle = result.context_bundle or {}
+    evidence_sections = [
+        ("topology", bundle.get("topology")),
+        ("live_state", bundle.get("live_state")),
+        ("observability", bundle.get("observability")),
+        ("deployment_changes", bundle.get("deployment_changes")),
+        ("history", bundle.get("history")),
+    ]
+    evidence = []
+    for section_name, payload in evidence_sections:
+        if payload:
+            evidence.append(
+                {
+                    "section": section_name,
+                    "payload": trim_payload_for_llm(payload),
+                }
+            )
+    evidence.append(
+        {
+            "section": "tool_results",
+            "payload": [
+                compact_tool_result(tool_result, include_response=False)
+                for tool_result in result.executed_tools
+            ],
+        }
+    )
+    return evidence
+
+
+def build_rca_analysis_payload(llm_run: LlmRunResult) -> dict[str, Any]:
+    answer = str(llm_run.masked_output.get("answer") or "").strip()
+    return {
+        "llm_run_id": llm_run.llm_run_id,
+        "provider": llm_run.provider,
+        "model": llm_run.model,
+        "prompt_key": llm_run.prompt_key,
+        "run_status": llm_run.run_status,
+        "answer": answer,
+        "last_error": llm_run.last_error,
+        "validation_errors": llm_run.validation_errors,
+    }
+
+
+def build_analysis_notification_subject(result: AlertmanagerSrePlanResult) -> str:
+    alert_name = result.alert.alert_name if result.alert is not None else "Alertmanager alert"
+    return f"[AIOps] RCA analysis completed: {alert_name}"
+
+
+def build_analysis_notification_payload(
+    result: AlertmanagerSrePlanResult,
+) -> dict[str, Any]:
+    analysis = result.rca_analysis or {}
+    return {
+        "notification_stage": "sre_analysis",
+        "trigger_type": result.trigger_type,
+        "incident_key": result.incident_key,
+        "status": result.status,
+        "intent": result.intent,
+        "capability": result.capability,
+        "alert": result.alert.model_dump(mode="json") if result.alert is not None else None,
+        "incident_window": (
+            result.incident_window.model_dump(mode="json")
+            if result.incident_window is not None
+            else None
+        ),
+        "tool_execution": summarize_tool_execution(result),
+        "rca_analysis": analysis,
+    }
+
+
+def build_analysis_notification_text(result: AlertmanagerSrePlanResult) -> str:
+    analysis = result.rca_analysis or {}
+    run_status = str(analysis.get("run_status") or "UNKNOWN")
+    answer = str(analysis.get("answer") or "").strip()
+    last_error = str(analysis.get("last_error") or "").strip()
+    if run_status != "SUCCESS":
+        answer = last_error or "LLM RCA analysis did not complete successfully."
+    lines = [
+        build_analysis_notification_subject(result),
+        f"- incident: {result.incident_key or 'unknown'}",
+        f"- target: {format_alert_target(result.alert)}",
+        f"- llm_status: {run_status}",
+        "- answer:",
+        truncate_text(answer or "No RCA answer was generated.", limit=3500),
+        "- note: destructive remediation was not executed.",
+    ]
+    return "\n".join(lines)
+
+
+def build_analysis_notification_html(result: AlertmanagerSrePlanResult) -> str:
+    analysis = result.rca_analysis or {}
+    run_status = str(analysis.get("run_status") or "UNKNOWN")
+    answer = str(analysis.get("answer") or "").strip()
+    last_error = str(analysis.get("last_error") or "").strip()
+    if run_status != "SUCCESS":
+        answer = last_error or "LLM RCA analysis did not complete successfully."
+    rows = [
+        ("Incident", result.incident_key or ""),
+        ("Alert", result.alert.alert_name if result.alert is not None else ""),
+        ("Target", format_alert_target(result.alert)),
+        ("Intent", result.intent or ""),
+        ("LLM Status", run_status),
+        ("LLM Run", str(analysis.get("llm_run_id") or "")),
+    ]
+    return (
+        "<html><body>"
+        "<h2>AIOps SRE RCA analysis completed</h2>"
+        f"{render_html_table(rows)}"
+        "<h3>Analysis</h3>"
+        "<pre>"
+        f"{html.escape(truncate_text(answer or 'No RCA answer was generated.', limit=8000))}"
+        "</pre>"
+        "<p>Destructive remediation was not executed.</p>"
+        "</body></html>"
+    )
+
+
+def trim_payload_for_llm(
+    value: Any,
+    *,
+    max_depth: int = 5,
+    list_limit: int = 5,
+    string_limit: int = 2000,
+) -> Any:
+    if max_depth <= 0:
+        return summarize_trimmed_value(value)
+    if isinstance(value, dict):
+        return {
+            str(key): trim_payload_for_llm(
+                item,
+                max_depth=max_depth - 1,
+                list_limit=list_limit,
+                string_limit=string_limit,
+            )
+            for key, item in value.items()
+            if str(key) != "raw_tool_results"
+        }
+    if isinstance(value, list):
+        trimmed = [
+            trim_payload_for_llm(
+                item,
+                max_depth=max_depth - 1,
+                list_limit=list_limit,
+                string_limit=string_limit,
+            )
+            for item in value[:list_limit]
+        ]
+        if len(value) > list_limit:
+            trimmed.append({"truncated_items": len(value) - list_limit})
+        return trimmed
+    if isinstance(value, str):
+        return truncate_text(value, limit=string_limit)
+    return value
+
+
+def summarize_trimmed_value(value: Any) -> Any:
+    if isinstance(value, dict):
+        return {"trimmed_object_keys": list(value)[:10], "trimmed": True}
+    if isinstance(value, list):
+        return {"trimmed_list_length": len(value), "trimmed": True}
+    if isinstance(value, str):
+        return truncate_text(value, limit=300)
+    return value
+
+
+def truncate_text(value: str, *, limit: int) -> str:
+    if len(value) <= limit:
+        return value
+    return f"{value[:limit]}..."
+
+
 def summarize_tool_execution(result: AlertmanagerSrePlanResult) -> dict[str, Any]:
     failed_tools = [
         tool_result.tool_name
@@ -710,6 +991,7 @@ def build_notification_idempotency_key(
     result: AlertmanagerSrePlanResult,
     channel: str,
     recipient: str | None,
+    stage: str = "sre_collection",
 ) -> str:
     seed = "|".join(
         [
@@ -721,11 +1003,11 @@ def build_notification_idempotency_key(
             ),
             channel,
             recipient or "",
-            "sre_collection",
+            stage,
         ]
     )
     digest = hashlib.sha256(seed.encode("utf-8")).hexdigest()[:32]
-    return f"sre-rca-collection:{digest}"
+    return f"{stage}:{digest}"
 
 
 def format_delivery_error(exc: Exception, *, secret: str | None = None) -> str:
