@@ -4,6 +4,7 @@ from aiops_platform.agent.orchestrator import AgentOrchestrator
 from aiops_platform.agent.planner import (
     LlmAgentPlanner,
     RuleBasedAgentPlanner,
+    allowed_tool_keys,
     classify_admin_copilot_capability,
     classify_admin_copilot_intent,
     classify_farmer_bnpl_capability,
@@ -20,6 +21,7 @@ from aiops_platform.mcp.schemas import (
     McpToolCallStatus,
     McpToolPermission,
 )
+from aiops_platform.mcp.registry import list_mcp_tools
 from aiops_platform.orchestration.service import (
     build_chat_ui_cards,
     build_direct_chat_response,
@@ -395,6 +397,25 @@ def test_rule_based_planner_selects_ops_tools_for_admin_action_priority() -> Non
         "get_overdue_summary",
         "search_overdue_users",
     ]
+
+
+def test_sre_copilot_allowed_tools_are_read_only() -> None:
+    tool_permissions = {
+        (tool.server_name, tool.tool_name): tool.tool_permission
+        for tool in list_mcp_tools()
+    }
+
+    allowed_sre_tools = allowed_tool_keys("sre_copilot")
+
+    assert allowed_sre_tools
+    assert all(
+        tool_permissions[tool_key] == McpToolPermission.READ
+        for tool_key in allowed_sre_tools
+    )
+    assert ("infraops-mcp", "scale_deployment") not in allowed_sre_tools
+    assert ("infraops-mcp", "restart_pod") not in allowed_sre_tools
+    assert ("infraops-mcp", "delete_pod") not in allowed_sre_tools
+    assert ("infraops-mcp", "run_kubectl_exec") not in allowed_sre_tools
 
 
 def test_rule_based_planner_selects_sre_checkout_500_tool_bundle() -> None:

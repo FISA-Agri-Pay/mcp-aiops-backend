@@ -39,6 +39,7 @@ def test_topology_service_can_mask_infrastructure_identifiers(tmp_path) -> None:
 ## Summary
 
 - Account 153585581837 routes to 172.20.0.1.
+- VPC CIDR 172.20.0.0/16 is attached.
 - ALB internal-example.elb.amazonaws.com is healthy.
 - Role arn:aws:iam::153585581837:role/example is attached.
 """,
@@ -56,6 +57,7 @@ def test_topology_service_can_mask_infrastructure_identifiers(tmp_path) -> None:
 
     assert "153585581837" not in content
     assert "172.20.0.1" not in content
+    assert "172.20.0.0/16" not in content
     assert "internal-example.elb.amazonaws.com" not in content
     assert "arn:aws:iam" not in content
     assert "***ACCOUNT_ID***" in content
