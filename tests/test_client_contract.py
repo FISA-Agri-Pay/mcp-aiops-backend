@@ -68,8 +68,10 @@ def test_client_contract_openapi_includes_chat_history_and_mcp_paths() -> None:
     paths = response.json()["paths"]
     for path in [
         "/farmer/chat/ask",
+        "/api/v1/aiops/farmer/chat/ask",
         "/farmer/chat/sessions",
         "/farmer/orders/latest/delivery",
+        "/api/v1/aiops/farmer/orders/latest/delivery",
         "/admin/copilot/sessions",
         "/admin/copilot/ask",
         "/sre/copilot/sessions",

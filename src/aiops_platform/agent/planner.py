@@ -29,7 +29,7 @@ class RuleBasedAgentPlanner:
         normalized_message = message.lower()
         if chat_type == "farmer_bnpl":
             intent = classify_farmer_bnpl_intent(normalized_message)
-            capability = None
+            capability = classify_farmer_bnpl_capability(normalized_message)
             tool_plans = plan_farmer_bnpl_tools(
                 message=normalized_message,
                 user_id=user_id,
@@ -152,6 +152,18 @@ FarmerBnplIntent = Literal[
     "application",
     "general_bnpl",
 ]
+FarmerBnplCapability = Literal[
+    "smalltalk",
+    "help",
+    "unsupported",
+    "credit_limit_status",
+    "repayment_guidance",
+    "delivery_status",
+    "fertilizer_recommendation",
+    "checkout_guidance",
+    "credit_application_guidance",
+    "bnpl_general_guidance",
+]
 SreCopilotIntent = Literal[
     "greeting",
     "thanks",
@@ -181,8 +193,35 @@ SreCopilotCapability = Literal[
 ]
 ADMIN_COPILOT_CAPABILITY_VALUES = set(get_args(AdminCopilotCapability))
 ADMIN_DIRECT_CAPABILITIES = {"smalltalk", "help", "unsupported"}
+FARMER_BNPL_CAPABILITY_VALUES = set(get_args(FarmerBnplCapability))
 SRE_COPILOT_CAPABILITY_VALUES = set(get_args(SreCopilotCapability))
 SRE_DIRECT_CAPABILITIES = {"smalltalk", "help", "unsupported"}
+FARMER_INTENT_TO_CAPABILITY: dict[str, FarmerBnplCapability] = {
+    "greeting": "smalltalk",
+    "thanks": "smalltalk",
+    "help": "help",
+    "unsupported": "unsupported",
+    "credit_limit": "credit_limit_status",
+    "repayment": "repayment_guidance",
+    "delivery": "delivery_status",
+    "recommendation": "fertilizer_recommendation",
+    "checkout_prepare": "checkout_guidance",
+    "checkout_confirm": "checkout_guidance",
+    "application": "credit_application_guidance",
+    "general_bnpl": "bnpl_general_guidance",
+}
+FARMER_CAPABILITY_TO_INTENT: dict[str, FarmerBnplIntent] = {
+    "smalltalk": "greeting",
+    "help": "help",
+    "unsupported": "unsupported",
+    "credit_limit_status": "credit_limit",
+    "repayment_guidance": "repayment",
+    "delivery_status": "delivery",
+    "fertilizer_recommendation": "recommendation",
+    "checkout_guidance": "checkout_prepare",
+    "credit_application_guidance": "application",
+    "bnpl_general_guidance": "general_bnpl",
+}
 ADMIN_INTENT_TO_CAPABILITY: dict[str, AdminCopilotCapability] = {
     "greeting": "smalltalk",
     "thanks": "smalltalk",
@@ -245,14 +284,43 @@ def plan_farmer_bnpl_tools(*, message: str, user_id: str) -> list[AgentToolPlan]
         return []
 
     plans: list[AgentToolPlan] = []
+    wants_bnpl_context = any(
+        keyword in message
+        for keyword in (
+            "외상",
+            "한도",
+            "잔액",
+            "bnpl",
+            "credit",
+            "limit",
+            "결제",
+            "구매",
+            "checkout",
+            "cart",
+            "장바구니",
+        )
+    )
+    wants_checkout = any(
+        keyword in message for keyword in ("결제", "checkout", "cart", "장바구니", "체크아웃")
+    )
+    is_sensor_request = any(
+        keyword in message
+        for keyword in ("sensor", "센서", "스마트팜", "smartfarm", "smart farm")
+    )
+    is_fertilizer_request = any(
+        keyword in message
+        for keyword in ("fertilizer", "비료")
+    )
+    product_only_recommendation = (
+        intent == "recommendation" and is_sensor_request and not is_fertilizer_request
+    )
 
     if intent in {
         "credit_limit",
         "checkout_prepare",
-        "recommendation",
         "application",
         "general_bnpl",
-    }:
+    } or (intent == "recommendation" and wants_bnpl_context):
         plans.append(
             AgentToolPlan(
                 server_name="farmer-bnpl-mcp",
@@ -262,7 +330,10 @@ def plan_farmer_bnpl_tools(*, message: str, user_id: str) -> list[AgentToolPlan]
             )
         )
 
-    if intent in {"recommendation", "application", "general_bnpl"}:
+    if (
+        intent in {"recommendation", "application", "general_bnpl"}
+        and not product_only_recommendation
+    ):
         plans.append(
             AgentToolPlan(
                 server_name="farmer-bnpl-mcp",
@@ -316,9 +387,7 @@ def plan_farmer_bnpl_tools(*, message: str, user_id: str) -> list[AgentToolPlan]
             )
         )
 
-    if intent == "recommendation" and any(
-        keyword in message for keyword in ("sensor", "센서", "스마트팜", "smartfarm", "smart farm")
-    ):
+    if intent == "recommendation" and is_sensor_request:
         plans.append(
             AgentToolPlan(
                 server_name="farmer-bnpl-mcp",
@@ -328,13 +397,13 @@ def plan_farmer_bnpl_tools(*, message: str, user_id: str) -> list[AgentToolPlan]
             )
         )
 
-    if intent in {"recommendation", "checkout_prepare"}:
-        default_cart_items = [
-            {
-                "product_id": str(settings.farmer_bnpl_default_checkout_product_id),
-                "quantity": settings.farmer_bnpl_default_checkout_quantity,
-            }
-        ]
+    should_prepare_checkout = intent == "checkout_prepare" or (
+        intent == "recommendation" and wants_checkout
+    )
+    should_recommend_fertilizer = (
+        intent == "recommendation" and not product_only_recommendation
+    ) or intent == "checkout_prepare"
+    if should_recommend_fertilizer:
         plans.extend(
             [
                 AgentToolPlan(
@@ -349,6 +418,18 @@ def plan_farmer_bnpl_tools(*, message: str, user_id: str) -> list[AgentToolPlan]
                     request_payload={"limit": 3},
                     reason="Find low-price fertilizer candidates.",
                 ),
+            ]
+        )
+
+    if should_prepare_checkout:
+        default_cart_items = [
+            {
+                "product_id": str(settings.farmer_bnpl_default_checkout_product_id),
+                "quantity": settings.farmer_bnpl_default_checkout_quantity,
+            }
+        ]
+        plans.extend(
+            [
                 AgentToolPlan(
                     server_name="farmer-bnpl-mcp",
                     tool_name="prepare_bnpl_checkout_payload",
@@ -1235,6 +1316,33 @@ def classify_admin_copilot_capability(message: str) -> AdminCopilotCapability:
     return ADMIN_INTENT_TO_CAPABILITY[intent]
 
 
+def classify_farmer_bnpl_capability(message: str) -> FarmerBnplCapability:
+    intent = classify_farmer_bnpl_intent(message)
+    return FARMER_INTENT_TO_CAPABILITY[intent]
+
+
+def normalize_farmer_capability(value: object) -> FarmerBnplCapability | None:
+    normalized = normalize_optional_string(value)
+    if normalized is None:
+        return None
+    normalized = normalized.lower().replace("-", "_")
+    if normalized in FARMER_BNPL_CAPABILITY_VALUES:
+        return normalized  # type: ignore[return-value]
+    return None
+
+
+def farmer_intent_for_capability(
+    *,
+    capability: FarmerBnplCapability,
+    fallback_intent: str | None = None,
+) -> FarmerBnplIntent:
+    if capability == "smalltalk" and fallback_intent in {"greeting", "thanks"}:
+        return fallback_intent  # type: ignore[return-value]
+    if capability == "checkout_guidance" and fallback_intent == "checkout_confirm":
+        return "checkout_confirm"
+    return FARMER_CAPABILITY_TO_INTENT[capability]
+
+
 def classify_sre_copilot_capability(message: str) -> SreCopilotCapability:
     intent = classify_sre_copilot_intent(message)
     return SRE_INTENT_TO_CAPABILITY[intent]
@@ -1291,6 +1399,9 @@ def build_llm_planner_prompt() -> str:
         "next actions, recommendations, or operational triage are ops_action_prioritization. "
         "The backend maps admin capabilities to approved MCP tool bundles, so admin data requests "
         "may set tool_plans=[] as long as capability is correct and requires_tools=true. "
+        "For farmer_bnpl, choose the capability that matches the user's main need. "
+        "Fertilizer or product recommendation requests are fertilizer_recommendation, "
+        "and credit limit questions are credit_limit_status. "
         "For greeting, thanks, help, or unsupported requests, set requires_tools=false, "
         "tool_plans=[], and provide a Korean direct_answer. "
         "For supported data requests, set requires_tools=true and provide the minimal tool_plans. "
@@ -1349,6 +1460,56 @@ def available_capabilities_for_prompt(chat_type: ChatType) -> list[dict[str, str
             {
                 "capability": "general_incident_analysis",
                 "description": "General read-only SRE incident triage using available observability evidence.",
+            },
+        ]
+    if chat_type == "farmer_bnpl":
+        return [
+            {
+                "capability": "smalltalk",
+                "description": "Greeting or thanks that does not require account data.",
+            },
+            {
+                "capability": "help",
+                "description": "Explain what the farmer chatbot can answer.",
+            },
+            {
+                "capability": "unsupported",
+                "description": "The user request has no supported farmer-facing data source.",
+            },
+            {
+                "capability": "credit_limit_status",
+                "description": (
+                    "Current BNPL credit limit, used amount, available limit, and status."
+                ),
+            },
+            {
+                "capability": "repayment_guidance",
+                "description": (
+                    "Repayment schedule, interest due, overdue status, and payment guidance."
+                ),
+            },
+            {
+                "capability": "delivery_status",
+                "description": "Latest order and delivery status.",
+            },
+            {
+                "capability": "fertilizer_recommendation",
+                "description": (
+                    "Fertilizer or farming material recommendation using profile, "
+                    "advisory, product, and BNPL eligibility evidence."
+                ),
+            },
+            {
+                "capability": "checkout_guidance",
+                "description": "Prepare or confirm BNPL checkout with user confirmation policy.",
+            },
+            {
+                "capability": "credit_application_guidance",
+                "description": "Credit application, required documents, and review guidance.",
+            },
+            {
+                "capability": "bnpl_general_guidance",
+                "description": "General farmer-facing BNPL usage guidance.",
             },
         ]
     if chat_type != "admin_copilot":
@@ -1529,6 +1690,14 @@ def build_validated_llm_plan(
         if llm_capability is not None:
             capability = llm_capability
             intent = admin_intent_for_capability(
+                capability=llm_capability,
+                fallback_intent=intent,
+            )
+    elif chat_type == "farmer_bnpl":
+        llm_capability = normalize_farmer_capability(payload.get("capability"))
+        if llm_capability is not None:
+            capability = llm_capability
+            intent = farmer_intent_for_capability(
                 capability=llm_capability,
                 fallback_intent=intent,
             )

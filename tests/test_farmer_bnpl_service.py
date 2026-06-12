@@ -2,6 +2,11 @@ import pytest
 from sqlalchemy import text
 
 from aiops_platform.core.database import SessionLocal
+from aiops_platform.farmer_bnpl.repository import (
+    build_farmer_profile_join,
+    expand_category_aliases,
+    material_keywords_for_category,
+)
 from aiops_platform.farmer_bnpl.service import (
     FarmerBnplService,
     FarmerBnplValidationError,
@@ -223,6 +228,26 @@ def test_product_search_and_lowest_fertilizer_are_deterministic() -> None:
     }
     assert lowest.items[0].product_id == FERTILIZER_ORGANIC_ID
     assert detail.product.unit_price == 24000
+
+
+def test_product_category_aliases_cover_onprem_korean_catalog_names() -> None:
+    assert expand_category_aliases("fertilizer") == ["fertilizer", "비료/자재"]
+    assert expand_category_aliases("비료") == ["fertilizer", "비료/자재"]
+    assert expand_category_aliases("seed") == ["seed", "씨앗/모종"]
+    assert "비료/자재" in expand_category_aliases("농자재")
+    assert "비료" in material_keywords_for_category("fertilizer")
+    assert "제초제" in material_keywords_for_category("pesticide")
+
+
+def test_farmer_profile_join_supports_legacy_and_onprem_schema() -> None:
+    assert (
+        build_farmer_profile_join({"user_id"})
+        == "left join core.farmer_profiles fp on fp.user_id = u.id"
+    )
+    assert (
+        build_farmer_profile_join({"user_public_id"})
+        == "left join core.farmer_profiles fp on fp.user_public_id = u.public_id"
+    )
 
 
 def test_cart_total_and_checkout_payload_use_catalog_prices() -> None:

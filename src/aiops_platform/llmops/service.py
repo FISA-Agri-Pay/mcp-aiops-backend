@@ -48,7 +48,33 @@ logger = logging.getLogger(__name__)
 DEFAULT_PROMPTS = {
     "farmer_bnpl": (
         "farmer_bnpl_chat",
-        "Summarize Farmer BNPL tool results and return safe checkout guidance.",
+        (
+            "콩콩팥팥 서비스 사용자 챗봇으로서 한국어로만 답변한다. "
+            "반드시 JSON object를 반환하되, answer 필드는 한국어 자연어 문자열이어야 한다. "
+            "answer를 object, array, dict, markdown AST로 반환하지 않는다. "
+            "사용자에게 내부 tool 이름, MCP, API 오류, profile retrieving issue 같은 "
+            "개발자용 표현을 노출하지 않는다. "
+            "이미 UI 카드로 표시될 수 있는 외상 한도 수치는 본문에서 길게 반복하지 말고 "
+            "필요한 경우 한 문장으로만 보조 설명한다. "
+            "input의 capability가 credit_limit_status이면 총 한도, 사용 금액, 잔여 한도, "
+            "상태를 한국어로 짧게 요약한다. "
+            "input의 capability가 fertilizer_recommendation이면 비료/농자재 추천을 중심으로 답하고 "
+            "외상 한도는 구매 가능 여부 판단에 필요한 만큼만 언급한다. "
+            "tool_results에 추천 상품 items가 있으면 상품명, 가격, 한도 내 구매 가능 여부를 "
+            "반드시 포함한다. "
+            "추천 상품이나 추천 근거가 없으면 "
+            "'현재 추천 가능한 상품을 찾지 못했습니다'처럼 말하고, "
+            "작물, 재배 면적, 지역, 생육 단계 중 필요한 추가 정보를 물어본다. "
+            "tool이 실패해도 '요청이 실패했습니다'라고 끝내지 말고 "
+            "현재 확인 가능한 내용과 사용자가 추가로 알려줄 정보를 안내한다. "
+            "input의 capability가 repayment_guidance이면 "
+            "상환일, 이자, 연체 여부와 다음 행동을 안내한다. "
+            "input의 capability가 delivery_status이면 최근 주문의 배송 상태를 안내한다. "
+            "input의 capability가 checkout_guidance이면 "
+            "사용자가 확정하기 전에는 결제가 완료됐다고 말하지 않는다. "
+            "답변은 2~5개의 짧은 문장 또는 '- ' 불릿으로 작성하고, "
+            "과장하거나 확인되지 않은 내용을 단정하지 않는다."
+        ),
     ),
     "admin_copilot": (
         "admin_copilot",
@@ -198,7 +224,7 @@ class LlmOpsService:
             "user_id": user_id,
             "capability": capability,
             "tool_results": [
-                result.model_dump(mode="json", exclude={"masked_request_payload"})
+                serialize_tool_result_for_llm(result, chat_type=chat_type)
                 for result in tool_results
             ],
         }
@@ -685,3 +711,28 @@ def has_failed_tool(tool_results: list[AgentToolExecutionResult]) -> bool:
         McpToolCallStatus(result.call_status) == McpToolCallStatus.FAILED
         for result in tool_results
     )
+
+
+def serialize_tool_result_for_llm(
+    result: AgentToolExecutionResult,
+    *,
+    chat_type: ChatType,
+) -> dict[str, Any]:
+    payload = result.model_dump(mode="json", exclude={"masked_request_payload"})
+    if chat_type != "farmer_bnpl":
+        return payload
+
+    call_status = McpToolCallStatus(result.call_status)
+    if call_status == McpToolCallStatus.SUCCESS:
+        return payload
+    if call_status not in {McpToolCallStatus.FAILED, McpToolCallStatus.TIMEOUT}:
+        return payload
+
+    payload["error_message"] = (
+        "현재 이 정보는 확인하지 못했습니다. 사용자에게 내부 오류 원인을 설명하지 말고 "
+        "필요한 추가 정보나 다시 시도 안내만 제공하세요."
+    )
+    payload["response_payload"] = {}
+    payload["masked_response_payload"] = {}
+    payload["failure_policy"] = "hide_internal_error_from_user"
+    return payload
