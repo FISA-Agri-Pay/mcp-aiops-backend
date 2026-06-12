@@ -1,8 +1,13 @@
+from datetime import UTC, datetime
+
 from fastapi.testclient import TestClient
 
+from aiops_platform.agent.dispatcher import build_tool_result, resolve_registered_tool
+from aiops_platform.agent.schemas import AgentToolExecutionResult, AgentToolPlan
 from aiops_platform.alertmanager_agent.service import AlertmanagerSreAgentService
 from aiops_platform.infra_rca.schemas import AlertmanagerWebhookRequest
 from aiops_platform.main import create_app
+from aiops_platform.mcp.schemas import McpExecutionPolicy, McpToolCallStatus
 
 MUTATING_TOOL_NAMES = {
     "scale_deployment",
@@ -313,3 +318,91 @@ def test_external_alertmanager_sre_webhook_api_is_exposed() -> None:
 
     assert response.status_code == 200
     assert response.json()["trigger_type"] == "ALERTMANAGER"
+
+
+class FakeReadOnlyDispatcher:
+    def __init__(self) -> None:
+        self.plans: list[AgentToolPlan] = []
+
+    def execute(self, plan: AgentToolPlan) -> AgentToolExecutionResult:
+        self.plans.append(plan)
+        tool = resolve_registered_tool(
+            server_name=plan.server_name,
+            tool_name=plan.tool_name,
+        )
+        return build_tool_result(
+            tool=tool,
+            request_payload=plan.request_payload,
+            response_payload={
+                "ok": True,
+                "tool_name": plan.tool_name,
+            },
+            call_status=McpToolCallStatus.SUCCESS,
+            execution_policy=McpExecutionPolicy.ALLOWED,
+        )
+
+
+def test_alertmanager_sre_agent_execute_collects_read_only_evidence_bundle() -> None:
+    dispatcher = FakeReadOnlyDispatcher()
+    service = AlertmanagerSreAgentService(
+        dispatcher=dispatcher,
+        now_provider=lambda: datetime(2026, 6, 12, 1, 20, tzinfo=UTC),
+    )
+
+    result = service.handle_webhook(
+        AlertmanagerWebhookRequest.model_validate(POD_CRASH_PAYLOAD),
+        execute=True,
+    )
+
+    executed_tool_names = [plan.tool_name for plan in dispatcher.plans]
+    assert result.dry_run is False
+    assert result.status == "COLLECTED"
+    assert result.incident_window is not None
+    assert result.incident_window.anchor_time == "2026-06-12T01:00:00Z"
+    assert result.incident_window.start == "2026-06-12T00:45:00Z"
+    assert result.incident_window.end == "2026-06-12T01:20:00Z"
+    assert "create_rca_snapshot" == executed_tool_names[-1]
+    assert result.context_bundle is not None
+    assert result.context_bundle["incident_window"] == result.incident_window.model_dump(
+        mode="json"
+    )
+    assert result.context_bundle["alertmanager"]["incident_key"] == result.incident_key
+    assert result.rca_snapshot is not None
+    assert any(
+        plan.tool_name == "query_multi_cluster_loki"
+        and plan.request_payload["start"] == "2026-06-12T00:45:00Z"
+        and plan.request_payload["end"] == "2026-06-12T01:20:00Z"
+        for plan in dispatcher.plans
+    )
+    assert any(
+        plan.tool_name == "query_multi_cluster_prometheus"
+        and plan.request_payload["time"] == "2026-06-12T01:20:00Z"
+        for plan in dispatcher.plans
+    )
+    rca_plan = dispatcher.plans[-1]
+    assert rca_plan.tool_name == "create_rca_snapshot"
+    assert rca_plan.request_payload["incident_key"] == result.incident_key
+    assert rca_plan.request_payload["context_bundle"]["schema_version"] == (
+        "incident_context_bundle.v1"
+    )
+
+
+def test_alertmanager_sre_webhook_execute_query_uses_collection_mode() -> None:
+    app = create_app()
+    app.state.alertmanager_sre_agent_service = AlertmanagerSreAgentService(
+        dispatcher=FakeReadOnlyDispatcher(),
+        now_provider=lambda: datetime(2026, 6, 12, 1, 20, tzinfo=UTC),
+    )
+    client = TestClient(app)
+
+    response = client.post(
+        "/infra-rca/alertmanager/webhook?execute=true",
+        json=POD_CRASH_PAYLOAD,
+    )
+
+    assert response.status_code == 200
+    result = response.json()
+    assert result["dry_run"] is False
+    assert result["status"] == "COLLECTED"
+    assert result["incident_window"]["start"] == "2026-06-12T00:45:00Z"
+    assert result["executed_tools"]

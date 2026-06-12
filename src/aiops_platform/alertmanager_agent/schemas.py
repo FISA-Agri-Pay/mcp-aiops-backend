@@ -2,9 +2,16 @@ from typing import Literal
 
 from pydantic import BaseModel, Field
 
-from aiops_platform.agent.schemas import AgentToolPlan
+from aiops_platform.agent.schemas import AgentToolExecutionResult, AgentToolPlan
 
-AlertmanagerSrePlanStatus = Literal["PLANNED", "SKIPPED"]
+AlertmanagerSrePlanStatus = Literal["PLANNED", "COLLECTED", "SKIPPED"]
+
+
+class AlertmanagerIncidentWindow(BaseModel):
+    anchor_time: str
+    start: str
+    end: str
+    lookback_seconds: int
 
 
 class AlertmanagerSreAlertContext(BaseModel):
@@ -18,6 +25,7 @@ class AlertmanagerSreAlertContext(BaseModel):
     pod: str | None = None
     fingerprint: str | None = None
     starts_at: str | None = None
+    ends_at: str | None = None
     summary: str | None = None
     description: str | None = None
 
@@ -33,5 +41,9 @@ class AlertmanagerSrePlanResult(BaseModel):
     capability: str | None = None
     analysis_message: str | None = None
     alert: AlertmanagerSreAlertContext | None = None
+    incident_window: AlertmanagerIncidentWindow | None = None
     planned_tools: list[AgentToolPlan] = Field(default_factory=list)
+    executed_tools: list[AgentToolExecutionResult] = Field(default_factory=list)
+    context_bundle: dict | None = None
+    rca_snapshot: dict | None = None
     skipped_reason: str | None = None

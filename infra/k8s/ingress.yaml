@@ -1,15 +1,15 @@
 apiVersion: networking.k8s.io/v1
 kind: Ingress
 metadata:
-  name: service-catalog-ingress
+  name: mcp-aiops-backend-ingress
   namespace: default
   annotations:
     kubernetes.io/ingress.class: alb
-    alb.ingress.kubernetes.io/load-balancer-name: kkpp-catalog-api
+    alb.ingress.kubernetes.io/load-balancer-name: kkpp-aiops-api
     alb.ingress.kubernetes.io/scheme: internal
-    alb.ingress.kubernetes.io/security-groups: kkpp-web-edge-catalog-api-alb-sg
+    alb.ingress.kubernetes.io/security-groups: kkpp-web-edge-aiops-api-alb-sg
     alb.ingress.kubernetes.io/manage-backend-security-group-rules: "true"
-    alb.ingress.kubernetes.io/listen-ports: '[{"HTTP":80}]'
+    alb.ingress.kubernetes.io/listen-ports: '[{"HTTP": 80}]'
     alb.ingress.kubernetes.io/healthcheck-path: /health
     alb.ingress.kubernetes.io/success-codes: "200"
     alb.ingress.kubernetes.io/target-type: ip
@@ -22,38 +22,38 @@ spec:
             pathType: Exact
             backend:
               service:
-                name: service-catalog-service
+                name: mcp-aiops-backend
                 port:
                   number: 80
-          - path: /api/v1/products
+          - path: /docs
             pathType: Prefix
             backend:
               service:
-                name: service-catalog-service
+                name: mcp-aiops-backend
                 port:
                   number: 80
-          - path: /api/v1/categories
+          - path: /redoc
             pathType: Prefix
             backend:
               service:
-                name: service-catalog-service
+                name: mcp-aiops-backend
                 port:
                   number: 80
-          - path: /api/v1/cart
+          - path: /openapi.json
+            pathType: Exact
+            backend:
+              service:
+                name: mcp-aiops-backend
+                port:
+                  number: 80
+          - path: /mcp
             pathType: Prefix
             backend:
               service:
-                name: service-catalog-service
+                name: mcp-aiops-backend
                 port:
                   number: 80
-          - path: /api/v1/checkout-requests
-            pathType: Prefix
-            backend:
-              service:
-                name: service-catalog-service
-                port:
-                  number: 80
-          - path: /api/v1/aiops
+          - path: /mcp-server
             pathType: Prefix
             backend:
               service:
@@ -68,6 +68,27 @@ spec:
                 port:
                   number: 80
           - path: /api/v1/mcp-server
+            pathType: Prefix
+            backend:
+              service:
+                name: mcp-aiops-backend
+                port:
+                  number: 80
+          - path: /api/v1/aiops
+            pathType: Prefix
+            backend:
+              service:
+                name: mcp-aiops-backend
+                port:
+                  number: 80
+          - path: /infra-rca/alertmanager
+            pathType: Prefix
+            backend:
+              service:
+                name: mcp-aiops-backend
+                port:
+                  number: 80
+          - path: /api/v1/infra-rca/alertmanager
             pathType: Prefix
             backend:
               service:
@@ -89,6 +110,69 @@ spec:
                 port:
                   number: 80
           - path: /reports/ops
+            pathType: Prefix
+            backend:
+              service:
+                name: mcp-aiops-backend
+                port:
+                  number: 80
+          - path: /jobs
+            pathType: Prefix
+            backend:
+              service:
+                name: mcp-aiops-backend
+                port:
+                  number: 80
+          - path: /llm-runs
+            pathType: Prefix
+            backend:
+              service:
+                name: mcp-aiops-backend
+                port:
+                  number: 80
+          - path: /approvals
+            pathType: Prefix
+            backend:
+              service:
+                name: mcp-aiops-backend
+                port:
+                  number: 80
+          - path: /notifications
+            pathType: Prefix
+            backend:
+              service:
+                name: mcp-aiops-backend
+                port:
+                  number: 80
+          - path: /agent-snapshots
+            pathType: Prefix
+            backend:
+              service:
+                name: mcp-aiops-backend
+                port:
+                  number: 80
+          - path: /admin/copilot
+            pathType: Prefix
+            backend:
+              service:
+                name: mcp-aiops-backend
+                port:
+                  number: 80
+          - path: /admin/risk
+            pathType: Prefix
+            backend:
+              service:
+                name: mcp-aiops-backend
+                port:
+                  number: 80
+          - path: /farmer
+            pathType: Prefix
+            backend:
+              service:
+                name: mcp-aiops-backend
+                port:
+                  number: 80
+          - path: /prompt-versions
             pathType: Prefix
             backend:
               service:

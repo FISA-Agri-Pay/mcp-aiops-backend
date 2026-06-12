@@ -12,5 +12,9 @@ def receive_alertmanager_sre_webhook(
     request: AlertmanagerWebhookRequest,
     service: AlertmanagerSreAgentServiceDep,
     actor: str = Query(default="alertmanager", min_length=1, max_length=120),
+    execute: bool = Query(
+        default=False,
+        description="Execute READ-only evidence collection instead of returning a dry-run plan.",
+    ),
 ) -> AlertmanagerSrePlanResult:
-    return service.plan_from_webhook(request, actor=actor)
+    return service.handle_webhook(request, actor=actor, execute=execute)
