@@ -120,6 +120,7 @@ jobs:
           SMTP_PASSWORD: ${{ secrets.SMTP_PASSWORD }}
           SMTP_FROM: ${{ secrets.SMTP_FROM }}
           OPS_REPORT_EMAIL_RECIPIENTS: ${{ secrets.OPS_REPORT_EMAIL_RECIPIENTS }}
+          RCA_SLACK_WEBHOOK_URL: ${{ secrets.RCA_SLACK_WEBHOOK_URL }}
         run: |
           test -n "${AWS_ROLE_ARN}" || { echo "AWS_ROLE_ARN variable/secret or AWS_ROLE_TO_ASSUME secret is required."; exit 1; }
           case "${AWS_ROLE_ARN}" in
@@ -136,6 +137,7 @@ jobs:
           test -n "${SMTP_PASSWORD}" || { echo "SMTP_PASSWORD secret is required."; exit 1; }
           test -n "${SMTP_FROM}" || { echo "SMTP_FROM secret is required."; exit 1; }
           test -n "${OPS_REPORT_EMAIL_RECIPIENTS}" || { echo "OPS_REPORT_EMAIL_RECIPIENTS secret is required."; exit 1; }
+          test -n "${RCA_SLACK_WEBHOOK_URL}" || { echo "RCA_SLACK_WEBHOOK_URL secret is required."; exit 1; }
 
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@ff717079ee2060e4bcee96c4779b553acc87447c
@@ -188,6 +190,7 @@ jobs:
             --from-literal=SMTP_FROM="${SMTP_FROM}" \
             --from-literal=OPS_REPORT_EMAIL_RECIPIENTS="${OPS_REPORT_EMAIL_RECIPIENTS}" \
             --from-literal=RCA_EMAIL_RECIPIENTS="${RCA_EMAIL_RECIPIENTS}" \
+            --from-literal=RCA_SLACK_WEBHOOK_URL="${RCA_SLACK_WEBHOOK_URL}" \
             --dry-run=client -o yaml | kubectl apply -f -
         env:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
@@ -202,6 +205,7 @@ jobs:
           SMTP_FROM: ${{ secrets.SMTP_FROM }}
           OPS_REPORT_EMAIL_RECIPIENTS: ${{ secrets.OPS_REPORT_EMAIL_RECIPIENTS }}
           RCA_EMAIL_RECIPIENTS: ${{ secrets.RCA_EMAIL_RECIPIENTS }}
+          RCA_SLACK_WEBHOOK_URL: ${{ secrets.RCA_SLACK_WEBHOOK_URL }}
 
       - name: Deploy image
         run: |
