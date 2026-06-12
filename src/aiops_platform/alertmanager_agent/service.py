@@ -1,9 +1,12 @@
 from __future__ import annotations
 
 import hashlib
+import html
+import logging
 import re
 from collections.abc import Callable, Mapping
 from datetime import UTC, datetime, timedelta
+from typing import Any
 
 from aiops_platform.agent.context_bundle import (
     build_incident_context_bundle,
@@ -15,10 +18,20 @@ from aiops_platform.agent.schemas import AgentToolPlan
 from aiops_platform.alertmanager_agent.schemas import (
     AlertmanagerIncidentWindow,
     AlertmanagerSreAlertContext,
+    AlertmanagerSreNotificationResult,
     AlertmanagerSrePlanResult,
 )
+from aiops_platform.alertmanager_agent.slack_delivery import (
+    SlackSender,
+    SlackWebhookSender,
+)
+from aiops_platform.core.config import Settings, settings
 from aiops_platform.infra_rca.schemas import AlertmanagerAlert, AlertmanagerWebhookRequest
+from aiops_platform.llmops.service import LlmOpsService
 from aiops_platform.mcp.schemas import McpToolPermission
+from aiops_platform.ops_reports.email_delivery import EmailSender, SmtpEmailSender
+
+logger = logging.getLogger(__name__)
 
 SRE_INTENT_BY_ALERT_NAME: dict[str, str] = {
     "checkout500high": "checkout_500",
@@ -72,10 +85,20 @@ class AlertmanagerSreAgentService:
         planner: RuleBasedAgentPlanner | None = None,
         dispatcher: McpToolDispatcher | None = None,
         now_provider: Callable[[], datetime] | None = None,
+        llmops_service: LlmOpsService | None = None,
+        email_sender: EmailSender | None = None,
+        email_recipients: list[str] | None = None,
+        slack_sender: SlackSender | None = None,
+        app_settings: Settings = settings,
     ) -> None:
         self._planner = planner or RuleBasedAgentPlanner()
         self._dispatcher = dispatcher or McpToolDispatcher()
         self._now_provider = now_provider or (lambda: datetime.now(UTC))
+        self._llmops_service = llmops_service
+        self._email_sender = email_sender
+        self._email_recipients = email_recipients
+        self._slack_sender = slack_sender
+        self._settings = app_settings
 
     def plan_from_webhook(
         self,
@@ -91,6 +114,7 @@ class AlertmanagerSreAgentService:
         *,
         actor: str = "alertmanager",
         execute: bool = False,
+        notify: bool = False,
     ) -> AlertmanagerSrePlanResult:
         alert = select_firing_alert(request)
         if alert is None:
@@ -108,6 +132,7 @@ class AlertmanagerSreAgentService:
             plan_result=plan_result,
             alert=alert,
             actor=actor,
+            notify=notify,
         )
 
     def _plan_firing_alert(
@@ -147,6 +172,7 @@ class AlertmanagerSreAgentService:
         plan_result: AlertmanagerSrePlanResult,
         alert: AlertmanagerAlert,
         actor: str,
+        notify: bool,
     ) -> AlertmanagerSrePlanResult:
         if plan_result.alert is None or plan_result.analysis_message is None:
             return plan_result
@@ -201,7 +227,7 @@ class AlertmanagerSreAgentService:
             if tool_plan.tool_name == "create_rca_snapshot":
                 rca_snapshot = compact_tool_result(result)
 
-        return plan_result.model_copy(
+        collected_result = plan_result.model_copy(
             update={
                 "dry_run": False,
                 "status": "COLLECTED",
@@ -211,6 +237,509 @@ class AlertmanagerSreAgentService:
                 "rca_snapshot": rca_snapshot,
             }
         )
+        if not notify:
+            return collected_result
+        notification_results = self._send_collection_notifications(collected_result)
+        return collected_result.model_copy(
+            update={"notification_results": notification_results}
+        )
+
+    def _send_collection_notifications(
+        self,
+        result: AlertmanagerSrePlanResult,
+    ) -> list[AlertmanagerSreNotificationResult]:
+        subject = build_collection_notification_subject(result)
+        html_body = build_collection_notification_html(result)
+        slack_text = build_collection_notification_text(result)
+        payload = build_collection_notification_payload(result)
+        notifications = []
+
+        email_recipients = self._resolve_email_recipients()
+        if not email_recipients:
+            notifications.append(
+                AlertmanagerSreNotificationResult(
+                    channel="EMAIL",
+                    status="SKIPPED",
+                    error_message="RCA_EMAIL_RECIPIENTS is empty.",
+                )
+            )
+        for recipient in email_recipients:
+            notifications.append(
+                self._deliver_email_notification(
+                    recipient=recipient,
+                    subject=subject,
+                    html_body=html_body,
+                    payload=payload,
+                    result=result,
+                )
+            )
+
+        notifications.append(
+            self._deliver_slack_notification(
+                text=slack_text,
+                subject=subject,
+                payload=payload,
+                result=result,
+            )
+        )
+        return notifications
+
+    def _deliver_email_notification(
+        self,
+        *,
+        recipient: str,
+        subject: str,
+        html_body: str,
+        payload: dict[str, Any],
+        result: AlertmanagerSrePlanResult,
+    ) -> AlertmanagerSreNotificationResult:
+        notification = self._create_notification_record(
+            channel="email",
+            recipient=recipient,
+            title=subject,
+            content=html_body,
+            payload=payload,
+            result=result,
+        )
+        if isinstance(notification, AlertmanagerSreNotificationResult):
+            return notification
+        if notification.notification_status == "SENT":
+            return AlertmanagerSreNotificationResult(
+                channel="EMAIL",
+                recipient=recipient,
+                status="SENT",
+                notification_id=notification.notification_id,
+            )
+        try:
+            self._get_email_sender().send_html(
+                recipient=recipient,
+                subject=subject,
+                html_body=html_body,
+            )
+            self._safe_update_notification_status(
+                notification.notification_id,
+                status="SENT",
+                last_error=None,
+            )
+            return AlertmanagerSreNotificationResult(
+                channel="EMAIL",
+                recipient=recipient,
+                status="SENT",
+                notification_id=notification.notification_id,
+            )
+        except Exception as exc:
+            error_message = format_delivery_error(exc)
+            logger.warning(
+                "Alertmanager SRE RCA email delivery failed for %s: %s",
+                recipient,
+                error_message,
+                exc_info=True,
+            )
+            self._safe_update_notification_status(
+                notification.notification_id,
+                status="FAILED",
+                last_error=error_message,
+            )
+            return AlertmanagerSreNotificationResult(
+                channel="EMAIL",
+                recipient=recipient,
+                status="FAILED",
+                notification_id=notification.notification_id,
+                error_message=error_message,
+            )
+
+    def _deliver_slack_notification(
+        self,
+        *,
+        text: str,
+        subject: str,
+        payload: dict[str, Any],
+        result: AlertmanagerSrePlanResult,
+    ) -> AlertmanagerSreNotificationResult:
+        webhook_url = self._settings.rca_slack_webhook_url.strip()
+        recipient = self._resolve_slack_recipient()
+        if not webhook_url:
+            return AlertmanagerSreNotificationResult(
+                channel="SLACK",
+                recipient=recipient,
+                status="SKIPPED",
+                error_message="RCA_SLACK_WEBHOOK_URL is empty.",
+            )
+        notification = self._create_notification_record(
+            channel="slack",
+            recipient=recipient,
+            title=subject,
+            content=text,
+            payload=payload,
+            result=result,
+        )
+        if isinstance(notification, AlertmanagerSreNotificationResult):
+            return notification
+        if notification.notification_status == "SENT":
+            return AlertmanagerSreNotificationResult(
+                channel="SLACK",
+                recipient=recipient,
+                status="SENT",
+                notification_id=notification.notification_id,
+            )
+        try:
+            self._get_slack_sender().send_text(
+                webhook_url=webhook_url,
+                text=text,
+                channel=self._settings.rca_slack_channel,
+            )
+            self._safe_update_notification_status(
+                notification.notification_id,
+                status="SENT",
+                last_error=None,
+            )
+            return AlertmanagerSreNotificationResult(
+                channel="SLACK",
+                recipient=recipient,
+                status="SENT",
+                notification_id=notification.notification_id,
+            )
+        except Exception as exc:
+            error_message = format_delivery_error(exc, secret=webhook_url)
+            logger.warning(
+                "Alertmanager SRE RCA Slack delivery failed: %s",
+                error_message,
+                exc_info=True,
+            )
+            self._safe_update_notification_status(
+                notification.notification_id,
+                status="FAILED",
+                last_error=error_message,
+            )
+            return AlertmanagerSreNotificationResult(
+                channel="SLACK",
+                recipient=recipient,
+                status="FAILED",
+                notification_id=notification.notification_id,
+                error_message=error_message,
+            )
+
+    def _create_notification_record(
+        self,
+        *,
+        channel: str,
+        recipient: str | None,
+        title: str,
+        content: str,
+        payload: dict[str, Any],
+        result: AlertmanagerSrePlanResult,
+    ):
+        normalized_channel = channel.strip().upper()
+        try:
+            return self._get_llmops_service().create_notification(
+                channel=channel,
+                title=title,
+                content=content,
+                payload=payload,
+                recipient=recipient,
+                related_table="alertmanager_sre_incidents",
+                related_public_id=None,
+                idempotency_key=build_notification_idempotency_key(
+                    result=result,
+                    channel=normalized_channel,
+                    recipient=recipient,
+                ),
+            )
+        except Exception as exc:
+            error_message = format_delivery_error(exc)
+            logger.warning(
+                "Alertmanager SRE RCA %s notification outbox creation failed: %s",
+                normalized_channel,
+                error_message,
+                exc_info=True,
+            )
+            result_channel = "SLACK" if normalized_channel == "SLACK" else "EMAIL"
+            return AlertmanagerSreNotificationResult(
+                channel=result_channel,
+                recipient=recipient,
+                status="FAILED",
+                error_message=error_message,
+            )
+
+    def _safe_update_notification_status(
+        self,
+        notification_id: str,
+        *,
+        status: str,
+        last_error: str | None,
+    ) -> None:
+        try:
+            self._get_llmops_service().update_notification_status(
+                notification_id,
+                status=status,
+                last_error=last_error,
+            )
+        except Exception:
+            logger.exception(
+                "Failed to update Alertmanager SRE RCA notification status."
+            )
+
+    def _resolve_email_recipients(self) -> list[str]:
+        if self._email_recipients is not None:
+            return self._email_recipients
+        configured = (
+            self._settings.rca_email_recipients.strip()
+            or self._settings.ops_report_email_recipients.strip()
+        )
+        return parse_recipients(configured)
+
+    def _resolve_slack_recipient(self) -> str:
+        return self._settings.rca_slack_channel.strip() or "slack-webhook"
+
+    def _get_llmops_service(self) -> LlmOpsService:
+        if self._llmops_service is None:
+            self._llmops_service = LlmOpsService()
+        return self._llmops_service
+
+    def _get_email_sender(self) -> EmailSender:
+        if self._email_sender is None:
+            self._email_sender = SmtpEmailSender(self._settings)
+        return self._email_sender
+
+    def _get_slack_sender(self) -> SlackSender:
+        if self._slack_sender is None:
+            self._slack_sender = SlackWebhookSender(self._settings)
+        return self._slack_sender
+
+
+def build_collection_notification_subject(result: AlertmanagerSrePlanResult) -> str:
+    alert_name = result.alert.alert_name if result.alert is not None else "Alertmanager alert"
+    return f"[AIOps] RCA evidence collected: {alert_name}"
+
+
+def build_collection_notification_payload(
+    result: AlertmanagerSrePlanResult,
+) -> dict[str, Any]:
+    stats = summarize_tool_execution(result)
+    summary = extract_bundle_summary(result)
+    return {
+        "notification_stage": "sre_collection",
+        "trigger_type": result.trigger_type,
+        "incident_key": result.incident_key,
+        "status": result.status,
+        "dry_run": result.dry_run,
+        "intent": result.intent,
+        "capability": result.capability,
+        "alert": result.alert.model_dump(mode="json") if result.alert is not None else None,
+        "incident_window": (
+            result.incident_window.model_dump(mode="json")
+            if result.incident_window is not None
+            else None
+        ),
+        "tool_execution": stats,
+        "available_sections": summary.get("available_sections", []),
+        "missing_sections": summary.get("missing_sections", []),
+        "cross_domain_scenario": summary.get("cross_domain_scenario"),
+        "failure_boundary_candidates": trim_boundary_candidates(
+            summary.get("failure_boundary_candidates", [])
+        ),
+        "rca_snapshot_collected": result.rca_snapshot is not None,
+    }
+
+
+def build_collection_notification_text(result: AlertmanagerSrePlanResult) -> str:
+    stats = summarize_tool_execution(result)
+    summary = extract_bundle_summary(result)
+    alert = result.alert
+    incident_window = result.incident_window
+    target = format_alert_target(alert)
+    failed_tools = compact_list(stats["failed_tools"])
+    sections = compact_list(summary.get("available_sections", []))
+    boundaries = format_boundary_summary(
+        summary.get("failure_boundary_candidates", [])
+    )
+    lines = [
+        build_collection_notification_subject(result),
+        f"- incident: {result.incident_key or 'unknown'}",
+        f"- target: {target}",
+        f"- status: {result.status} / intent: {result.intent or 'unknown'}",
+        (
+            "- window: "
+            f"{incident_window.start} ~ {incident_window.end}"
+            if incident_window is not None
+            else "- window: unknown"
+        ),
+        (
+            "- tools: "
+            f"{stats['successful_tools']}/{stats['total_tools']} succeeded"
+        ),
+        f"- failed_tools: {failed_tools or 'none'}",
+        f"- evidence_sections: {sections or 'none'}",
+        f"- boundaries: {boundaries or 'unknown'}",
+        "- note: raw logs, traces, and secrets are not included in this notification.",
+    ]
+    return "\n".join(lines)
+
+
+def build_collection_notification_html(result: AlertmanagerSrePlanResult) -> str:
+    stats = summarize_tool_execution(result)
+    summary = extract_bundle_summary(result)
+    alert = result.alert
+    incident_window = result.incident_window
+    rows = [
+        ("Incident", result.incident_key or ""),
+        ("Alert", alert.alert_name if alert is not None else ""),
+        ("Target", format_alert_target(alert)),
+        ("Severity", alert.severity if alert is not None and alert.severity else ""),
+        ("Intent", result.intent or ""),
+        ("Capability", result.capability or ""),
+        (
+            "Window",
+            (
+                f"{incident_window.start} ~ {incident_window.end}"
+                if incident_window is not None
+                else ""
+            ),
+        ),
+        (
+            "Tool Success",
+            f"{stats['successful_tools']}/{stats['total_tools']}",
+        ),
+        ("Failed Tools", compact_list(stats["failed_tools"]) or "none"),
+        (
+            "Evidence Sections",
+            compact_list(summary.get("available_sections", [])) or "none",
+        ),
+        (
+            "Missing Sections",
+            compact_list(summary.get("missing_sections", [])) or "none",
+        ),
+        (
+            "Cross Domain",
+            str(summary.get("cross_domain_scenario") or ""),
+        ),
+        (
+            "Boundary Candidates",
+            format_boundary_summary(summary.get("failure_boundary_candidates", []))
+            or "unknown",
+        ),
+    ]
+    return (
+        "<html><body>"
+        "<h2>AIOps SRE RCA evidence collected</h2>"
+        "<p>Alertmanager triggered read-only RCA evidence collection. "
+        "Raw logs, traces, and secret-like values are not included in this email.</p>"
+        f"{render_html_table(rows)}"
+        "</body></html>"
+    )
+
+
+def summarize_tool_execution(result: AlertmanagerSrePlanResult) -> dict[str, Any]:
+    failed_tools = [
+        tool_result.tool_name
+        for tool_result in result.executed_tools
+        if enum_value(tool_result.call_status) != "SUCCESS"
+    ]
+    total_tools = len(result.executed_tools)
+    return {
+        "total_tools": total_tools,
+        "successful_tools": total_tools - len(failed_tools),
+        "failed_tools": failed_tools,
+    }
+
+
+def extract_bundle_summary(result: AlertmanagerSrePlanResult) -> dict[str, Any]:
+    bundle = result.context_bundle or {}
+    summary = bundle.get("summary_for_llm")
+    if isinstance(summary, dict):
+        return summary
+    return {}
+
+
+def format_alert_target(alert: AlertmanagerSreAlertContext | None) -> str:
+    if alert is None:
+        return "unknown"
+    parts = [
+        alert.cluster,
+        alert.namespace,
+        alert.service_name or alert.workload or alert.pod,
+    ]
+    return "/".join(part for part in parts if part) or "unknown"
+
+
+def format_boundary_summary(value: Any) -> str:
+    candidates = trim_boundary_candidates(value)
+    return ", ".join(
+        f"{candidate.get('boundary')}={candidate.get('status')}"
+        for candidate in candidates
+        if isinstance(candidate, dict) and candidate.get("boundary")
+    )
+
+
+def trim_boundary_candidates(value: Any, *, limit: int = 6) -> list[dict[str, Any]]:
+    if not isinstance(value, list):
+        return []
+    candidates = [candidate for candidate in value if isinstance(candidate, dict)]
+    return candidates[:limit]
+
+
+def compact_list(value: Any, *, limit: int = 8) -> str:
+    if not isinstance(value, list):
+        return ""
+    items = [str(item) for item in value[:limit] if str(item).strip()]
+    suffix = " ..." if len(value) > limit else ""
+    return ", ".join(items) + suffix
+
+
+def render_html_table(rows: list[tuple[str, str]]) -> str:
+    rendered_rows = "".join(
+        "<tr>"
+        f"<th>{html.escape(label)}</th>"
+        f"<td>{html.escape(value)}</td>"
+        "</tr>"
+        for label, value in rows
+    )
+    return (
+        "<table border=\"1\" cellpadding=\"6\" cellspacing=\"0\">"
+        f"<tbody>{rendered_rows}</tbody>"
+        "</table>"
+    )
+
+
+def parse_recipients(value: str) -> list[str]:
+    return [recipient.strip() for recipient in value.split(",") if recipient.strip()]
+
+
+def build_notification_idempotency_key(
+    *,
+    result: AlertmanagerSrePlanResult,
+    channel: str,
+    recipient: str | None,
+) -> str:
+    seed = "|".join(
+        [
+            result.incident_key or "unknown-incident",
+            (
+                result.alert.fingerprint
+                if result.alert is not None and result.alert.fingerprint
+                else "unknown-fingerprint"
+            ),
+            channel,
+            recipient or "",
+            "sre_collection",
+        ]
+    )
+    digest = hashlib.sha256(seed.encode("utf-8")).hexdigest()[:32]
+    return f"sre-rca-collection:{digest}"
+
+
+def format_delivery_error(exc: Exception, *, secret: str | None = None) -> str:
+    message = str(exc).strip() or exc.__class__.__name__
+    if secret:
+        message = message.replace(secret, "[REDACTED]")
+    formatted = f"{exc.__class__.__name__}: {message}"
+    if len(formatted) <= 500:
+        return formatted
+    return f"{formatted[:500]}..."
+
+
+def enum_value(value: object) -> object:
+    return getattr(value, "value", value)
 
 
 def select_firing_alert(request: AlertmanagerWebhookRequest) -> AlertmanagerAlert | None:

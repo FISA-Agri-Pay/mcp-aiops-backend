@@ -992,7 +992,11 @@ def infer_sre_namespace(service_name: str) -> str:
 
 
 def infer_sre_deployment_name(message: str, *, default: str) -> str:
-    match = re.search(r"\bdeployment[/: ]+([a-z0-9][a-z0-9.-]{0,252})\b", message)
+    match = re.search(
+        r"\b(?:deployment|deployment_name|deployment-name)"
+        r"(?:[/:=]\s*|\s+name[=: ]+)([a-z0-9][a-z0-9.-]{0,252})\b",
+        message,
+    )
     if match is not None:
         return match.group(1)
     if default == "service-catalog":

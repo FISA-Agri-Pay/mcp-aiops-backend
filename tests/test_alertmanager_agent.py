@@ -5,7 +5,9 @@ from fastapi.testclient import TestClient
 from aiops_platform.agent.dispatcher import build_tool_result, resolve_registered_tool
 from aiops_platform.agent.schemas import AgentToolExecutionResult, AgentToolPlan
 from aiops_platform.alertmanager_agent.service import AlertmanagerSreAgentService
+from aiops_platform.core.config import Settings
 from aiops_platform.infra_rca.schemas import AlertmanagerWebhookRequest
+from aiops_platform.llmops.schemas import NotificationOutboxResult
 from aiops_platform.main import create_app
 from aiops_platform.mcp.schemas import McpExecutionPolicy, McpToolCallStatus
 
@@ -342,6 +344,85 @@ class FakeReadOnlyDispatcher:
         )
 
 
+class FakeNotificationService:
+    def __init__(self) -> None:
+        self.notifications: list[NotificationOutboxResult] = []
+        self.status_updates: list[dict[str, object]] = []
+
+    def create_notification(self, **kwargs: object) -> NotificationOutboxResult:
+        notification = NotificationOutboxResult(
+            notification_id=f"notification-{len(self.notifications) + 1}",
+            channel=str(kwargs.get("channel") or "").upper(),
+            recipient=kwargs.get("recipient"),
+            notification_status="PENDING",
+            payload=kwargs.get("payload") or {},
+            related_table=kwargs.get("related_table"),
+            related_public_id=kwargs.get("related_public_id"),
+            idempotency_key=kwargs.get("idempotency_key"),
+            attempts=0,
+            created_at="2026-06-12T01:20:01",
+        )
+        self.notifications.append(notification)
+        return notification
+
+    def update_notification_status(
+        self,
+        notification_id: str,
+        *,
+        status: str,
+        last_error: str | None = None,
+    ) -> NotificationOutboxResult:
+        self.status_updates.append(
+            {
+                "notification_id": notification_id,
+                "status": status,
+                "last_error": last_error,
+            }
+        )
+        notification = next(
+            item
+            for item in self.notifications
+            if item.notification_id == notification_id
+        )
+        return notification.model_copy(
+            update={"notification_status": status, "last_error": last_error}
+        )
+
+
+class FakeEmailSender:
+    def __init__(self) -> None:
+        self.sent_messages: list[dict[str, str]] = []
+
+    def send_html(self, *, recipient: str, subject: str, html_body: str) -> None:
+        self.sent_messages.append(
+            {
+                "recipient": recipient,
+                "subject": subject,
+                "html_body": html_body,
+            }
+        )
+
+
+class FakeSlackSender:
+    def __init__(self) -> None:
+        self.sent_messages: list[dict[str, str | None]] = []
+
+    def send_text(
+        self,
+        *,
+        webhook_url: str,
+        text: str,
+        channel: str | None = None,
+    ) -> None:
+        self.sent_messages.append(
+            {
+                "webhook_url": webhook_url,
+                "text": text,
+                "channel": channel,
+            }
+        )
+
+
 def test_alertmanager_sre_agent_execute_collects_read_only_evidence_bundle() -> None:
     dispatcher = FakeReadOnlyDispatcher()
     service = AlertmanagerSreAgentService(
@@ -412,3 +493,76 @@ def test_alertmanager_sre_webhook_execute_query_uses_collection_mode() -> None:
     assert result["status"] == "COLLECTED"
     assert result["incident_window"]["start"] == "2026-06-12T00:45:00Z"
     assert result["executed_tools"]
+
+
+def test_alertmanager_sre_agent_execute_notify_sends_email_and_slack() -> None:
+    dispatcher = FakeReadOnlyDispatcher()
+    notification_service = FakeNotificationService()
+    email_sender = FakeEmailSender()
+    slack_sender = FakeSlackSender()
+    service = AlertmanagerSreAgentService(
+        dispatcher=dispatcher,
+        now_provider=lambda: datetime(2026, 6, 12, 1, 20, tzinfo=UTC),
+        llmops_service=notification_service,
+        email_sender=email_sender,
+        slack_sender=slack_sender,
+        app_settings=Settings(
+            RCA_EMAIL_RECIPIENTS="ops@example.com",
+            RCA_SLACK_WEBHOOK_URL="https://hooks.slack.com/services/test",
+            RCA_SLACK_CHANNEL="#sre-alerts",
+        ),
+    )
+
+    result = service.handle_webhook(
+        AlertmanagerWebhookRequest.model_validate(POD_CRASH_PAYLOAD),
+        execute=True,
+        notify=True,
+    )
+
+    assert [item.status for item in result.notification_results] == ["SENT", "SENT"]
+    assert [item.channel for item in result.notification_results] == ["EMAIL", "SLACK"]
+    assert email_sender.sent_messages[0]["recipient"] == "ops@example.com"
+    assert "RCA evidence collected" in email_sender.sent_messages[0]["subject"]
+    assert "raw logs" in slack_sender.sent_messages[0]["text"].lower()
+    assert slack_sender.sent_messages[0]["channel"] == "#sre-alerts"
+    assert [item.channel for item in notification_service.notifications] == [
+        "EMAIL",
+        "SLACK",
+    ]
+    assert all(
+        update["status"] == "SENT"
+        for update in notification_service.status_updates
+    )
+    assert "hooks.slack.com" not in str(notification_service.notifications[1].payload)
+
+
+def test_alertmanager_sre_webhook_execute_notify_query_sends_notifications() -> None:
+    notification_service = FakeNotificationService()
+    email_sender = FakeEmailSender()
+    slack_sender = FakeSlackSender()
+    app = create_app()
+    app.state.alertmanager_sre_agent_service = AlertmanagerSreAgentService(
+        dispatcher=FakeReadOnlyDispatcher(),
+        now_provider=lambda: datetime(2026, 6, 12, 1, 20, tzinfo=UTC),
+        llmops_service=notification_service,
+        email_sender=email_sender,
+        slack_sender=slack_sender,
+        app_settings=Settings(
+            RCA_EMAIL_RECIPIENTS="ops@example.com",
+            RCA_SLACK_WEBHOOK_URL="https://hooks.slack.com/services/test",
+        ),
+    )
+    client = TestClient(app)
+
+    response = client.post(
+        "/infra-rca/alertmanager/webhook?execute=true&notify=true",
+        json=POD_CRASH_PAYLOAD,
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["status"] == "COLLECTED"
+    assert [item["status"] for item in body["notification_results"]] == [
+        "SENT",
+        "SENT",
+    ]

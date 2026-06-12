@@ -458,6 +458,22 @@ def test_rule_based_planner_selects_sre_checkout_500_tool_bundle() -> None:
     assert alb.request_payload == {"load_balancer_name": "kkpp-catalog-api"}
 
 
+def test_rule_based_planner_does_not_treat_descriptive_deployment_word_as_name() -> None:
+    planner = RuleBasedAgentPlanner()
+
+    plan = planner.plan(
+        chat_type="sre_copilot",
+        message="service-catalog deployment mapping 확인 포함해서 라우팅 장애 분석해줘",
+        user_id="sre-1",
+    )
+
+    rollout = next(tool for tool in plan.tool_plans if tool.tool_name == "get_rollout_status")
+    assert rollout.request_payload == {
+        "namespace": "service-catalog",
+        "deployment_name": "service-catalog-deployment",
+    }
+
+
 def test_rule_based_planner_does_not_reuse_catalog_alb_for_onprem_routing() -> None:
     planner = RuleBasedAgentPlanner()
 

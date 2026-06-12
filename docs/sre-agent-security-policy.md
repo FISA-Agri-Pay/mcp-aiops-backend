@@ -109,15 +109,16 @@ The policy now also covers:
 
 The SRE Agent still remains read-only. Alertmanager firing alerts must not cause automatic restarts, scaling, pod deletion, or exec.
 
-The first Alertmanager-triggered SRE Agent endpoint is a dry-run planning API:
+The first Alertmanager-triggered SRE Agent endpoint starts as a dry-run planning API:
 
 - `POST /infra-rca/alertmanager/webhook`
 - `POST /api/v1/infra-rca/alertmanager/webhook`
 
 This endpoint receives a standard Alertmanager webhook payload, derives an incident key,
-maps the alert to an SRE intent, and returns the MCP tool plan without executing tools.
-Actual RCA execution, LLM report generation, and Slack/Email notification delivery are
-handled in later workflow milestones.
+maps the alert to an SRE intent, and returns the MCP tool plan without executing tools by default.
+With `execute=true`, it runs READ-only evidence collection and builds an incident context bundle.
+With `execute=true&notify=true`, it also records Slack/Email notification outbox entries and
+delivers a masked RCA evidence summary. Actual remediation remains disabled.
 
 ## Required Validation
 

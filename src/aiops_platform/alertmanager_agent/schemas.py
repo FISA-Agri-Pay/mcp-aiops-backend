@@ -5,6 +5,7 @@ from pydantic import BaseModel, Field
 from aiops_platform.agent.schemas import AgentToolExecutionResult, AgentToolPlan
 
 AlertmanagerSrePlanStatus = Literal["PLANNED", "COLLECTED", "SKIPPED"]
+AlertmanagerSreNotificationStatus = Literal["SENT", "FAILED", "SKIPPED"]
 
 
 class AlertmanagerIncidentWindow(BaseModel):
@@ -30,6 +31,14 @@ class AlertmanagerSreAlertContext(BaseModel):
     description: str | None = None
 
 
+class AlertmanagerSreNotificationResult(BaseModel):
+    channel: Literal["EMAIL", "SLACK"]
+    recipient: str | None = None
+    status: AlertmanagerSreNotificationStatus
+    notification_id: str | None = None
+    error_message: str | None = None
+
+
 class AlertmanagerSrePlanResult(BaseModel):
     trigger_type: Literal["ALERTMANAGER"] = "ALERTMANAGER"
     dry_run: bool = True
@@ -46,4 +55,7 @@ class AlertmanagerSrePlanResult(BaseModel):
     executed_tools: list[AgentToolExecutionResult] = Field(default_factory=list)
     context_bundle: dict | None = None
     rca_snapshot: dict | None = None
+    notification_results: list[AlertmanagerSreNotificationResult] = Field(
+        default_factory=list
+    )
     skipped_reason: str | None = None
