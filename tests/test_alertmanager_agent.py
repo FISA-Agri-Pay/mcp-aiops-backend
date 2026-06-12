@@ -375,6 +375,12 @@ def test_alertmanager_sre_agent_execute_collects_read_only_evidence_bundle() -> 
         for plan in dispatcher.plans
     )
     assert any(
+        plan.tool_name == "get_service_trace_summary"
+        and plan.request_payload["start"] == "1781225100"
+        and plan.request_payload["end"] == "1781227200"
+        for plan in dispatcher.plans
+    )
+    assert any(
         plan.tool_name == "query_multi_cluster_prometheus"
         and plan.request_payload["time"] == "2026-06-12T01:20:00Z"
         for plan in dispatcher.plans

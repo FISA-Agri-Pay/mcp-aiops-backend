@@ -52,9 +52,11 @@ SRE_INTENT_BY_ALERT_NAME: dict[str, str] = {
 
 
 DEFAULT_INCIDENT_LOOKBACK = timedelta(minutes=15)
-OBSERVABILITY_TIME_WINDOW_TOOLS = {
+LOG_TIME_WINDOW_TOOLS = {
     "query_loki",
     "query_multi_cluster_loki",
+}
+TRACE_TIME_WINDOW_TOOLS = {
     "search_traces",
     "get_service_trace_summary",
 }
@@ -488,9 +490,12 @@ def inject_alertmanager_execution_context(
     incident_window: AlertmanagerIncidentWindow,
 ) -> AgentToolPlan:
     payload = dict(tool_plan.request_payload)
-    if tool_plan.tool_name in OBSERVABILITY_TIME_WINDOW_TOOLS:
+    if tool_plan.tool_name in LOG_TIME_WINDOW_TOOLS:
         payload.setdefault("start", incident_window.start)
         payload.setdefault("end", incident_window.end)
+    if tool_plan.tool_name in TRACE_TIME_WINDOW_TOOLS:
+        payload.setdefault("start", format_epoch_seconds(incident_window.start))
+        payload.setdefault("end", format_epoch_seconds(incident_window.end))
     if tool_plan.tool_name in OBSERVABILITY_POINT_TIME_TOOLS:
         payload.setdefault("time", incident_window.end)
     if tool_plan.tool_name == "get_pod_logs":
@@ -498,3 +503,10 @@ def inject_alertmanager_execution_context(
     if tool_plan.tool_name == "create_rca_snapshot" and incident_key is not None:
         payload["incident_key"] = incident_key
     return tool_plan.model_copy(update={"request_payload": payload})
+
+
+def format_epoch_seconds(value: str) -> str:
+    parsed = parse_alert_datetime(value)
+    if parsed is None:
+        return value
+    return str(int(parsed.timestamp()))

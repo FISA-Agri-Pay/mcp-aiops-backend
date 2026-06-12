@@ -35,6 +35,8 @@ data:
   LOKI_BASE_URL: "http://loki.monitoring.svc.cluster.local:3100"
   LOKI_SOURCE_URLS: "eks=http://loki.monitoring.svc.cluster.local:3100"
   LOKI_TIMEOUT_SECONDS: "10"
+  TEMPO_BASE_URL: "http://tempo.monitoring.svc.cluster.local:3200"
+  TEMPO_TIMEOUT_SECONDS: "10"
   KUBERNETES_API_BASE_URL: "https://kubernetes.default.svc"
   KUBERNETES_BEARER_TOKEN_FILE: "/var/run/secrets/kubernetes.io/serviceaccount/token"
   KUBERNETES_CA_CERT_FILE: "/var/run/secrets/kubernetes.io/serviceaccount/ca.crt"
