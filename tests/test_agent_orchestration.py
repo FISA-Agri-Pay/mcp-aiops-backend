@@ -4,7 +4,9 @@ from aiops_platform.agent.planner import (
     RuleBasedAgentPlanner,
     classify_admin_copilot_capability,
     classify_admin_copilot_intent,
+    classify_farmer_bnpl_capability,
     classify_farmer_bnpl_intent,
+    farmer_intent_for_capability,
 )
 from aiops_platform.agent.schemas import AgentToolExecutionResult, AgentToolPlan
 from aiops_platform.llmops.client import LlmCompletionResponse
@@ -15,7 +17,9 @@ from aiops_platform.mcp.schemas import (
     McpToolPermission,
 )
 from aiops_platform.orchestration.service import (
+    build_chat_ui_cards,
     build_direct_chat_response,
+    build_farmer_bnpl_llm_failure_fallback,
     resolve_assistant_content,
 )
 from tests.seed_constants import FARMER_1_ID
@@ -55,12 +59,23 @@ def test_rule_based_planner_selects_farmer_bnpl_purchase_tools() -> None:
     ]
 
 
+def test_farmer_checkout_guidance_preserves_confirm_intent() -> None:
+    assert (
+        farmer_intent_for_capability(
+            capability="checkout_guidance",
+            fallback_intent="checkout_confirm",
+        )
+        == "checkout_confirm"
+    )
+
+
 def test_rule_based_planner_skips_farmer_tools_for_greeting() -> None:
     planner = RuleBasedAgentPlanner()
 
     plan = planner.plan(chat_type="farmer_bnpl", message="안녕", user_id=FARMER_1_ID)
 
     assert classify_farmer_bnpl_intent("안녕") == "greeting"
+    assert plan.capability == "smalltalk"
     assert plan.tool_plans == []
 
 
@@ -74,6 +89,58 @@ def test_rule_based_planner_selects_farmer_credit_limit_tool() -> None:
     )
 
     assert [tool.tool_name for tool in plan.tool_plans] == ["get_user_credit_limit"]
+    assert plan.capability == "credit_limit_status"
+
+
+def test_rule_based_planner_recommends_with_credit_without_checkout_dry_run() -> None:
+    planner = RuleBasedAgentPlanner()
+
+    plan = planner.plan(
+        chat_type="farmer_bnpl",
+        message="지금 시즌에 필요한 내 한도내에서 살수 있는 농자재 추천해줘!!",
+        user_id=FARMER_1_ID,
+    )
+
+    assert plan.intent == "recommendation"
+    assert plan.capability == "fertilizer_recommendation"
+    assert [tool.tool_name for tool in plan.tool_plans] == [
+        "get_user_credit_limit",
+        "get_farmer_profile",
+        "recommend_fertilizer_requirements",
+        "search_lowest_price_fertilizer",
+    ]
+
+
+def test_rule_based_planner_marks_farmer_recommendation_capability() -> None:
+    planner = RuleBasedAgentPlanner()
+
+    plan = planner.plan(
+        chat_type="farmer_bnpl",
+        message="비료 추천해줘",
+        user_id=FARMER_1_ID,
+    )
+
+    assert classify_farmer_bnpl_capability("비료 추천해줘") == "fertilizer_recommendation"
+    assert plan.intent == "recommendation"
+    assert plan.capability == "fertilizer_recommendation"
+    assert "get_user_credit_limit" not in [tool.tool_name for tool in plan.tool_plans]
+    assert "prepare_bnpl_checkout_payload" not in [
+        tool.tool_name for tool in plan.tool_plans
+    ]
+
+
+def test_rule_based_planner_selects_only_product_search_for_sensor_inquiry() -> None:
+    planner = RuleBasedAgentPlanner()
+
+    plan = planner.plan(
+        chat_type="farmer_bnpl",
+        message="스마트팜 센서 문의",
+        user_id=FARMER_1_ID,
+    )
+
+    assert plan.intent == "recommendation"
+    assert plan.capability == "fertilizer_recommendation"
+    assert [tool.tool_name for tool in plan.tool_plans] == ["search_products"]
 
 
 def test_rule_based_planner_selects_farmer_repayment_tools() -> None:
@@ -399,9 +466,108 @@ def test_farmer_llm_failure_returns_tool_based_fallback() -> None:
     )
 
     assert "Agent executed" not in content
-    assert "조회는 완료했지만 AI 답변 생성에 실패했습니다" in content
+    assert "조회된 내용을 기준으로 안내드릴게요" in content
     assert "2,550,000 KRW" in content
     assert "Organic 20kg fertilizer" in content
+
+
+def test_farmer_failed_delivery_tool_uses_delivery_fallback() -> None:
+    content = build_farmer_bnpl_llm_failure_fallback(
+        [
+            AgentToolExecutionResult(
+                server_name="farmer-bnpl-mcp",
+                tool_name="get_latest_order_delivery_status",
+                tool_permission=McpToolPermission.READ,
+                confirmation_policy=McpConfirmationPolicy.NONE,
+                execution_policy=McpExecutionPolicy.ALLOWED,
+                call_status=McpToolCallStatus.FAILED,
+                will_execute=True,
+                requires_approval=False,
+                is_blocked=False,
+                request_payload={},
+                error_message="delivery lookup failed",
+            )
+        ],
+        capability="delivery_status",
+    )
+
+    assert "배송 정보를 확인하지 못했습니다" in content
+    assert "작물, 재배 면적" not in content
+
+
+def test_farmer_success_answer_with_internal_error_is_replaced() -> None:
+    content = resolve_assistant_content(
+        {
+            "answer": (
+                "Your current credit limit is 10,000,000 KRW. "
+                "There was a programming error and validation issue."
+            )
+        },
+        "fallback answer",
+        chat_type="farmer_bnpl",
+        llm_run_status="SUCCESS",
+        capability="fertilizer_recommendation",
+        tool_results=[
+            AgentToolExecutionResult(
+                server_name="farmer-bnpl-mcp",
+                tool_name="get_user_credit_limit",
+                tool_permission=McpToolPermission.READ,
+                confirmation_policy=McpConfirmationPolicy.NONE,
+                execution_policy=McpExecutionPolicy.ALLOWED,
+                call_status=McpToolCallStatus.SUCCESS,
+                will_execute=True,
+                requires_approval=False,
+                is_blocked=False,
+                request_payload={},
+                response_payload={"available_limit": 8_285_370},
+            ),
+            AgentToolExecutionResult(
+                server_name="farm-advisory-mcp",
+                tool_name="recommend_fertilizer_requirements",
+                tool_permission=McpToolPermission.READ,
+                confirmation_policy=McpConfirmationPolicy.NONE,
+                execution_policy=McpExecutionPolicy.ALLOWED,
+                call_status=McpToolCallStatus.FAILED,
+                will_execute=True,
+                requires_approval=False,
+                is_blocked=False,
+                request_payload={},
+                error_message="ProgrammingError: validation failed",
+            ),
+        ],
+    )
+
+    assert "Your current credit limit" not in content
+    assert "프로그래밍" not in content
+    assert "작물, 재배 면적, 지역, 생육 단계" in content
+
+
+def test_farmer_recommendation_without_credit_intent_does_not_show_credit_card() -> None:
+    cards = build_chat_ui_cards(
+        "farmer_bnpl",
+        "비료 추천해줘",
+        [
+            AgentToolExecutionResult(
+                server_name="farmer-bnpl-mcp",
+                tool_name="get_user_credit_limit",
+                tool_permission=McpToolPermission.READ,
+                confirmation_policy=McpConfirmationPolicy.NONE,
+                execution_policy=McpExecutionPolicy.ALLOWED,
+                call_status=McpToolCallStatus.SUCCESS,
+                will_execute=True,
+                requires_approval=False,
+                is_blocked=False,
+                request_payload={},
+                response_payload={
+                    "total_limit": 10_000_000,
+                    "used_amount": 1_714_630,
+                    "available_limit": 8_285_370,
+                },
+            )
+        ],
+    )
+
+    assert cards == []
 
 
 def test_farmer_greeting_direct_response_does_not_need_tools() -> None:

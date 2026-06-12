@@ -2,9 +2,9 @@ import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import text
 
-from aiops_platform.agent.schemas import AgentToolExecutionResult
 from aiops_platform.agent.orchestrator import AgentOrchestrator
 from aiops_platform.agent.planner import RuleBasedAgentPlanner
+from aiops_platform.agent.schemas import AgentToolExecutionResult
 from aiops_platform.core.database import SessionLocal
 from aiops_platform.llmops.client import FakeLlmClient, LlmClientError
 from aiops_platform.llmops.service import LlmOpsService
@@ -112,14 +112,12 @@ def test_farmer_chat_api_creates_session_and_records_masked_tool_calls() -> None
         "get_farmer_profile",
         "recommend_fertilizer_requirements",
         "search_lowest_price_fertilizer",
-        "prepare_bnpl_checkout_payload",
     ]
     assert [result["tool_name"] for result in answer["tool_results"]] == [
         "get_user_credit_limit",
         "get_farmer_profile",
         "recommend_fertilizer_requirements",
         "search_lowest_price_fertilizer",
-        "prepare_bnpl_checkout_payload",
     ]
     assert {result["call_status"] for result in answer["tool_results"]} == {"SUCCESS"}
     assert answer["tool_results"][0]["response_payload"]["available_limit"] == 2550000
@@ -153,7 +151,6 @@ def test_farmer_chat_api_creates_session_and_records_masked_tool_calls() -> None
         "get_user_credit_limit",
         "get_farmer_profile",
         "search_lowest_price_fertilizer",
-        "prepare_bnpl_checkout_payload",
     }
     assert expected_farmer_tool_names.issubset(
         {item["tool_name"] for item in tool_call_items}

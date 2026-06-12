@@ -14,7 +14,7 @@ env:
   AWS_REGION: ${{ vars.AWS_REGION || secrets.AWS_REGION }}
   ECR_REPOSITORY: ${{ vars.ECR_REPOSITORY || secrets.ECR_REPOSITORY }}
   EKS_CLUSTER_NAME: ${{ vars.EKS_CLUSTER_NAME || secrets.EKS_CLUSTER_NAME }}
-  K8S_NAMESPACE: ${{ vars.K8S_NAMESPACE || secrets.K8S_NAMESPACE || 'default' }}
+  K8S_NAMESPACE: ${{ vars.K8S_NAMESPACE || secrets.K8S_NAMESPACE || 'aiops' }}
   K8S_DEPLOYMENT: ${{ vars.K8S_DEPLOYMENT || 'mcp-aiops-backend' }}
   K8S_SERVICE: ${{ vars.K8S_SERVICE || 'mcp-aiops-backend' }}
   K8S_SECRET_NAME: ${{ vars.K8S_SECRET_NAME || 'mcp-aiops-backend-secret' }}
