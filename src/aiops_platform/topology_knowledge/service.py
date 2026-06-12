@@ -471,19 +471,14 @@ def extract_service_section_matches(
     matches: list[TopologyKnowledgeSectionMatch] = []
     normalized_aliases = tuple(alias.lower() for alias in aliases)
     for section in document.sections:
-        section_is_relevant = any(
-            keyword in section.normalized_title for keyword in section_keywords
-        )
+        if not any(keyword in section.normalized_title for keyword in section_keywords):
+            continue
         section_lines = section.content.splitlines()
         matched_lines = [
             line
             for line in section_lines
             if any(alias in line.lower() for alias in normalized_aliases)
         ]
-        if not matched_lines and not section_is_relevant:
-            continue
-        if section_is_relevant and not matched_lines:
-            matched_lines = section_lines[:MAX_SECTION_LINES]
         if not matched_lines:
             continue
         matches.append(

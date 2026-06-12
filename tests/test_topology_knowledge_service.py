@@ -96,3 +96,36 @@ def test_topology_service_search_and_service_maps(tmp_path) -> None:
     assert dependencies.dependencies
     assert any("checkout-requests" in line for match in routing.routing_paths for line in match.lines)
     assert any("service-catalog" in line for match in dependencies.dependencies for line in match.lines)
+
+
+def test_topology_service_maps_ignore_sections_without_service_alias(tmp_path) -> None:
+    snapshot = tmp_path / "aws-eks-topology-snapshot-2026-06-11.md"
+    snapshot.write_text(
+        """# AWS/EKS Topology Snapshot - 2026-06-11
+
+## CloudFront And Edge Routing
+
+| Path | Origin |
+| --- | --- |
+| /api/v1/checkout-requests* | catalog-api-alb |
+
+## Dependency Map
+
+| Source | Target | Type |
+| --- | --- | --- |
+| checkout | service-catalog | edge-to-eks |
+
+## Observability
+
+- Tempo traces are exported through the shared collector.
+""",
+        encoding="utf-8",
+    )
+
+    service = TopologyKnowledgeService(knowledge_dirs=(tmp_path,))
+
+    routing = service.get_service_routing_path(service="payment", environment="all")
+    dependencies = service.get_service_dependency_map(service="payment", environment="all")
+
+    assert routing.routing_paths == []
+    assert dependencies.dependencies == []
