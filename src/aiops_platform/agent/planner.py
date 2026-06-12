@@ -1151,6 +1151,11 @@ def classify_sre_copilot_intent(message: str) -> SreCopilotIntent:
         "pin",
         "eks",
         "kubernetes",
+        "hpa",
+        "scaling",
+        "스케일",
+        "상태",
+        "status",
     )
     greeting_keywords = ("안녕", "안녕하세요", "하이", "hello", "hi", "hey")
     if compact in greeting_keywords or (
@@ -1169,18 +1174,7 @@ def classify_sre_copilot_intent(message: str) -> SreCopilotIntent:
     if any(keyword in normalized for keyword in help_keywords):
         return "help"
 
-    write_keywords = (
-        "delete pod",
-        "pod delete",
-        "rollout restart",
-        "scale deployment",
-        "kubectl exec",
-        "삭제",
-        "재시작",
-        "스케일",
-        "exec",
-    )
-    if any(keyword in normalized for keyword in write_keywords):
+    if is_sre_mutating_request(normalized):
         return "unsupported"
 
     if any(keyword in normalized for keyword in ("cloudfront", "alb", "origin", "라우팅", "routing", "route")):
@@ -1208,6 +1202,32 @@ def classify_sre_copilot_intent(message: str) -> SreCopilotIntent:
     if any(keyword in normalized for keyword in sre_keywords):
         return "general_incident"
     return "unsupported"
+
+
+def is_sre_mutating_request(normalized_message: str) -> bool:
+    english_mutating_patterns = (
+        r"\bdelete\s+pod\b",
+        r"\bpod\s+delete\b",
+        r"\brollout\s+restart\b",
+        r"\bkubectl\s+exec\b",
+        r"\bexec\b",
+        r"\brestart\s+pod\b",
+        r"\bscale\s+deployment\b",
+        r"\bscale\s+(?:up|down|out|in|to)\b",
+    )
+    if any(re.search(pattern, normalized_message) for pattern in english_mutating_patterns):
+        return True
+
+    target = r"(?:pod|파드|deployment|디플로이먼트|deploy|배포|rollout|롤아웃|hpa)"
+    action = (
+        r"(?:삭제\s*해|삭제하|지워|재시작\s*해|재시작하|재기동\s*해|재기동하|"
+        r"스케일\s*해|스케일링\s*해|스케일링하|스케일\s*(?:업|다운|아웃|인))"
+    )
+    korean_mutating_patterns = (
+        rf"{target}.{{0,24}}{action}",
+        rf"{action}.{{0,24}}{target}",
+    )
+    return any(re.search(pattern, normalized_message) for pattern in korean_mutating_patterns)
 
 
 def classify_admin_copilot_capability(message: str) -> AdminCopilotCapability:

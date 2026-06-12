@@ -420,6 +420,50 @@ def test_rule_based_planner_keeps_sre_mutating_request_unsupported() -> None:
     assert plan.capability == "unsupported"
     assert plan.tool_plans == []
 
+    restart_plan = planner.plan(
+        chat_type="sre_copilot",
+        message="service-catalog 파드 재시작해줘",
+        user_id="sre-1",
+    )
+    assert restart_plan.intent == "unsupported"
+    assert restart_plan.capability == "unsupported"
+    assert restart_plan.tool_plans == []
+
+
+def test_rule_based_planner_allows_readonly_restart_count_question() -> None:
+    planner = RuleBasedAgentPlanner()
+
+    plan = planner.plan(
+        chat_type="sre_copilot",
+        message="service-catalog 파드 재시작 횟수 확인해줘",
+        user_id="sre-1",
+    )
+
+    tool_names = [tool.tool_name for tool in plan.tool_plans]
+    assert classify_sre_copilot_intent("service-catalog 파드 재시작 횟수 확인해줘") == (
+        "pod_crashloop"
+    )
+    assert plan.intent == "pod_crashloop"
+    assert plan.capability == "pod_crashloop_analysis"
+    assert "get_k8s_pods" in tool_names
+    assert "get_k8s_events" in tool_names
+
+
+def test_rule_based_planner_allows_readonly_hpa_scale_status_question() -> None:
+    planner = RuleBasedAgentPlanner()
+
+    plan = planner.plan(
+        chat_type="sre_copilot",
+        message="HPA 스케일 상태 보여줘",
+        user_id="sre-1",
+    )
+
+    tool_names = [tool.tool_name for tool in plan.tool_plans]
+    assert classify_sre_copilot_intent("HPA 스케일 상태 보여줘") == "general_incident"
+    assert plan.intent == "general_incident"
+    assert plan.capability == "general_incident_analysis"
+    assert "get_k8s_hpa" in tool_names
+
 
 def test_llm_planner_maps_admin_capability_to_backend_tool_bundle() -> None:
     planner = LlmAgentPlanner(
