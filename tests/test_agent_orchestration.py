@@ -629,6 +629,48 @@ def test_incident_context_bundle_marks_degraded_edge_boundary() -> None:
     assert boundaries["aws_target_group"]["status"] == "degraded"
 
 
+def test_incident_context_bundle_keeps_empty_masked_payloads() -> None:
+    tool_result = AgentToolExecutionResult(
+        server_name="infraops-mcp",
+        tool_name="get_alb_target_health",
+        tool_permission=McpToolPermission.READ,
+        confirmation_policy=McpConfirmationPolicy.NONE,
+        execution_policy=McpExecutionPolicy.ALLOWED,
+        call_status=McpToolCallStatus.SUCCESS,
+        will_execute=True,
+        requires_approval=False,
+        is_blocked=False,
+        request_payload={"authorization": "Bearer raw-token"},
+        masked_request_payload={},
+        response_payload={
+            "target_health": [{"target": "pod-ip", "state": "unhealthy"}],
+            "secret": "raw-secret",
+        },
+        masked_response_payload={},
+    )
+
+    bundle = build_incident_context_bundle(
+        chat_type="sre_copilot",
+        message="CloudFront ALB EKS routing failure",
+        capability="edge_routing_analysis",
+        tool_results=[tool_result],
+    )
+
+    alb_entry = bundle["live_state"]["aws"]["alb_target_health"][0]
+    raw_entry = bundle["raw_tool_results"][0]
+    boundaries = {
+        candidate["boundary"]: candidate
+        for candidate in bundle["failure_boundary_candidates"]
+    }
+
+    assert alb_entry["request_payload"] == {}
+    assert alb_entry["response_payload"] == {}
+    assert raw_entry["request_payload"] == {}
+    assert boundaries["aws_alb"]["status"] == "unknown"
+    assert "raw-token" not in str(bundle)
+    assert "raw-secret" not in str(bundle)
+
+
 def test_dispatcher_blocks_user_confirmed_write_tool() -> None:
     dispatcher = McpToolDispatcher()
 

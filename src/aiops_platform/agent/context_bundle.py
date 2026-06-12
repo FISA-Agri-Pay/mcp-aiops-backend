@@ -287,13 +287,25 @@ def compact_tool_result(
         "tool_name": result.tool_name,
         "call_status": enum_value(result.call_status),
         "will_execute": result.will_execute,
-        "request_payload": result.masked_request_payload or result.request_payload,
+        "request_payload": prefer_masked_payload(
+            result.masked_request_payload,
+            result.request_payload,
+        ),
     }
     if result.error_message:
         entry["error_message"] = result.error_message
     if include_response:
-        entry["response_payload"] = result.masked_response_payload or result.response_payload
+        entry["response_payload"] = prefer_masked_payload(
+            result.masked_response_payload,
+            result.response_payload,
+        )
     return entry
+
+
+def prefer_masked_payload(masked_payload: Any, original_payload: Any) -> Any:
+    if masked_payload is not None:
+        return masked_payload
+    return original_payload
 
 
 def append_entry(target: dict[str, Any], key: str, entry: dict[str, Any]) -> None:
@@ -431,7 +443,12 @@ def assess_boundary_evidence(
 
     evidence_text = " ".join(
         stringify_evidence_payload(
-            result.masked_response_payload or result.response_payload or {}
+            empty_payload_if_none(
+                prefer_masked_payload(
+                    result.masked_response_payload,
+                    result.response_payload,
+                )
+            )
         )
         for result in evidence_results
     )
@@ -454,6 +471,12 @@ def stringify_evidence_payload(payload: Any) -> str:
     if isinstance(payload, list):
         return " ".join(stringify_evidence_payload(item) for item in payload).lower()
     return str(payload).lower()
+
+
+def empty_payload_if_none(payload: Any) -> Any:
+    if payload is None:
+        return {}
+    return payload
 
 
 def contains_degraded_signal(evidence_text: str) -> bool:
