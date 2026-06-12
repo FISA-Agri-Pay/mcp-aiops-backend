@@ -3,7 +3,12 @@ from fastapi.testclient import TestClient
 from aiops_platform.agent.orchestrator import AgentOrchestrator
 from aiops_platform.agent.planner import RuleBasedAgentPlanner
 from aiops_platform.agent.schemas import AgentToolExecutionResult
-from aiops_platform.llmops.client import FakeLlmClient, build_fake_answer
+from aiops_platform.llmops.client import (
+    FakeLlmClient,
+    LlmCompletionResponse,
+    build_fake_answer,
+)
+from aiops_platform.llmops.schemas import LlmRunResult, PromptVersionResult
 from aiops_platform.llmops.service import (
     DEFAULT_PROMPTS,
     OUTPUT_SCHEMA,
@@ -96,6 +101,89 @@ def test_agent_answer_schema_rejects_structured_answer_object() -> None:
 
     assert validation.is_valid is False
     assert "answer must be a string." in validation.errors
+
+
+class StructuredRcaAnswerLlmClient:
+    provider = "fake"
+    model = "structured-rca"
+
+    def complete(self, request):
+        return LlmCompletionResponse(
+            provider=self.provider,
+            model=self.model,
+            content="{}",
+            output_payload={
+                "answer": {
+                    "summary": ["VPN route and MetalLB boundaries are degraded."],
+                    "evidence": [
+                        "vpn_route=degraded",
+                        "onprem_metallb=degraded",
+                    ],
+                    "probable_root_cause": (
+                        "Traffic appears to break before on-prem ingress."
+                    ),
+                    "recommended_checks_actions": [
+                        "Check pfSense route table.",
+                        "Check MetalLB L2 leader and ingress-nginx endpoint.",
+                    ],
+                    "data_limits": ["Synthetic alert evidence only."],
+                }
+            },
+            latency_ms=1,
+        )
+
+
+class FakeLlmOpsRepository:
+    def ensure_prompt_version(self, **kwargs: object) -> PromptVersionResult:
+        return PromptVersionResult(
+            prompt_version_id="prompt-rca-1",
+            prompt_key=str(kwargs["prompt_key"]),
+            version=str(kwargs["version"]),
+            scope=kwargs["scope"],
+            template=str(kwargs["template"]),
+            is_active=True,
+            created_at="2026-06-12T00:00:00",
+        )
+
+    def record_llm_run(self, **kwargs: object) -> LlmRunResult:
+        return LlmRunResult(
+            llm_run_id="llm-run-rca-1",
+            provider=str(kwargs["provider"]),
+            model=str(kwargs["model"]),
+            prompt_version_id=kwargs.get("prompt_version_id"),
+            prompt_key=str(kwargs["prompt_key"]),
+            run_status=kwargs["status"],
+            job_id=kwargs.get("job_id"),
+            session_id=kwargs.get("session_id"),
+            masked_input=kwargs["masked_input"],
+            masked_output=kwargs["masked_output"],
+            output_schema=kwargs["output_schema"],
+            validation_errors=kwargs["validation_errors"],
+            latency_ms=int(kwargs.get("latency_ms") or 0),
+            created_at="2026-06-12T00:00:01",
+            last_error=kwargs.get("last_error"),
+        )
+
+
+def test_rca_completion_normalizes_structured_answer_object() -> None:
+    service = LlmOpsService(
+        repository=FakeLlmOpsRepository(),
+        llm_client=StructuredRcaAnswerLlmClient(),
+    )
+
+    result = service.run_rca_completion(
+        incident={"incident_key": "INC-1"},
+        alert={"alertname": "OnpremMetalLBRoutingFailure"},
+        snapshot={},
+        evidence=[],
+    )
+
+    assert result.run_status == "SUCCESS"
+    assert result.validation_errors == []
+    assert isinstance(result.masked_output["answer"], str)
+    assert "요약" in result.masked_output["answer"]
+    assert "관측 근거" in result.masked_output["answer"]
+    assert "VPN route" in result.masked_output["answer"]
 
 
 def test_admin_copilot_prompt_requires_readable_plain_text_sections() -> None:
