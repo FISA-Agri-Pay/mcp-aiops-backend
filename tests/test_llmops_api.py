@@ -152,6 +152,31 @@ def test_failed_farmer_tool_result_hides_internal_error_from_llm_input() -> None
     assert payload["failure_policy"] == "hide_internal_error_from_user"
 
 
+def test_farmer_approval_required_tool_result_keeps_approval_context() -> None:
+    payload = serialize_tool_result_for_llm(
+        AgentToolExecutionResult(
+            server_name="farmer-bnpl-mcp",
+            tool_name="create_bnpl_checkout",
+            tool_permission=McpToolPermission.USER_CONFIRMED_WRITE,
+            confirmation_policy=McpConfirmationPolicy.USER_CONFIRMATION,
+            execution_policy=McpExecutionPolicy.BLOCKED_UNTIL_CONFIRMED,
+            call_status=McpToolCallStatus.APPROVAL_REQUIRED,
+            will_execute=False,
+            requires_approval=True,
+            is_blocked=False,
+            request_payload={"order_id": "order-1"},
+            response_payload={"approval_type": "USER_CONFIRMATION"},
+            error_message="사용자 확인 후 실행됩니다.",
+        ),
+        chat_type="farmer_bnpl",
+    )
+
+    assert payload["call_status"] == "APPROVAL_REQUIRED"
+    assert payload["requires_approval"] is True
+    assert payload["response_payload"] == {"approval_type": "USER_CONFIRMATION"}
+    assert "failure_policy" not in payload
+
+
 def test_llm_runs_can_be_filtered_for_client_history() -> None:
     client = create_llmops_test_client()
     ask_response = client.post(

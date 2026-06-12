@@ -755,6 +755,8 @@ def farmer_intent_for_capability(
 ) -> FarmerBnplIntent:
     if capability == "smalltalk" and fallback_intent in {"greeting", "thanks"}:
         return fallback_intent  # type: ignore[return-value]
+    if capability == "checkout_guidance" and fallback_intent == "checkout_confirm":
+        return "checkout_confirm"
     return FARMER_CAPABILITY_TO_INTENT[capability]
 
 

@@ -688,6 +688,8 @@ def serialize_tool_result_for_llm(
     call_status = McpToolCallStatus(result.call_status)
     if call_status == McpToolCallStatus.SUCCESS:
         return payload
+    if call_status not in {McpToolCallStatus.FAILED, McpToolCallStatus.TIMEOUT}:
+        return payload
 
     payload["error_message"] = (
         "현재 이 정보는 확인하지 못했습니다. 사용자에게 내부 오류 원인을 설명하지 말고 "

@@ -1041,10 +1041,35 @@ def build_farmer_bnpl_llm_failure_fallback(
         if McpToolCallStatus(result.call_status) != McpToolCallStatus.SUCCESS
     ]
     if failed_tools:
-        return (
-            "현재 필요한 정보를 모두 확인하지 못했습니다. "
-            "작물, 재배 면적, 지역, 생육 단계 중 알고 있는 내용을 알려주시면 "
-            "다시 추천을 도와드릴게요."
+        capability_fallbacks = {
+            "credit_limit_status": (
+                "외상 한도 정보를 확인하지 못했습니다. 계정 상태를 확인한 뒤 "
+                "잠시 후 다시 한도 조회를 요청해주세요."
+            ),
+            "repayment_guidance": (
+                "상환 정보를 확인하지 못했습니다. 상환 예정일이나 납부 내역 조회를 "
+                "잠시 후 다시 시도해주세요."
+            ),
+            "delivery_status": (
+                "배송 정보를 확인하지 못했습니다. 최근 주문 내역이 있는지 확인한 뒤 "
+                "다시 요청해주세요."
+            ),
+            "checkout_guidance": (
+                "결제 준비 정보를 확인하지 못했습니다. 구매할 상품과 수량을 다시 알려주시면 "
+                "한도 내 결제 가능 여부를 확인해드릴게요."
+            ),
+            "credit_application_guidance": (
+                "신용 신청 정보를 확인하지 못했습니다. 신청 상태나 필요한 서류를 확인한 뒤 "
+                "다시 요청해주세요."
+            ),
+            "bnpl_general_guidance": (
+                "외상 결제 이용 정보를 확인하지 못했습니다. 확인하려는 내용을 조금 더 구체적으로 "
+                "알려주시면 다시 도와드릴게요."
+            ),
+        }
+        return capability_fallbacks.get(
+            capability,
+            "현재 필요한 정보를 모두 확인하지 못했습니다. 잠시 후 다시 시도해주세요.",
         )
     return "요청을 처리할 정보를 찾지 못했습니다. 잠시 후 다시 시도해주세요."
 

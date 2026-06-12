@@ -6,6 +6,7 @@ from aiops_platform.agent.planner import (
     classify_admin_copilot_intent,
     classify_farmer_bnpl_capability,
     classify_farmer_bnpl_intent,
+    farmer_intent_for_capability,
 )
 from aiops_platform.agent.schemas import AgentToolExecutionResult, AgentToolPlan
 from aiops_platform.llmops.client import LlmCompletionResponse
@@ -18,6 +19,7 @@ from aiops_platform.mcp.schemas import (
 from aiops_platform.orchestration.service import (
     build_chat_ui_cards,
     build_direct_chat_response,
+    build_farmer_bnpl_llm_failure_fallback,
     resolve_assistant_content,
 )
 from tests.seed_constants import FARMER_1_ID
@@ -55,6 +57,16 @@ def test_rule_based_planner_selects_farmer_bnpl_purchase_tools() -> None:
         "search_lowest_price_fertilizer",
         "prepare_bnpl_checkout_payload",
     ]
+
+
+def test_farmer_checkout_guidance_preserves_confirm_intent() -> None:
+    assert (
+        farmer_intent_for_capability(
+            capability="checkout_guidance",
+            fallback_intent="checkout_confirm",
+        )
+        == "checkout_confirm"
+    )
 
 
 def test_rule_based_planner_skips_farmer_tools_for_greeting() -> None:
@@ -457,6 +469,30 @@ def test_farmer_llm_failure_returns_tool_based_fallback() -> None:
     assert "조회된 내용을 기준으로 안내드릴게요" in content
     assert "2,550,000 KRW" in content
     assert "Organic 20kg fertilizer" in content
+
+
+def test_farmer_failed_delivery_tool_uses_delivery_fallback() -> None:
+    content = build_farmer_bnpl_llm_failure_fallback(
+        [
+            AgentToolExecutionResult(
+                server_name="farmer-bnpl-mcp",
+                tool_name="get_latest_order_delivery_status",
+                tool_permission=McpToolPermission.READ,
+                confirmation_policy=McpConfirmationPolicy.NONE,
+                execution_policy=McpExecutionPolicy.ALLOWED,
+                call_status=McpToolCallStatus.FAILED,
+                will_execute=True,
+                requires_approval=False,
+                is_blocked=False,
+                request_payload={},
+                error_message="delivery lookup failed",
+            )
+        ],
+        capability="delivery_status",
+    )
+
+    assert "배송 정보를 확인하지 못했습니다" in content
+    assert "작물, 재배 면적" not in content
 
 
 def test_farmer_success_answer_with_internal_error_is_replaced() -> None:
