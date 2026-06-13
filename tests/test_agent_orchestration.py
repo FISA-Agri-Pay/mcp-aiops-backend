@@ -652,7 +652,7 @@ def test_rule_based_planner_adds_onprem_ingress_live_checks() -> None:
     assert tools["check_onprem_ingress_route"].request_payload == {
         "endpoint": "http://10.30.2.100",
         "host_header": "api-payment.dev6.fisa",
-        "path": "/actuator/health",
+        "path": "/health",
         "expected_status_min": 200,
         "expected_status_max": 399,
         "timeout_seconds": 5.0,

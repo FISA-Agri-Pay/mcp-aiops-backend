@@ -1056,6 +1056,8 @@ def infer_sre_ingress_host(service_name: str) -> str | None:
 
 
 def infer_sre_ingress_health_path(service_name: str) -> str:
+    if service_name == "service-payment":
+        return "/health"
     return "/actuator/health"
 
 

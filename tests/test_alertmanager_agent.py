@@ -741,6 +741,52 @@ def test_rca_llm_snapshot_builds_application_root_cause_candidates() -> None:
     ][0]["candidate_type"] == "db_hikaricp"
 
 
+def test_rca_llm_snapshot_filters_query_only_and_low_confidence_candidates() -> None:
+    result = AlertmanagerSrePlanResult(
+        status="COLLECTED",
+        executed_tools=[
+            build_success_result(
+                "query_multi_cluster_loki",
+                {
+                    "query": "sqs consumer dlq backlog high",
+                    "results": [],
+                },
+            ),
+            build_success_result(
+                "get_recent_deployments",
+                {
+                    "items": [
+                        {
+                            "deployment": "service-payment",
+                            "status": "deployed",
+                            "image": "service-payment:v1",
+                        }
+                    ]
+                },
+            ),
+            build_success_result(
+                "query_multi_cluster_prometheus",
+                {
+                    "results": [
+                        {
+                            "metric": "hikaricp_connections_pending",
+                            "value": 0,
+                        }
+                    ]
+                },
+            ),
+        ],
+        context_bundle={"summary_for_llm": {}, "cross_domain": {}},
+    )
+
+    snapshot_payload = build_rca_llm_snapshot_payload(result)
+
+    assert snapshot_payload["root_cause_candidates"] == []
+    assert snapshot_payload["analysis_contract"][
+        "application_root_cause_candidates"
+    ] == []
+
+
 def test_analysis_notification_prioritizes_app_candidates_after_healthy_routing() -> None:
     result = AlertmanagerSrePlanResult(
         status="ANALYZED",

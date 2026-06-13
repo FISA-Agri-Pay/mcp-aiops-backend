@@ -974,10 +974,12 @@ def build_application_signal_summary(
             continue
 
         payload = select_tool_response_payload(tool_result)
-        evidence_text = stringify_signal_payload(payload)
+        detection_payload = strip_signal_detection_noise(payload)
+        evidence_text = stringify_signal_payload(detection_payload)
         findings = detect_application_findings(
             section=section,
             tool_name=tool_result.tool_name,
+            payload=detection_payload,
             evidence_text=evidence_text,
         )
         section_summary["findings"].extend(findings)
@@ -1021,6 +1023,7 @@ def detect_application_findings(
     *,
     section: str,
     tool_name: str,
+    payload: Any,
     evidence_text: str,
 ) -> list[dict[str, Any]]:
     findings = []
@@ -1028,7 +1031,11 @@ def detect_application_findings(
     if not text:
         return findings
 
-    if has_any(text, ("hikari", "hikaripool", "connection pool", "jdbc", "postgres")) and has_any(
+    has_hikari_context = has_any(
+        text,
+        ("hikari", "hikaripool", "connection pool", "jdbc", "postgres"),
+    )
+    has_hikari_error = has_any(
         text,
         (
             "timeout",
@@ -1036,11 +1043,16 @@ def detect_application_findings(
             "too many connections",
             "refused",
             "exhaust",
-            "pending",
             "failed",
             "error",
         ),
-    ):
+    )
+    has_pending_metric = (
+        section == "metrics"
+        and has_any(text, ("hikaricp_connections_pending", "pending"))
+        and has_positive_metric_value(payload)
+    )
+    if has_hikari_context and (has_hikari_error or has_pending_metric):
         findings.append(
             build_application_finding(
                 "db_hikaricp",
@@ -1067,10 +1079,15 @@ def detect_application_findings(
             )
         )
 
-    if has_any(text, ("sqs", "queue", "dlq")) and has_any(
-        text,
-        ("consumer", "listener", "receive", "lag", "backlog", "visible", "dlq"),
-    ) and has_any(text, ("fail", "error", "timeout", "high", "notempty", "not empty", "degraded")):
+    if (
+        has_any(text, ("sqs", "queue", "dlq"))
+        and has_any(text, ("consumer", "listener", "receive", "lag", "backlog", "dlq"))
+        and has_any(text, ("fail", "error", "timeout", "notempty", "not empty", "degraded"))
+    ) or (
+        section == "aws"
+        and has_any(text, ("approximatenumberofmessages", "dlq", "deadletter"))
+        and has_positive_metric_value(payload)
+    ):
         findings.append(
             build_application_finding(
                 "sqs_consume",
@@ -1117,7 +1134,15 @@ def detect_application_findings(
 
     if section == "deployment_changes" and has_any(
         text,
-        ("outofsync", "degraded", "progressing", "rollout", "image", "revision", "deployed"),
+        (
+            "outofsync",
+            "degraded",
+            "progressing",
+            "image changed",
+            "image_changed",
+            "rollout_status degraded",
+            "rollout_status progressing",
+        ),
     ):
         findings.append(
             build_application_finding(
@@ -1216,11 +1241,17 @@ def build_application_root_cause_candidates(
             )
         )
 
-    return sorted(
+    ranked_candidates = sorted(
         candidates,
         key=lambda candidate: candidate_confidence_rank(candidate["confidence"]),
         reverse=True,
-    )[:6]
+    )
+    visible_candidates = [
+        candidate
+        for candidate in ranked_candidates
+        if candidate["confidence"] in {"high", "medium"}
+    ]
+    return visible_candidates[:3]
 
 
 def flatten_application_findings(signals: dict[str, Any]) -> list[dict[str, Any]]:
@@ -1281,7 +1312,7 @@ def infer_candidate_confidence(
         return "high"
     if len(findings) >= 2:
         return "medium"
-    return "medium"
+    return "low"
 
 
 def candidate_confidence_rank(confidence: str) -> int:
@@ -1330,6 +1361,28 @@ def select_tool_response_payload(tool_result: AgentToolExecutionResult) -> Any:
     return tool_result.response_payload
 
 
+def strip_signal_detection_noise(value: Any) -> Any:
+    noisy_keys = {
+        "query",
+        "queries",
+        "promql",
+        "logql",
+        "expression",
+        "request",
+        "request_payload",
+        "masked_request_payload",
+    }
+    if isinstance(value, dict):
+        return {
+            str(key): strip_signal_detection_noise(item)
+            for key, item in value.items()
+            if str(key).lower() not in noisy_keys
+        }
+    if isinstance(value, list):
+        return [strip_signal_detection_noise(item) for item in value]
+    return value
+
+
 def stringify_signal_payload(value: Any) -> str:
     if value is None:
         return ""
@@ -1346,6 +1399,53 @@ def stringify_signal_payload(value: Any) -> str:
 
 def has_any(value: str, needles: tuple[str, ...]) -> bool:
     return any(needle in value for needle in needles)
+
+
+def has_positive_metric_value(value: Any, *, threshold: float = 0.0) -> bool:
+    return any(number > threshold for number in iter_metric_values(value))
+
+
+def iter_metric_values(value: Any):
+    if isinstance(value, dict):
+        for key, item in value.items():
+            key_text = str(key).lower()
+            if key_text in {"value", "values", "sample", "samples", "datapoints"}:
+                yield from iter_numeric_values(item)
+            elif any(token in key_text for token in ("count", "depth", "pending", "visible")):
+                yield from iter_numeric_values(item)
+            else:
+                yield from iter_metric_values(item)
+    elif isinstance(value, list):
+        if len(value) == 2 and is_numeric_like(value[1]):
+            yield float(value[1])
+            return
+        for item in value:
+            yield from iter_metric_values(item)
+
+
+def iter_numeric_values(value: Any):
+    if is_numeric_like(value):
+        yield float(value)
+    elif isinstance(value, dict):
+        for item in value.values():
+            yield from iter_numeric_values(item)
+    elif isinstance(value, list):
+        for item in value:
+            yield from iter_numeric_values(item)
+
+
+def is_numeric_like(value: Any) -> bool:
+    if isinstance(value, bool):
+        return False
+    if isinstance(value, int | float):
+        return True
+    if isinstance(value, str):
+        try:
+            float(value)
+        except ValueError:
+            return False
+        return True
+    return False
 
 
 def build_boundary_verdicts(boundaries: list[dict[str, Any]]) -> list[dict[str, Any]]:
