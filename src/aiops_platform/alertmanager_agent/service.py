@@ -60,6 +60,24 @@ TOPOLOGY_FACT_KEYWORDS = (
     "primary payment path",
     "direct path",
 )
+ROUTING_BOUNDARIES = {
+    "dns",
+    "cloudfront",
+    "aws_alb",
+    "aws_target_group",
+    "vpn_route",
+    "onprem_metallb",
+    "onprem_ingress",
+    "k8s_service",
+    "pod",
+}
+NEXT_INVESTIGATION_PRIORITY = (
+    "application logs",
+    "distributed traces",
+    "recent deployments",
+    "DB/HikariCP",
+    "downstream dependencies",
+)
 
 SRE_INTENT_BY_ALERT_NAME: dict[str, str] = {
     "checkout500high": "checkout_500",
@@ -292,7 +310,7 @@ class AlertmanagerSreAgentService:
                 snapshot=build_rca_llm_snapshot_payload(result),
                 evidence=build_rca_llm_evidence(result),
             )
-            return build_rca_analysis_payload(llm_run)
+            return build_rca_analysis_payload(llm_run, result=result)
         except Exception as exc:
             error_message = format_delivery_error(exc)
             logger.exception("Alertmanager SRE RCA LLM analysis failed.")
@@ -756,6 +774,7 @@ def build_rca_llm_incident_payload(result: AlertmanagerSrePlanResult) -> dict[st
 def build_rca_llm_snapshot_payload(result: AlertmanagerSrePlanResult) -> dict[str, Any]:
     bundle = result.context_bundle or {}
     payload = {
+        "analysis_contract": build_rca_analysis_contract(result),
         "context_summary": compact_payload_for_llm(
             bundle.get("summary_for_llm"),
             char_budget=4000,
@@ -814,8 +833,204 @@ def build_rca_llm_evidence(result: AlertmanagerSrePlanResult) -> list[dict[str, 
     )
 
 
-def build_rca_analysis_payload(llm_run: LlmRunResult) -> dict[str, Any]:
+def build_rca_analysis_contract(result: AlertmanagerSrePlanResult) -> dict[str, Any]:
+    boundaries = trim_boundary_candidates(
+        (result.context_bundle or {}).get("failure_boundary_candidates"),
+        limit=12,
+    )
+    healthy_boundaries = boundary_names_by_status(boundaries, "healthy")
+    degraded_boundaries = boundary_names_by_status(boundaries, "degraded")
+    unknown_boundaries = boundary_names_by_status(boundaries, "unknown")
+    synthetic_alert = is_synthetic_sre_alert(result.alert)
+    return {
+        "language": {
+            "answer_language": "ko",
+            "keep_technical_identifiers_in_english": True,
+        },
+        "is_synthetic_alert": synthetic_alert,
+        "boundary_verdicts": build_boundary_verdicts(boundaries),
+        "ruled_out_boundaries": healthy_boundaries,
+        "candidate_boundaries": degraded_boundaries,
+        "unknown_boundaries": unknown_boundaries,
+        "next_investigation_priority": list(NEXT_INVESTIGATION_PRIORITY),
+        "current_state_verdict": build_current_state_verdict(
+            synthetic_alert=synthetic_alert,
+            healthy_boundaries=healthy_boundaries,
+            degraded_boundaries=degraded_boundaries,
+            unknown_boundaries=unknown_boundaries,
+        ),
+        "rules": [
+            "alertname is only a hypothesis, not root-cause evidence",
+            "do not list healthy boundaries as likely root-cause candidates",
+            "likely causes require degraded or failed live evidence",
+            "unknown boundaries are data gaps, not confirmed root causes",
+            (
+                "for synthetic alerts, state that this is a current-state "
+                "inspection, not a confirmed outage"
+            ),
+            (
+                "if all checked routing boundaries are healthy, conclude that "
+                "current routing-boundary evidence is absent"
+            ),
+            (
+                "when routing boundaries are healthy, prioritize logs, traces, "
+                "recent deployments, DB/HikariCP, and downstream dependencies"
+            ),
+            "do not claim destructive remediation was executed",
+        ],
+    }
+
+
+def build_boundary_verdicts(boundaries: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    verdicts = []
+    for boundary in boundaries:
+        boundary_name = str(boundary.get("boundary") or "").strip()
+        if not boundary_name:
+            continue
+        verdicts.append(
+            {
+                "boundary": boundary_name,
+                "status": boundary.get("status"),
+                "confidence": boundary.get("confidence"),
+                "reason": boundary.get("reason"),
+                "health_evidence_tools": boundary.get("health_evidence_tools", []),
+                "context_evidence_tools": boundary.get("context_evidence_tools", []),
+            }
+        )
+    return verdicts
+
+
+def boundary_names_by_status(
+    boundaries: list[dict[str, Any]],
+    status: str,
+) -> list[str]:
+    return [
+        str(boundary.get("boundary"))
+        for boundary in boundaries
+        if str(boundary.get("status") or "").lower() == status
+        and str(boundary.get("boundary") or "")
+    ]
+
+
+def build_current_state_verdict(
+    *,
+    synthetic_alert: bool,
+    healthy_boundaries: list[str],
+    degraded_boundaries: list[str],
+    unknown_boundaries: list[str],
+) -> str:
+    prefix = "synthetic current-state inspection" if synthetic_alert else "alert-triggered RCA"
+    if degraded_boundaries:
+        return (
+            f"{prefix}: degraded live evidence exists for "
+            f"{', '.join(degraded_boundaries)}. Healthy boundaries must be ruled out."
+        )
+    if healthy_boundaries:
+        return (
+            f"{prefix}: current routing-boundary evidence is absent; no degraded "
+            "live boundary evidence was found among checked boundaries "
+            f"({', '.join(healthy_boundaries)}). Treat healthy boundaries as ruled "
+            "out and move investigation to application/runtime evidence."
+        )
+    if unknown_boundaries:
+        return (
+            f"{prefix}: available boundary evidence is insufficient. Unknown boundaries "
+            "are data gaps and must not be stated as confirmed causes."
+        )
+    return f"{prefix}: no boundary evidence is available."
+
+
+def apply_rca_answer_guardrails(
+    answer: str,
+    *,
+    result: AlertmanagerSrePlanResult,
+) -> str:
+    if answer.lstrip().startswith("자동 판정"):
+        return answer
+    prefix = build_rca_guardrail_prefix(result)
+    if not prefix:
+        return answer
+    return f"{prefix}\n\nLLM 분석\n{answer.strip()}"
+
+
+def build_rca_guardrail_prefix(result: AlertmanagerSrePlanResult) -> str:
+    contract = build_rca_analysis_contract(result)
+    healthy_boundaries = [
+        boundary
+        for boundary in contract["ruled_out_boundaries"]
+        if boundary in ROUTING_BOUNDARIES
+    ]
+    degraded_boundaries = [
+        boundary
+        for boundary in contract["candidate_boundaries"]
+        if boundary in ROUTING_BOUNDARIES
+    ]
+    unknown_boundaries = [
+        boundary
+        for boundary in contract["unknown_boundaries"]
+        if boundary in ROUTING_BOUNDARIES
+    ]
+    if not (healthy_boundaries or degraded_boundaries or unknown_boundaries):
+        return ""
+
+    lines = ["자동 판정"]
+    if contract["is_synthetic_alert"]:
+        lines.append(
+            "- 이 알림은 synthetic current-state inspection이며, "
+            "실제 장애를 유발한 검증이 아닙니다."
+        )
+    if healthy_boundaries:
+        lines.append(
+            "- 현재 live check 기준 "
+            f"{', '.join(healthy_boundaries)} 경계는 healthy이므로 원인 후보에서 제외합니다."
+        )
+    if degraded_boundaries:
+        lines.append(
+            "- 우선 원인 후보는 degraded live evidence가 있는 "
+            f"{', '.join(degraded_boundaries)} 경계입니다."
+        )
+    elif healthy_boundaries:
+        lines.append(
+            "- degraded/failed live boundary evidence가 없어 "
+            "현재 시점의 라우팅 경계 장애 증거는 없습니다."
+        )
+    if unknown_boundaries:
+        lines.append(
+            "- "
+            f"{', '.join(unknown_boundaries)} 경계는 unknown이므로 "
+            "원인 확정이 아니라 데이터 한계로 다룹니다."
+        )
+    if healthy_boundaries and not degraded_boundaries:
+        lines.append(
+            "- 실제 사용자 오류가 있다면 application logs, distributed traces, recent deployments, "
+            "DB/HikariCP, downstream dependencies를 우선 확인합니다."
+        )
+    return "\n".join(lines)
+
+
+def is_synthetic_sre_alert(alert: AlertmanagerSreAlertContext | None) -> bool:
+    if alert is None:
+        return False
+    text = " ".join(
+        str(value or "")
+        for value in (
+            alert.alert_name,
+            alert.fingerprint,
+            alert.summary,
+            alert.description,
+        )
+    ).lower()
+    return "synthetic" in text
+
+
+def build_rca_analysis_payload(
+    llm_run: LlmRunResult,
+    *,
+    result: AlertmanagerSrePlanResult | None = None,
+) -> dict[str, Any]:
     answer = str(llm_run.masked_output.get("answer") or "").strip()
+    if result is not None and answer:
+        answer = apply_rca_answer_guardrails(answer, result=result)
     return {
         "llm_run_id": llm_run.llm_run_id,
         "provider": llm_run.provider,
@@ -862,6 +1077,8 @@ def build_analysis_notification_text(result: AlertmanagerSrePlanResult) -> str:
     last_error = str(analysis.get("last_error") or "").strip()
     if run_status != "SUCCESS":
         answer = last_error or "LLM RCA analysis did not complete successfully."
+    elif answer:
+        answer = apply_rca_answer_guardrails(answer, result=result)
     lines = [
         build_analysis_notification_subject(result),
         f"- incident: {result.incident_key or 'unknown'}",
@@ -881,6 +1098,8 @@ def build_analysis_notification_html(result: AlertmanagerSrePlanResult) -> str:
     last_error = str(analysis.get("last_error") or "").strip()
     if run_status != "SUCCESS":
         answer = last_error or "LLM RCA analysis did not complete successfully."
+    elif answer:
+        answer = apply_rca_answer_guardrails(answer, result=result)
     rows = [
         ("Incident", result.incident_key or ""),
         ("Alert", result.alert.alert_name if result.alert is not None else ""),

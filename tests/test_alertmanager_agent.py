@@ -11,6 +11,7 @@ from aiops_platform.alertmanager_agent.schemas import (
 )
 from aiops_platform.alertmanager_agent.service import (
     AlertmanagerSreAgentService,
+    build_analysis_notification_text,
     build_notification_idempotency_key,
     build_rca_llm_snapshot_payload,
 )
@@ -553,6 +554,116 @@ def test_rca_llm_snapshot_preserves_topology_facts() -> None:
     assert "api-payment.dev6.fisa" in serialized
     assert "10.30.2.100" in serialized
     assert "not visible CloudFront" in serialized
+
+
+def test_rca_llm_snapshot_includes_boundary_analysis_contract() -> None:
+    result = AlertmanagerSrePlanResult(
+        status="COLLECTED",
+        alert=AlertmanagerSreAlertContext(
+            alert_name="SyntheticCurrentStateInspection",
+            status="firing",
+            fingerprint="synthetic-aiops-livecheck-test-001",
+        ),
+        context_bundle={
+            "summary_for_llm": {},
+            "cross_domain": {},
+            "failure_boundary_candidates": [
+                {
+                    "boundary": "dns",
+                    "status": "healthy",
+                    "confidence": "medium",
+                    "reason": "No SERVFAIL marker was found.",
+                },
+                {
+                    "boundary": "onprem_metallb",
+                    "status": "healthy",
+                    "confidence": "high",
+                    "reason": "TCP endpoint was reachable.",
+                    "health_evidence_tools": ["check_onprem_metallb_endpoint"],
+                },
+                {
+                    "boundary": "onprem_ingress",
+                    "status": "healthy",
+                    "confidence": "high",
+                    "reason": "Ingress health endpoint returned 200.",
+                    "health_evidence_tools": ["check_onprem_ingress_route"],
+                },
+                {
+                    "boundary": "k8s_service",
+                    "status": "healthy",
+                    "confidence": "high",
+                    "reason": "Ready endpoints exist.",
+                    "health_evidence_tools": ["get_k8s_service_endpoints"],
+                },
+            ],
+        },
+    )
+
+    snapshot_payload = build_rca_llm_snapshot_payload(result)
+    contract = snapshot_payload["analysis_contract"]
+
+    assert contract["is_synthetic_alert"] is True
+    assert contract["ruled_out_boundaries"] == [
+        "dns",
+        "onprem_metallb",
+        "onprem_ingress",
+        "k8s_service",
+    ]
+    assert contract["candidate_boundaries"] == []
+    assert "do not list healthy boundaries" in " ".join(contract["rules"])
+    assert "current routing-boundary evidence is absent" in contract[
+        "current_state_verdict"
+    ]
+
+
+def test_analysis_notification_prepends_boundary_guardrail_verdict() -> None:
+    result = AlertmanagerSrePlanResult(
+        status="ANALYZED",
+        incident_key="alertmanager:syntheticcurrentstateinspection:onprem:kkpp:service-payment:info",
+        alert=AlertmanagerSreAlertContext(
+            alert_name="SyntheticCurrentStateInspection",
+            status="firing",
+            cluster="onprem",
+            namespace="kkpp",
+            service_name="service-payment",
+            fingerprint="synthetic-aiops-livecheck-test-001",
+        ),
+        context_bundle={
+            "failure_boundary_candidates": [
+                {"boundary": "dns", "status": "healthy", "confidence": "medium"},
+                {
+                    "boundary": "onprem_metallb",
+                    "status": "healthy",
+                    "confidence": "high",
+                },
+                {
+                    "boundary": "onprem_ingress",
+                    "status": "healthy",
+                    "confidence": "high",
+                },
+                {
+                    "boundary": "k8s_service",
+                    "status": "healthy",
+                    "confidence": "high",
+                },
+            ],
+        },
+        rca_analysis={
+            "run_status": "SUCCESS",
+            "answer": (
+                "요약\n"
+                "- 라우팅 실패의 원인으로 DNS, MetalLB, Ingress 문제가 의심됩니다."
+            ),
+        },
+    )
+
+    text = build_analysis_notification_text(result)
+
+    assert "자동 판정" in text
+    assert "synthetic current-state inspection" in text
+    assert "dns, onprem_metallb, onprem_ingress, k8s_service" in text
+    assert "원인 후보에서 제외" in text
+    assert "라우팅 경계 장애 증거는 없습니다" in text
 
 
 def test_alertmanager_sre_agent_execute_collects_read_only_evidence_bundle() -> None:
