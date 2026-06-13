@@ -1,5 +1,5 @@
-from aiops_platform.agent.dispatcher import McpToolDispatcher
 from aiops_platform.agent.context_bundle import build_incident_context_bundle
+from aiops_platform.agent.dispatcher import McpToolDispatcher
 from aiops_platform.agent.orchestrator import AgentOrchestrator
 from aiops_platform.agent.planner import (
     LlmAgentPlanner,
@@ -15,13 +15,13 @@ from aiops_platform.agent.planner import (
 )
 from aiops_platform.agent.schemas import AgentPlanResult, AgentToolExecutionResult, AgentToolPlan
 from aiops_platform.llmops.client import LlmCompletionResponse
+from aiops_platform.mcp.registry import list_mcp_tools
 from aiops_platform.mcp.schemas import (
     McpConfirmationPolicy,
     McpExecutionPolicy,
     McpToolCallStatus,
     McpToolPermission,
 )
-from aiops_platform.mcp.registry import list_mcp_tools
 from aiops_platform.orchestration.service import (
     build_chat_ui_cards,
     build_direct_chat_response,
@@ -817,6 +817,70 @@ def test_incident_context_bundle_marks_degraded_edge_boundary() -> None:
     assert boundaries["cloudfront"]["status"] == "healthy"
     assert boundaries["aws_alb"]["status"] == "degraded"
     assert boundaries["aws_target_group"]["status"] == "degraded"
+
+
+def test_incident_context_bundle_uses_direct_onprem_payment_path_from_topology() -> None:
+    bundle = build_incident_context_bundle(
+        chat_type="sre_copilot",
+        message="Current state inspection for onprem kkpp service-payment",
+        capability="edge_routing_analysis",
+        tool_results=[
+            make_sre_tool_result(
+                "search_topology_knowledge",
+                {
+                    "matches": [
+                        {
+                            "snapshot_name": (
+                                "aws-onprem-service-payment-routing-topology-snapshot-2026-06-13.md"
+                            ),
+                            "excerpt": (
+                                "api-payment.dev6.fisa currently resolves to "
+                                "10.30.2.100, the known on-prem MetalLB "
+                                "LoadBalancer IP. service-payment is an on-prem "
+                                "kkpp workload, not an AWS EKS workload. "
+                                "CloudFront is not the current direct path."
+                            ),
+                        }
+                    ]
+                },
+            ),
+            make_sre_tool_result(
+                "get_service_routing_path",
+                {
+                    "service": "service-payment",
+                    "routing_paths": [
+                        {
+                            "section": "Current observed path",
+                            "lines": [
+                                "client -> DNS api-payment.dev6.fisa",
+                                "10.30.2.100 -> on-prem MetalLB",
+                                "on-prem ingress-nginx -> kkpp/service-payment",
+                            ],
+                        }
+                    ],
+                },
+            ),
+        ],
+    )
+
+    assert bundle["cross_domain"]["scenario"] == "direct_onprem_ingress_routing"
+    assert bundle["cross_domain"]["path"] == [
+        "dns",
+        "onprem_metallb",
+        "onprem_ingress",
+        "k8s_service",
+        "pod_application",
+    ]
+    assert [
+        candidate["boundary"]
+        for candidate in bundle["failure_boundary_candidates"]
+    ] == [
+        "dns",
+        "onprem_metallb",
+        "onprem_ingress",
+        "k8s_service",
+        "pod_application",
+    ]
 
 
 def test_incident_context_bundle_avoids_substring_health_matches() -> None:

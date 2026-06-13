@@ -53,6 +53,16 @@ HISTORY_TOOLS = {
     "search_rca_history": "rca_history",
 }
 CROSS_DOMAIN_SCENARIOS = {
+    "direct_onprem_ingress_routing": {
+        "description": "DNS -> on-prem MetalLB -> ingress -> service -> pod routing.",
+        "path": [
+            "dns",
+            "onprem_metallb",
+            "onprem_ingress",
+            "k8s_service",
+            "pod_application",
+        ],
+    },
     "edge_to_eks_routing": {
         "description": "CloudFront -> AWS ALB -> EKS service/pod routing.",
         "path": [
@@ -387,6 +397,8 @@ def infer_cross_domain_scenario(
 ) -> str:
     normalized = f"{message} {capability or ''}".lower()
     tool_names = {result.tool_name for result in tool_results}
+    if topology_indicates_direct_onprem_entrypoint(tool_results):
+        return "direct_onprem_ingress_routing"
     if any(keyword in normalized for keyword in ("sqs", "queue", "dlq", "pin")):
         return "onprem_to_sqs"
     if any(keyword in normalized for keyword in ("fluent", "fluent-bit", "loki")):
@@ -404,6 +416,46 @@ def infer_cross_domain_scenario(
             return "edge_to_onprem_routing"
         return "edge_to_eks_routing"
     return "general_cross_domain"
+
+
+def topology_indicates_direct_onprem_entrypoint(
+    tool_results: list[AgentToolExecutionResult],
+) -> bool:
+    topology_payloads = [
+        empty_payload_if_none(
+            prefer_masked_payload(
+                result.masked_response_payload,
+                result.response_payload,
+            )
+        )
+        for result in tool_results
+        if result.tool_name in TOPOLOGY_TOOLS
+    ]
+    if not topology_payloads:
+        return False
+
+    evidence_text = " ".join(
+        stringify_evidence_payload(payload) for payload in topology_payloads
+    ).lower()
+    has_service = "service-payment" in evidence_text or "api-payment" in evidence_text
+    has_onprem_entrypoint = (
+        ("api-payment.dev6.fisa" in evidence_text and "10.30.2.100" in evidence_text)
+        or ("on-prem metallb" in evidence_text and "direct" in evidence_text)
+        or ("onprem metallb" in evidence_text and "direct" in evidence_text)
+    )
+    cloudfront_is_not_primary = any(
+        phrase in evidence_text
+        for phrase in (
+            "not visible cloudfront",
+            "not the current direct path",
+            "not visible aws cloudfront",
+            "not aws eks",
+            "not an aws eks workload",
+            "not a visible cloudfront",
+            "cloudfront is not",
+        )
+    )
+    return has_service and has_onprem_entrypoint and cloudfront_is_not_primary
 
 
 def build_failure_boundary_candidates(

@@ -39,6 +39,27 @@ LLM_SNAPSHOT_CHAR_BUDGET = 24000
 LLM_EVIDENCE_CHAR_BUDGET = 32000
 LLM_SECTION_CHAR_BUDGET = 6000
 LLM_TOOL_RESULT_LIMIT = 24
+LLM_TOPOLOGY_FACT_LIMIT = 10
+TOPOLOGY_LLM_TOOLS = {
+    "get_topology_snapshot",
+    "search_topology_knowledge",
+    "get_service_routing_path",
+    "get_service_dependency_map",
+}
+TOPOLOGY_FACT_KEYWORDS = (
+    "service-payment",
+    "api-payment.dev6.fisa",
+    "10.30.2.100",
+    "on-prem metallb",
+    "onprem metallb",
+    "cloudfront",
+    "aws alb",
+    "aws target group",
+    "service-catalog",
+    "checkout-requests",
+    "primary payment path",
+    "direct path",
+)
 
 SRE_INTENT_BY_ALERT_NAME: dict[str, str] = {
     "checkout500high": "checkout_500",
@@ -747,11 +768,15 @@ def build_rca_llm_snapshot_payload(result: AlertmanagerSrePlanResult) -> dict[st
             bundle.get("failure_boundary_candidates"),
             limit=8,
         ),
+        "topology_facts": extract_topology_facts_for_llm(result),
         "rca_snapshot": summarize_rca_snapshot_for_llm(result.rca_snapshot),
     }
     return compact_payload_for_llm(
         payload,
         char_budget=LLM_SNAPSHOT_CHAR_BUDGET,
+        max_depth=6,
+        list_limit=8,
+        string_limit=1600,
     )
 
 
@@ -948,7 +973,10 @@ def summarize_tool_results_for_llm(result: AlertmanagerSrePlanResult) -> list[di
         }
         if tool_result.error_message:
             summary["error_message"] = truncate_text(tool_result.error_message, limit=800)
-        response_summary = summarize_tool_response_for_llm(response_payload)
+        response_summary = summarize_tool_response_for_llm(
+            response_payload,
+            tool_name=tool_result.tool_name,
+        )
         if response_summary:
             summary["response_summary"] = response_summary
         tool_summaries.append(summary)
@@ -960,9 +988,11 @@ def summarize_tool_results_for_llm(result: AlertmanagerSrePlanResult) -> list[di
     return tool_summaries
 
 
-def summarize_tool_response_for_llm(value: Any) -> Any:
+def summarize_tool_response_for_llm(value: Any, *, tool_name: str | None = None) -> Any:
     if not isinstance(value, dict):
         return None
+    if tool_name in TOPOLOGY_LLM_TOOLS:
+        return summarize_topology_response_for_llm(tool_name, value)
 
     summary: dict[str, Any] = {}
     for key in (
@@ -988,6 +1018,169 @@ def summarize_tool_response_for_llm(value: Any) -> Any:
         if key in value:
             summary[f"{key}_summary"] = summarize_collection_for_llm(value.get(key))
     return summary
+
+
+def extract_topology_facts_for_llm(
+    result: AlertmanagerSrePlanResult,
+) -> list[dict[str, Any]]:
+    facts: list[dict[str, Any]] = []
+    for tool_result in result.executed_tools:
+        if tool_result.tool_name not in TOPOLOGY_LLM_TOOLS:
+            continue
+        response_payload = (
+            tool_result.masked_response_payload
+            if tool_result.masked_response_payload is not None
+            else tool_result.response_payload
+        )
+        if not isinstance(response_payload, dict):
+            continue
+        summary = summarize_topology_response_for_llm(
+            tool_result.tool_name,
+            response_payload,
+        )
+        if summary:
+            facts.append(
+                {
+                    "tool_name": tool_result.tool_name,
+                    "call_status": enum_value(tool_result.call_status),
+                    "summary": summary,
+                }
+            )
+    return facts[:LLM_TOPOLOGY_FACT_LIMIT]
+
+
+def summarize_topology_response_for_llm(
+    tool_name: str | None,
+    value: dict[str, Any],
+) -> dict[str, Any]:
+    if tool_name == "search_topology_knowledge":
+        return summarize_topology_matches_for_llm(value)
+    if tool_name == "get_service_routing_path":
+        return summarize_topology_routing_paths_for_llm(value)
+    if tool_name == "get_topology_snapshot":
+        return summarize_topology_snapshots_for_llm(value)
+    if tool_name == "get_service_dependency_map":
+        return summarize_topology_dependency_map_for_llm(value)
+    return {}
+
+
+def summarize_topology_matches_for_llm(value: dict[str, Any]) -> dict[str, Any]:
+    matches = value.get("matches")
+    summarized_matches = []
+    if isinstance(matches, list):
+        for match in matches[:6]:
+            if not isinstance(match, dict):
+                continue
+            summarized_matches.append(
+                {
+                    "environment": match.get("environment"),
+                    "snapshot_name": match.get("snapshot_name"),
+                    "section": match.get("section"),
+                    "score": match.get("score"),
+                    "excerpt": truncate_text(
+                        str(match.get("excerpt") or ""),
+                        limit=1600,
+                    ),
+                }
+            )
+    return {
+        "source": value.get("source"),
+        "query": value.get("query"),
+        "matches": summarized_matches,
+        "match_count": len(matches) if isinstance(matches, list) else 0,
+    }
+
+
+def summarize_topology_routing_paths_for_llm(value: dict[str, Any]) -> dict[str, Any]:
+    routing_paths = value.get("routing_paths")
+    summarized_paths = []
+    if isinstance(routing_paths, list):
+        for path in routing_paths[:8]:
+            if not isinstance(path, dict):
+                continue
+            lines = path.get("lines")
+            summarized_paths.append(
+                {
+                    "environment": path.get("environment"),
+                    "snapshot_name": path.get("snapshot_name"),
+                    "section": path.get("section"),
+                    "lines": summarize_topology_lines(lines),
+                }
+            )
+    return {
+        "source": value.get("source"),
+        "service": value.get("service"),
+        "aliases": value.get("aliases"),
+        "routing_paths": summarized_paths,
+        "path_count": len(routing_paths) if isinstance(routing_paths, list) else 0,
+    }
+
+
+def summarize_topology_snapshots_for_llm(value: dict[str, Any]) -> dict[str, Any]:
+    snapshots = value.get("snapshots")
+    summarized_snapshots = []
+    if isinstance(snapshots, list):
+        for snapshot in snapshots[:6]:
+            if not isinstance(snapshot, dict):
+                continue
+            content = str(snapshot.get("content") or "")
+            summarized_snapshots.append(
+                {
+                    "environment": snapshot.get("environment"),
+                    "snapshot_name": snapshot.get("snapshot_name"),
+                    "collected_date": snapshot.get("collected_date"),
+                    "sections": snapshot.get("sections"),
+                    "key_facts": extract_topology_key_facts(content),
+                }
+            )
+    return {
+        "source": value.get("source"),
+        "environment": value.get("environment"),
+        "detail": value.get("detail"),
+        "snapshots": summarized_snapshots,
+        "snapshot_count": len(snapshots) if isinstance(snapshots, list) else 0,
+    }
+
+
+def summarize_topology_dependency_map_for_llm(value: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "source": value.get("source"),
+        "service": value.get("service"),
+        "aliases": value.get("aliases"),
+        "dependencies": compact_payload_for_llm(
+            value.get("dependencies") or value.get("dependency_map") or [],
+            char_budget=2500,
+            max_depth=3,
+            list_limit=6,
+            string_limit=600,
+        ),
+    }
+
+
+def summarize_topology_lines(value: Any) -> list[str]:
+    if not isinstance(value, list):
+        return []
+    return [
+        truncate_text(str(line), limit=700)
+        for line in value[:12]
+        if str(line).strip()
+    ]
+
+
+def extract_topology_key_facts(content: str) -> list[str]:
+    if not content:
+        return []
+    lines = [line.strip() for line in content.splitlines() if line.strip()]
+    facts = []
+    for line in lines:
+        normalized = line.lower()
+        if any(keyword in normalized for keyword in TOPOLOGY_FACT_KEYWORDS):
+            facts.append(truncate_text(line, limit=900))
+        if len(facts) >= 12:
+            break
+    if facts:
+        return facts
+    return [truncate_text(content, limit=1800)]
 
 
 def summarize_collection_for_llm(value: Any) -> Any:

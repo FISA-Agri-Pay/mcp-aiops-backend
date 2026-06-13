@@ -12,6 +12,7 @@ from aiops_platform.alertmanager_agent.schemas import (
 from aiops_platform.alertmanager_agent.service import (
     AlertmanagerSreAgentService,
     build_notification_idempotency_key,
+    build_rca_llm_snapshot_payload,
 )
 from aiops_platform.core.config import Settings
 from aiops_platform.infra_rca.schemas import AlertmanagerWebhookRequest
@@ -506,6 +507,52 @@ def test_analysis_notification_idempotency_key_includes_llm_run_id() -> None:
         recipient="#aiops-alerts",
         stage="sre_collection",
     )
+
+
+def test_rca_llm_snapshot_preserves_topology_facts() -> None:
+    topology_tool = resolve_registered_tool(
+        server_name="infraops-mcp",
+        tool_name="search_topology_knowledge",
+    )
+    topology_result = build_tool_result(
+        tool=topology_tool,
+        request_payload={"query": "service-payment api-payment.dev6.fisa"},
+        response_payload={
+            "source": "topology_knowledge",
+            "query": "service-payment api-payment.dev6.fisa",
+            "matches": [
+                {
+                    "environment": "onprem",
+                    "snapshot_name": (
+                        "aws-onprem-service-payment-routing-topology-snapshot-2026-06-13.md"
+                    ),
+                    "section": "15. Recommended Knowledge Updates",
+                    "score": 6,
+                    "excerpt": (
+                        "`api-payment.dev6.fisa` currently resolves to on-prem "
+                        "MetalLB `10.30.2.100`, not visible CloudFront. "
+                        "`service-payment` is an on-prem `kkpp` workload; it is "
+                        "not an AWS EKS workload in `kkpp-eks`."
+                    ),
+                }
+            ],
+        },
+        call_status=McpToolCallStatus.SUCCESS,
+        execution_policy=McpExecutionPolicy.ALLOWED,
+    )
+    result = AlertmanagerSrePlanResult(
+        status="COLLECTED",
+        executed_tools=[topology_result],
+        context_bundle={"summary_for_llm": {}, "cross_domain": {}},
+    )
+
+    snapshot_payload = build_rca_llm_snapshot_payload(result)
+    serialized = json.dumps(snapshot_payload, ensure_ascii=False)
+
+    assert "aws-onprem-service-payment-routing-topology-snapshot-2026-06-13.md" in serialized
+    assert "api-payment.dev6.fisa" in serialized
+    assert "10.30.2.100" in serialized
+    assert "not visible CloudFront" in serialized
 
 
 def test_alertmanager_sre_agent_execute_collects_read_only_evidence_bundle() -> None:
