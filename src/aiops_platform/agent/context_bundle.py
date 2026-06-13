@@ -615,7 +615,8 @@ def evidence_payload_for_boundary(
     )
     if boundary != "k8s_service" or result.tool_name not in KUBERNETES_TOOLS:
         return payload
-    return filter_kubernetes_payload_to_workloads(payload, target_workloads)
+    filtered_payload = filter_kubernetes_payload_to_workloads(payload, target_workloads)
+    return summarize_kubernetes_health_payload(filtered_payload)
 
 
 def extract_target_workloads(
@@ -663,6 +664,95 @@ def filter_kubernetes_payload_to_workloads(payload: Any, workloads: set[str]) ->
             item for item in payload if kubernetes_item_matches_workload(item, workloads)
         ]
     return payload
+
+
+def summarize_kubernetes_health_payload(payload: Any) -> Any:
+    if isinstance(payload, dict):
+        summarized_payload = dict(payload)
+        items = payload.get("items")
+        if isinstance(items, list):
+            summarized_payload["items"] = [
+                summarize_kubernetes_health_item(item) for item in items
+            ]
+        return summarized_payload
+    if isinstance(payload, list):
+        return [summarize_kubernetes_health_item(item) for item in payload]
+    return payload
+
+
+def summarize_kubernetes_health_item(item: Any) -> Any:
+    if not isinstance(item, dict):
+        return item
+    metadata = item.get("metadata") if isinstance(item.get("metadata"), dict) else {}
+    status = item.get("status") if isinstance(item.get("status"), dict) else {}
+    involved_object = item.get("involvedObject") or item.get("regarding")
+
+    summary: dict[str, Any] = {
+        "name": metadata.get("name"),
+        "labels": metadata.get("labels"),
+        "phase": status.get("phase"),
+        "ready_replicas": status.get("readyReplicas"),
+        "available_replicas": status.get("availableReplicas"),
+        "updated_replicas": status.get("updatedReplicas"),
+        "unavailable_replicas": status.get("unavailableReplicas"),
+        "conditions": summarize_kubernetes_conditions(status.get("conditions")),
+        "container_statuses": summarize_container_statuses(
+            status.get("containerStatuses")
+        ),
+    }
+    if isinstance(involved_object, dict):
+        summary["involved_object"] = {
+            "kind": involved_object.get("kind"),
+            "name": involved_object.get("name"),
+        }
+    for key in ("type", "reason", "message", "note"):
+        value = item.get(key)
+        if value is not None:
+            summary[key] = value
+    return {key: value for key, value in summary.items() if value not in (None, [], {})}
+
+
+def summarize_kubernetes_conditions(conditions: Any) -> list[dict[str, Any]]:
+    if not isinstance(conditions, list):
+        return []
+    return [
+        {
+            key: condition.get(key)
+            for key in ("type", "status", "reason", "message")
+            if condition.get(key) is not None
+        }
+        for condition in conditions
+        if isinstance(condition, dict)
+    ]
+
+
+def summarize_container_statuses(container_statuses: Any) -> list[dict[str, Any]]:
+    if not isinstance(container_statuses, list):
+        return []
+    summaries = []
+    for status in container_statuses:
+        if not isinstance(status, dict):
+            continue
+        state = status.get("state") if isinstance(status.get("state"), dict) else {}
+        waiting = state.get("waiting") if isinstance(state.get("waiting"), dict) else {}
+        terminated = (
+            state.get("terminated") if isinstance(state.get("terminated"), dict) else {}
+        )
+        summaries.append(
+            {
+                key: value
+                for key, value in {
+                    "name": status.get("name"),
+                    "ready": status.get("ready"),
+                    "restart_count": status.get("restartCount"),
+                    "waiting_reason": waiting.get("reason"),
+                    "terminated_reason": terminated.get("reason"),
+                    "terminated_exit_code": terminated.get("exitCode"),
+                }.items()
+                if value is not None
+            }
+        )
+    return summaries
 
 
 def kubernetes_item_matches_workload(item: Any, workloads: set[str]) -> bool:

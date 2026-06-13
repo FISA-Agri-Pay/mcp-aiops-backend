@@ -982,6 +982,11 @@ def test_incident_context_bundle_filters_k8s_boundary_to_target_workload() -> No
                                 "name": "service-payment-864786cbb9-c7pnh",
                                 "labels": {"app": "service-payment"},
                             },
+                            "spec": {
+                                "tolerations": [
+                                    {"key": "node.kubernetes.io/not-ready"}
+                                ]
+                            },
                             "status": {
                                 "phase": "Running",
                                 "conditions": [{"type": "Ready", "status": "True"}],
