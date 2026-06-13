@@ -960,6 +960,8 @@ def test_incident_context_bundle_filters_k8s_boundary_to_target_workload() -> No
             make_sre_tool_result(
                 "get_k8s_pods",
                 {
+                    "source": "onprem",
+                    "namespace": "kkpp",
                     "items": [
                         {
                             "metadata": {
@@ -992,7 +994,22 @@ def test_incident_context_bundle_filters_k8s_boundary_to_target_workload() -> No
                                 "conditions": [{"type": "Ready", "status": "True"}],
                             },
                         },
-                    ]
+                    ],
+                    "raw": {
+                        "items": [
+                            {
+                                "metadata": {
+                                    "name": "service-payment-864786cbb9-c7pnh",
+                                    "labels": {"app": "service-payment"},
+                                },
+                                "spec": {
+                                    "tolerations": [
+                                        {"key": "node.kubernetes.io/not-ready"}
+                                    ]
+                                },
+                            }
+                        ]
+                    },
                 },
             ),
             make_sre_tool_result(

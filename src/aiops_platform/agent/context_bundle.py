@@ -668,13 +668,19 @@ def filter_kubernetes_payload_to_workloads(payload: Any, workloads: set[str]) ->
 
 def summarize_kubernetes_health_payload(payload: Any) -> Any:
     if isinstance(payload, dict):
-        summarized_payload = dict(payload)
         items = payload.get("items")
         if isinstance(items, list):
-            summarized_payload["items"] = [
-                summarize_kubernetes_health_item(item) for item in items
-            ]
-        return summarized_payload
+            return {
+                "source": payload.get("source"),
+                "namespace": payload.get("namespace"),
+                "item_count": len(items),
+                "items": [summarize_kubernetes_health_item(item) for item in items],
+            }
+        return {
+            key: payload.get(key)
+            for key in ("source", "namespace", "status", "message", "error")
+            if payload.get(key) is not None
+        }
     if isinstance(payload, list):
         return [summarize_kubernetes_health_item(item) for item in payload]
     return payload
