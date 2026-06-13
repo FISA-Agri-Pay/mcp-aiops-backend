@@ -179,6 +179,41 @@ DEGRADED_PATTERNS = (
     re.compile(r"\b5\d\d\b"),
     re.compile(r"\b5xx\b"),
 )
+BOUNDARY_DEGRADED_PATTERNS = {
+    "dns": (
+        re.compile(r"\bservfail\b"),
+        re.compile(r"\bnxdomain\b"),
+        re.compile(r"\btemporary failure in name resolution\b"),
+        re.compile(r"\bno such host\b"),
+        re.compile(r"\bcould not resolve\b"),
+        re.compile(r"\bdns\b.{0,80}\b(fail|error|timeout)\b"),
+        re.compile(r"\blookup\b.{0,80}\b(fail|error|timeout)\b"),
+    ),
+    "onprem_metallb": (
+        re.compile(r"\bmetallb\b.{0,80}\b(fail|error|timeout|unavailable|down)\b"),
+        re.compile(r"\bspeaker\b.{0,80}\b(fail|error|timeout|unavailable|down)\b"),
+        re.compile(r"\barp\b.{0,80}\b(fail|timeout|unreachable)\b"),
+        re.compile(r"\b10\.30\.2\.100\b.{0,80}\b(timeout|unreachable|no route)\b"),
+        re.compile(r"\bno route to host\b"),
+    ),
+    "onprem_ingress": (
+        re.compile(r"\bingress\b.{0,80}\b(5xx|500|502|503|504|error|timeout|fail)\b"),
+        re.compile(r"\bupstream\b.{0,80}\b(unavailable|timeout|timed out|connect.*failed)\b"),
+        re.compile(r"\bdefault backend\b"),
+        re.compile(r"\bno ingress rule\b"),
+    ),
+    "k8s_service": (
+        re.compile(r"\bno endpoints\b"),
+        re.compile(r"\bempty endpoints\b"),
+        re.compile(r"\bendpoint(slice)?\b.{0,80}\b(empty|missing|not ready)\b"),
+        re.compile(r"\bselector mismatch\b"),
+        re.compile(r"\bnot[\s_-]*ready\b"),
+        re.compile(r"\bunavailable\b"),
+        re.compile(r"\bcrashloop(backoff)?\b"),
+        re.compile(r"\bimagepullbackoff\b"),
+        re.compile(r"\boomkilled\b"),
+    ),
+}
 HEALTHY_PATTERNS = (
     re.compile(r"\bhealthy\b"),
     re.compile(r"\brunning\b"),
@@ -470,7 +505,16 @@ def build_failure_boundary_candidates(
             for result in tool_results
             if result.tool_name in BOUNDARY_TOOL_MAP.get(boundary, set())
         ]
-        status, confidence, reason = assess_boundary_evidence(evidence_results)
+        status, confidence, reason = assess_boundary_evidence(
+            boundary=boundary,
+            evidence_results=evidence_results,
+        )
+        context_evidence_tools = sorted(
+            {result.tool_name for result in evidence_results if is_topology_tool(result)}
+        )
+        health_evidence_tools = sorted(
+            {result.tool_name for result in evidence_results if not is_topology_tool(result)}
+        )
         candidates.append(
             {
                 "boundary": boundary,
@@ -478,6 +522,8 @@ def build_failure_boundary_candidates(
                 "confidence": confidence,
                 "expected_signal": BOUNDARY_EXPECTED_SIGNALS.get(boundary),
                 "evidence_tools": sorted({result.tool_name for result in evidence_results}),
+                "context_evidence_tools": context_evidence_tools,
+                "health_evidence_tools": health_evidence_tools,
                 "evidence_count": len(evidence_results),
                 "reason": reason,
             }
@@ -486,12 +532,38 @@ def build_failure_boundary_candidates(
 
 
 def assess_boundary_evidence(
+    *,
+    boundary: str,
     evidence_results: list[AgentToolExecutionResult],
 ) -> tuple[str, str, str]:
     if not evidence_results:
         return "unknown", "low", "No direct evidence tool result is available for this boundary."
-    if any(enum_value(result.call_status) != "SUCCESS" for result in evidence_results):
+
+    context_results = [result for result in evidence_results if is_topology_tool(result)]
+    health_results = [result for result in evidence_results if not is_topology_tool(result)]
+    if health_results:
+        return assess_health_evidence(boundary=boundary, evidence_results=health_results)
+
+    if any(enum_value(result.call_status) != "SUCCESS" for result in context_results):
         return "unknown", "medium", "At least one evidence tool did not complete successfully."
+
+    if context_results:
+        return (
+            "known_path",
+            "low",
+            "Topology knowledge describes this boundary/path; "
+            "no live health evidence was evaluated.",
+        )
+    return "unknown", "low", "Evidence exists but no live health signal is available."
+
+
+def assess_health_evidence(
+    *,
+    boundary: str,
+    evidence_results: list[AgentToolExecutionResult],
+) -> tuple[str, str, str]:
+    if any(enum_value(result.call_status) != "SUCCESS" for result in evidence_results):
+        return "unknown", "medium", "At least one live evidence tool did not complete successfully."
 
     evidence_text = " ".join(
         stringify_evidence_payload(
@@ -504,12 +576,20 @@ def assess_boundary_evidence(
         )
         for result in evidence_results
     )
-    if contains_degraded_signal(evidence_text):
-        return "degraded", "medium", "Evidence payload contains degraded/error markers."
+    if contains_degraded_signal(evidence_text, boundary=boundary):
+        return (
+            "degraded",
+            "medium",
+            "Live evidence payload contains boundary-specific degraded/error markers.",
+        )
     if contains_healthy_signal(evidence_text):
         confidence = "high" if len(evidence_results) >= 2 else "medium"
-        return "healthy", confidence, "Evidence payload contains healthy/ready markers."
-    return "unknown", "low", "Evidence exists but does not contain clear health markers."
+        return "healthy", confidence, "Live evidence payload contains healthy/ready markers."
+    return "unknown", "low", "Live evidence exists but does not contain clear health markers."
+
+
+def is_topology_tool(result: AgentToolExecutionResult) -> bool:
+    return result.tool_name in TOPOLOGY_TOOLS
 
 
 def stringify_evidence_payload(payload: Any) -> str:
@@ -531,7 +611,10 @@ def empty_payload_if_none(payload: Any) -> Any:
     return payload
 
 
-def contains_degraded_signal(evidence_text: str) -> bool:
+def contains_degraded_signal(evidence_text: str, *, boundary: str | None = None) -> bool:
+    boundary_patterns = BOUNDARY_DEGRADED_PATTERNS.get(boundary or "")
+    if boundary_patterns is not None:
+        return any(pattern.search(evidence_text) for pattern in boundary_patterns)
     return any(pattern.search(evidence_text) for pattern in DEGRADED_PATTERNS)
 
 

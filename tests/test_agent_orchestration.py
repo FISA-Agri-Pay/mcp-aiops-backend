@@ -838,7 +838,10 @@ def test_incident_context_bundle_uses_direct_onprem_payment_path_from_topology()
                                 "10.30.2.100, the known on-prem MetalLB "
                                 "LoadBalancer IP. service-payment is an on-prem "
                                 "kkpp workload, not an AWS EKS workload. "
-                                "CloudFront is not the current direct path."
+                                "CloudFront is not the current direct path. "
+                                "Known risks mention tunnel 2 DOWN and a previous "
+                                "route table collection failed, but this is topology "
+                                "context rather than live health evidence."
                             ),
                         }
                     ]
@@ -871,6 +874,56 @@ def test_incident_context_bundle_uses_direct_onprem_payment_path_from_topology()
         "k8s_service",
         "pod_application",
     ]
+    boundaries = {
+        candidate["boundary"]: candidate
+        for candidate in bundle["failure_boundary_candidates"]
+    }
+    assert boundaries["dns"]["status"] == "known_path"
+    assert boundaries["onprem_metallb"]["status"] == "known_path"
+    assert boundaries["onprem_ingress"]["status"] == "known_path"
+    assert boundaries["dns"]["health_evidence_tools"] == []
+    assert boundaries["onprem_metallb"]["health_evidence_tools"] == []
+
+
+def test_incident_context_bundle_ignores_generic_failure_for_dns_boundary() -> None:
+    bundle = build_incident_context_bundle(
+        chat_type="sre_copilot",
+        message="Current state inspection for onprem kkpp service-payment",
+        capability="edge_routing_analysis",
+        tool_results=[
+            make_sre_tool_result(
+                "search_topology_knowledge",
+                {
+                    "matches": [
+                        {
+                            "excerpt": (
+                                "api-payment.dev6.fisa resolves to 10.30.2.100. "
+                                "service-payment is an on-prem kkpp workload, "
+                                "not an AWS EKS workload. CloudFront is not the "
+                                "current direct path."
+                            )
+                        }
+                    ]
+                },
+            ),
+            make_sre_tool_result(
+                "query_multi_cluster_loki",
+                {
+                    "message": (
+                        "Synthetic current-state failure analysis completed; "
+                        "resolver checks were quiet and unrelated generic "
+                        "failure text should not mark DNS as degraded."
+                    )
+                },
+            ),
+        ],
+    )
+
+    boundaries = {
+        candidate["boundary"]: candidate
+        for candidate in bundle["failure_boundary_candidates"]
+    }
+    assert boundaries["dns"]["status"] != "degraded"
     assert [
         candidate["boundary"]
         for candidate in bundle["failure_boundary_candidates"]
