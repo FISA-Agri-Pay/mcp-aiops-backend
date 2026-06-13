@@ -936,6 +936,115 @@ def test_incident_context_bundle_ignores_generic_failure_for_dns_boundary() -> N
     ]
 
 
+def test_incident_context_bundle_filters_k8s_boundary_to_target_workload() -> None:
+    bundle = build_incident_context_bundle(
+        chat_type="sre_copilot",
+        message="Current state inspection cluster=onprem namespace=kkpp service=service-payment",
+        capability="edge_routing_analysis",
+        tool_results=[
+            make_sre_tool_result(
+                "search_topology_knowledge",
+                {
+                    "matches": [
+                        {
+                            "excerpt": (
+                                "api-payment.dev6.fisa resolves to 10.30.2.100. "
+                                "service-payment is an on-prem kkpp workload, "
+                                "not an AWS EKS workload. CloudFront is not the "
+                                "current direct path."
+                            )
+                        }
+                    ]
+                },
+            ),
+            make_sre_tool_result(
+                "get_k8s_pods",
+                {
+                    "items": [
+                        {
+                            "metadata": {
+                                "name": "curl-core-l7-test",
+                                "labels": {"run": "curl-core-l7-test"},
+                            },
+                            "status": {
+                                "phase": "Succeeded",
+                                "conditions": [
+                                    {
+                                        "type": "Ready",
+                                        "status": "False",
+                                        "reason": "PodCompleted",
+                                    }
+                                ],
+                            },
+                        },
+                        {
+                            "metadata": {
+                                "name": "service-payment-864786cbb9-c7pnh",
+                                "labels": {"app": "service-payment"},
+                            },
+                            "status": {
+                                "phase": "Running",
+                                "conditions": [{"type": "Ready", "status": "True"}],
+                            },
+                        },
+                    ]
+                },
+            ),
+            make_sre_tool_result(
+                "get_k8s_events",
+                {
+                    "items": [
+                        {
+                            "type": "Warning",
+                            "reason": "NotReady",
+                            "involvedObject": {"name": "curl-core-l7-test"},
+                            "message": "Unrelated test pod was not ready.",
+                        },
+                        {
+                            "type": "Normal",
+                            "reason": "Started",
+                            "involvedObject": {
+                                "name": "service-payment-864786cbb9-c7pnh"
+                            },
+                            "message": "Started container service-payment.",
+                        },
+                    ]
+                },
+            ),
+            make_sre_tool_result(
+                "get_k8s_deployments",
+                {
+                    "items": [
+                        {
+                            "metadata": {
+                                "name": "service-payment",
+                                "labels": {"app": "service-payment"},
+                            },
+                            "status": {
+                                "readyReplicas": 4,
+                                "availableReplicas": 4,
+                                "conditions": [
+                                    {
+                                        "type": "Available",
+                                        "status": "True",
+                                        "reason": "MinimumReplicasAvailable",
+                                    }
+                                ],
+                            },
+                        }
+                    ]
+                },
+            ),
+        ],
+    )
+
+    boundaries = {
+        candidate["boundary"]: candidate
+        for candidate in bundle["failure_boundary_candidates"]
+    }
+    assert boundaries["k8s_service"]["status"] == "healthy"
+
+
 def test_incident_context_bundle_avoids_substring_health_matches() -> None:
     bundle = build_incident_context_bundle(
         chat_type="sre_copilot",

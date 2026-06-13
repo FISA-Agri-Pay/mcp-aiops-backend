@@ -306,9 +306,11 @@ def build_incident_context_bundle(
         capability=capability,
         tool_results=tool_results,
     )
+    target_workloads = extract_target_workloads(message=message, tool_results=tool_results)
     boundary_candidates = build_failure_boundary_candidates(
         scenario=scenario,
         tool_results=tool_results,
+        target_workloads=target_workloads,
     )
     scenario_definition = CROSS_DOMAIN_SCENARIOS[scenario]
     bundle["cross_domain"] = {
@@ -497,6 +499,7 @@ def build_failure_boundary_candidates(
     *,
     scenario: str,
     tool_results: list[AgentToolExecutionResult],
+    target_workloads: set[str] | None = None,
 ) -> list[dict[str, Any]]:
     candidates = []
     for boundary in CROSS_DOMAIN_SCENARIOS[scenario]["path"]:
@@ -508,6 +511,7 @@ def build_failure_boundary_candidates(
         status, confidence, reason = assess_boundary_evidence(
             boundary=boundary,
             evidence_results=evidence_results,
+            target_workloads=target_workloads or set(),
         )
         context_evidence_tools = sorted(
             {result.tool_name for result in evidence_results if is_topology_tool(result)}
@@ -535,6 +539,7 @@ def assess_boundary_evidence(
     *,
     boundary: str,
     evidence_results: list[AgentToolExecutionResult],
+    target_workloads: set[str],
 ) -> tuple[str, str, str]:
     if not evidence_results:
         return "unknown", "low", "No direct evidence tool result is available for this boundary."
@@ -542,7 +547,11 @@ def assess_boundary_evidence(
     context_results = [result for result in evidence_results if is_topology_tool(result)]
     health_results = [result for result in evidence_results if not is_topology_tool(result)]
     if health_results:
-        return assess_health_evidence(boundary=boundary, evidence_results=health_results)
+        return assess_health_evidence(
+            boundary=boundary,
+            evidence_results=health_results,
+            target_workloads=target_workloads,
+        )
 
     if any(enum_value(result.call_status) != "SUCCESS" for result in context_results):
         return "unknown", "medium", "At least one evidence tool did not complete successfully."
@@ -561,17 +570,17 @@ def assess_health_evidence(
     *,
     boundary: str,
     evidence_results: list[AgentToolExecutionResult],
+    target_workloads: set[str],
 ) -> tuple[str, str, str]:
     if any(enum_value(result.call_status) != "SUCCESS" for result in evidence_results):
         return "unknown", "medium", "At least one live evidence tool did not complete successfully."
 
     evidence_text = " ".join(
         stringify_evidence_payload(
-            empty_payload_if_none(
-                prefer_masked_payload(
-                    result.masked_response_payload,
-                    result.response_payload,
-                )
+            evidence_payload_for_boundary(
+                result=result,
+                boundary=boundary,
+                target_workloads=target_workloads,
             )
         )
         for result in evidence_results
@@ -590,6 +599,111 @@ def assess_health_evidence(
 
 def is_topology_tool(result: AgentToolExecutionResult) -> bool:
     return result.tool_name in TOPOLOGY_TOOLS
+
+
+def evidence_payload_for_boundary(
+    *,
+    result: AgentToolExecutionResult,
+    boundary: str,
+    target_workloads: set[str],
+) -> Any:
+    payload = empty_payload_if_none(
+        prefer_masked_payload(
+            result.masked_response_payload,
+            result.response_payload,
+        )
+    )
+    if boundary != "k8s_service" or result.tool_name not in KUBERNETES_TOOLS:
+        return payload
+    return filter_kubernetes_payload_to_workloads(payload, target_workloads)
+
+
+def extract_target_workloads(
+    *,
+    message: str,
+    tool_results: list[AgentToolExecutionResult],
+) -> set[str]:
+    workloads: set[str] = set()
+    for pattern in (
+        r"\b(?:service|service_name|deployment|workload|app)[=:]\s*([a-z0-9][a-z0-9-]{1,80})\b",
+        r"\b(service-[a-z0-9-]{1,80})\b",
+    ):
+        workloads.update(match.group(1) for match in re.finditer(pattern, message.lower()))
+
+    for result in tool_results:
+        request_payload = prefer_masked_payload(
+            result.masked_request_payload,
+            result.request_payload,
+        )
+        if isinstance(request_payload, dict):
+            for key in ("service", "service_name", "deployment_name", "workload", "app"):
+                value = request_payload.get(key)
+                if isinstance(value, str) and is_workload_like(value):
+                    workloads.add(value.lower())
+    return workloads
+
+
+def is_workload_like(value: str) -> bool:
+    return bool(re.fullmatch(r"[a-z0-9][a-z0-9-]{1,80}", value.lower()))
+
+
+def filter_kubernetes_payload_to_workloads(payload: Any, workloads: set[str]) -> Any:
+    if not workloads:
+        return payload
+    if isinstance(payload, dict):
+        filtered_payload = dict(payload)
+        items = payload.get("items")
+        if isinstance(items, list):
+            filtered_payload["items"] = [
+                item for item in items if kubernetes_item_matches_workload(item, workloads)
+            ]
+        return filtered_payload
+    if isinstance(payload, list):
+        return [
+            item for item in payload if kubernetes_item_matches_workload(item, workloads)
+        ]
+    return payload
+
+
+def kubernetes_item_matches_workload(item: Any, workloads: set[str]) -> bool:
+    if not isinstance(item, dict):
+        return False
+    metadata = item.get("metadata") if isinstance(item.get("metadata"), dict) else {}
+    searchable_values: list[str] = []
+
+    name = metadata.get("name")
+    if isinstance(name, str):
+        searchable_values.append(name)
+
+    labels = metadata.get("labels")
+    if isinstance(labels, dict):
+        for key in ("app", "app.kubernetes.io/name", "deployment", "service", "workload"):
+            value = labels.get(key)
+            if isinstance(value, str):
+                searchable_values.append(value)
+
+    owner_references = metadata.get("ownerReferences")
+    if isinstance(owner_references, list):
+        searchable_values.extend(
+            owner.get("name", "")
+            for owner in owner_references
+            if isinstance(owner, dict)
+        )
+
+    for object_key in ("involvedObject", "regarding"):
+        involved_object = item.get(object_key)
+        if isinstance(involved_object, dict):
+            object_name = involved_object.get("name")
+            if isinstance(object_name, str):
+                searchable_values.append(object_name)
+
+    for key in ("message", "note", "reason"):
+        value = item.get(key)
+        if isinstance(value, str):
+            searchable_values.append(value)
+
+    haystack = " ".join(searchable_values).lower()
+    return any(workload in haystack for workload in workloads)
 
 
 def stringify_evidence_payload(payload: Any) -> str:
