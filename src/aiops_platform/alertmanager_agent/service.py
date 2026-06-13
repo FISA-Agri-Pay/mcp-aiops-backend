@@ -15,7 +15,7 @@ from aiops_platform.agent.context_bundle import (
 )
 from aiops_platform.agent.dispatcher import McpToolDispatcher, resolve_registered_tool
 from aiops_platform.agent.planner import RuleBasedAgentPlanner
-from aiops_platform.agent.schemas import AgentToolPlan
+from aiops_platform.agent.schemas import AgentToolExecutionResult, AgentToolPlan
 from aiops_platform.alertmanager_agent.schemas import (
     AlertmanagerIncidentWindow,
     AlertmanagerSreAlertContext,
@@ -78,6 +78,31 @@ NEXT_INVESTIGATION_PRIORITY = (
     "DB/HikariCP",
     "downstream dependencies",
 )
+APPLICATION_SIGNAL_TOOLS = {
+    "logs": {"query_multi_cluster_loki", "query_loki", "get_pod_logs"},
+    "metrics": {"query_multi_cluster_prometheus", "query_prometheus"},
+    "traces": {
+        "get_service_trace_summary",
+        "search_traces",
+        "get_trace_by_id",
+        "get_trace_error_spans",
+    },
+    "deployment_changes": {
+        "get_recent_deployments",
+        "get_rollout_status",
+        "get_argocd_application_status",
+        "get_current_image_tags",
+    },
+    "aws": {"get_sqs_queue_attributes", "get_sqs_dlq_attributes"},
+}
+APPLICATION_CANDIDATE_LABELS = {
+    "db_hikaricp": "DB/HikariCP connection pool issue",
+    "sqs_publish": "SQS publish failure",
+    "sqs_consume": "SQS consume/DLQ backlog issue",
+    "application_error": "Application runtime error or HTTP 5xx",
+    "trace_latency": "Downstream latency or trace error",
+    "deployment_regression": "Recent deployment regression",
+}
 
 SRE_INTENT_BY_ALERT_NAME: dict[str, str] = {
     "checkout500high": "checkout_500",
@@ -773,8 +798,16 @@ def build_rca_llm_incident_payload(result: AlertmanagerSrePlanResult) -> dict[st
 
 def build_rca_llm_snapshot_payload(result: AlertmanagerSrePlanResult) -> dict[str, Any]:
     bundle = result.context_bundle or {}
+    application_signals = build_application_signal_summary(result)
+    root_cause_candidates = build_application_root_cause_candidates(
+        result,
+        application_signals=application_signals,
+    )
     payload = {
-        "analysis_contract": build_rca_analysis_contract(result),
+        "analysis_contract": build_rca_analysis_contract(
+            result,
+            root_cause_candidates=root_cause_candidates,
+        ),
         "context_summary": compact_payload_for_llm(
             bundle.get("summary_for_llm"),
             char_budget=4000,
@@ -787,6 +820,20 @@ def build_rca_llm_snapshot_payload(result: AlertmanagerSrePlanResult) -> dict[st
             bundle.get("failure_boundary_candidates"),
             limit=8,
         ),
+        "application_signals": compact_payload_for_llm(
+            application_signals,
+            char_budget=6000,
+            max_depth=5,
+            list_limit=8,
+            string_limit=800,
+        ),
+        "root_cause_candidates": compact_payload_for_llm(
+            root_cause_candidates,
+            char_budget=5000,
+            max_depth=4,
+            list_limit=8,
+            string_limit=800,
+        ),
         "topology_facts": extract_topology_facts_for_llm(result),
         "rca_snapshot": summarize_rca_snapshot_for_llm(result.rca_snapshot),
     }
@@ -794,7 +841,7 @@ def build_rca_llm_snapshot_payload(result: AlertmanagerSrePlanResult) -> dict[st
         payload,
         char_budget=LLM_SNAPSHOT_CHAR_BUDGET,
         max_depth=6,
-        list_limit=8,
+        list_limit=12,
         string_limit=1600,
     )
 
@@ -833,10 +880,19 @@ def build_rca_llm_evidence(result: AlertmanagerSrePlanResult) -> list[dict[str, 
     )
 
 
-def build_rca_analysis_contract(result: AlertmanagerSrePlanResult) -> dict[str, Any]:
+def build_rca_analysis_contract(
+    result: AlertmanagerSrePlanResult,
+    *,
+    root_cause_candidates: list[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
     boundaries = trim_boundary_candidates(
         (result.context_bundle or {}).get("failure_boundary_candidates"),
         limit=12,
+    )
+    resolved_root_cause_candidates = (
+        root_cause_candidates
+        if root_cause_candidates is not None
+        else build_application_root_cause_candidates(result)
     )
     healthy_boundaries = boundary_names_by_status(boundaries, "healthy")
     degraded_boundaries = boundary_names_by_status(boundaries, "degraded")
@@ -852,6 +908,7 @@ def build_rca_analysis_contract(result: AlertmanagerSrePlanResult) -> dict[str, 
         "ruled_out_boundaries": healthy_boundaries,
         "candidate_boundaries": degraded_boundaries,
         "unknown_boundaries": unknown_boundaries,
+        "application_root_cause_candidates": resolved_root_cause_candidates,
         "next_investigation_priority": list(NEXT_INVESTIGATION_PRIORITY),
         "current_state_verdict": build_current_state_verdict(
             synthetic_alert=synthetic_alert,
@@ -864,6 +921,10 @@ def build_rca_analysis_contract(result: AlertmanagerSrePlanResult) -> dict[str, 
             "do not list healthy boundaries as likely root-cause candidates",
             "likely causes require degraded or failed live evidence",
             "unknown boundaries are data gaps, not confirmed root causes",
+            (
+                "if routing boundaries are healthy and application_root_cause_candidates "
+                "exist, use those candidates as the primary cause section"
+            ),
             (
                 "for synthetic alerts, state that this is a current-state "
                 "inspection, not a confirmed outage"
@@ -879,6 +940,412 @@ def build_rca_analysis_contract(result: AlertmanagerSrePlanResult) -> dict[str, 
             "do not claim destructive remediation was executed",
         ],
     }
+
+
+def build_application_signal_summary(
+    result: AlertmanagerSrePlanResult,
+) -> dict[str, Any]:
+    sections: dict[str, dict[str, Any]] = {
+        section: {
+            "status": "unavailable",
+            "tools": [],
+            "failed_tools": [],
+            "findings": [],
+        }
+        for section in APPLICATION_SIGNAL_TOOLS
+    }
+
+    for tool_result in result.executed_tools:
+        section = application_signal_section(tool_result.tool_name)
+        if section is None:
+            continue
+        section_summary = sections[section]
+        section_summary["tools"].append(tool_result.tool_name)
+        if enum_value(tool_result.call_status) != "SUCCESS":
+            section_summary["failed_tools"].append(
+                {
+                    "tool_name": tool_result.tool_name,
+                    "error_message": truncate_text(
+                        tool_result.error_message or "tool execution failed",
+                        limit=300,
+                    ),
+                }
+            )
+            continue
+
+        payload = select_tool_response_payload(tool_result)
+        evidence_text = stringify_signal_payload(payload)
+        findings = detect_application_findings(
+            section=section,
+            tool_name=tool_result.tool_name,
+            evidence_text=evidence_text,
+        )
+        section_summary["findings"].extend(findings)
+
+    for section_summary in sections.values():
+        section_summary["tools"] = sorted(set(section_summary["tools"]))
+        section_summary["findings"] = dedupe_application_findings(
+            section_summary["findings"]
+        )
+        if section_summary["findings"] or section_summary["failed_tools"]:
+            section_summary["status"] = "degraded"
+        elif section_summary["tools"]:
+            section_summary["status"] = "unknown"
+
+    degraded_sections = [
+        section
+        for section, summary in sections.items()
+        if summary["status"] == "degraded"
+    ]
+    available_sections = [
+        section
+        for section, summary in sections.items()
+        if summary["status"] != "unavailable"
+    ]
+    return {
+        "overall_status": "degraded" if degraded_sections else "unknown",
+        "available_sections": available_sections,
+        "degraded_sections": degraded_sections,
+        "sections": sections,
+    }
+
+
+def application_signal_section(tool_name: str) -> str | None:
+    for section, tool_names in APPLICATION_SIGNAL_TOOLS.items():
+        if tool_name in tool_names:
+            return section
+    return None
+
+
+def detect_application_findings(
+    *,
+    section: str,
+    tool_name: str,
+    evidence_text: str,
+) -> list[dict[str, Any]]:
+    findings = []
+    text = evidence_text.lower()
+    if not text:
+        return findings
+
+    if has_any(text, ("hikari", "hikaripool", "connection pool", "jdbc", "postgres")) and has_any(
+        text,
+        (
+            "timeout",
+            "connection is not available",
+            "too many connections",
+            "refused",
+            "exhaust",
+            "pending",
+            "failed",
+            "error",
+        ),
+    ):
+        findings.append(
+            build_application_finding(
+                "db_hikaricp",
+                section=section,
+                tool_name=tool_name,
+                evidence="matched HikariCP/JDBC/PostgreSQL connection error signal",
+            )
+        )
+
+    if (
+        "sqs" in text
+        and has_any(text, ("sendmessage", "send message", "publish", "producer"))
+        and has_any(
+            text,
+            ("fail", "error", "exception", "denied", "throttl", "timeout"),
+        )
+    ):
+        findings.append(
+            build_application_finding(
+                "sqs_publish",
+                section=section,
+                tool_name=tool_name,
+                evidence="matched SQS send/publish failure signal",
+            )
+        )
+
+    if has_any(text, ("sqs", "queue", "dlq")) and has_any(
+        text,
+        ("consumer", "listener", "receive", "lag", "backlog", "visible", "dlq"),
+    ) and has_any(text, ("fail", "error", "timeout", "high", "notempty", "not empty", "degraded")):
+        findings.append(
+            build_application_finding(
+                "sqs_consume",
+                section=section,
+                tool_name=tool_name,
+                evidence="matched SQS consume/DLQ lag or backlog signal",
+            )
+        )
+
+    if has_any(text, ("5xx", "status=500", "status 500", "http 500", "http_status 500")) or (
+        "500" in text and has_any(text, ("error", "exception", "http", "status"))
+    ):
+        findings.append(
+            build_application_finding(
+                "application_error",
+                section=section,
+                tool_name=tool_name,
+                evidence="matched HTTP 5xx application error signal",
+            )
+        )
+
+    if has_any(text, ("exception", "stacktrace", "nullpointer", "illegalstate")):
+        findings.append(
+            build_application_finding(
+                "application_error",
+                section=section,
+                tool_name=tool_name,
+                evidence="matched application exception signal",
+            )
+        )
+
+    if section == "traces" and has_any(
+        text,
+        ("error span", "span error", "status_code error", "latency", "duration", "slow", "timeout"),
+    ):
+        findings.append(
+            build_application_finding(
+                "trace_latency",
+                section=section,
+                tool_name=tool_name,
+                evidence="matched trace latency/error span signal",
+            )
+        )
+
+    if section == "deployment_changes" and has_any(
+        text,
+        ("outofsync", "degraded", "progressing", "rollout", "image", "revision", "deployed"),
+    ):
+        findings.append(
+            build_application_finding(
+                "deployment_regression",
+                section=section,
+                tool_name=tool_name,
+                evidence="matched recent deployment or rollout change signal",
+            )
+        )
+
+    return findings
+
+
+def build_application_finding(
+    finding_type: str,
+    *,
+    section: str,
+    tool_name: str,
+    evidence: str,
+) -> dict[str, Any]:
+    return {
+        "type": finding_type,
+        "label": APPLICATION_CANDIDATE_LABELS.get(finding_type, finding_type),
+        "section": section,
+        "tool_name": tool_name,
+        "evidence": evidence,
+    }
+
+
+def dedupe_application_findings(findings: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    deduped = []
+    seen = set()
+    for finding in findings:
+        key = (
+            finding.get("type"),
+            finding.get("section"),
+            finding.get("tool_name"),
+            finding.get("evidence"),
+        )
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(finding)
+    return deduped
+
+
+def build_application_root_cause_candidates(
+    result: AlertmanagerSrePlanResult,
+    *,
+    application_signals: dict[str, Any] | None = None,
+) -> list[dict[str, Any]]:
+    signals = application_signals or build_application_signal_summary(result)
+    findings = flatten_application_findings(signals)
+    findings_by_type: dict[str, list[dict[str, Any]]] = {}
+    for finding in findings:
+        findings_by_type.setdefault(str(finding.get("type")), []).append(finding)
+
+    candidates = []
+    for finding_type in (
+        "db_hikaricp",
+        "sqs_publish",
+        "sqs_consume",
+        "application_error",
+        "trace_latency",
+    ):
+        if finding_type in findings_by_type:
+            candidates.append(
+                build_root_cause_candidate(
+                    finding_type,
+                    findings_by_type[finding_type],
+                )
+            )
+
+    deployment_findings = findings_by_type.get("deployment_regression", [])
+    if deployment_findings and any(
+        candidate["candidate_type"]
+        in {"application_error", "trace_latency", "db_hikaricp", "sqs_publish", "sqs_consume"}
+        for candidate in candidates
+    ):
+        candidates.append(
+            build_root_cause_candidate(
+                "deployment_regression",
+                deployment_findings,
+                supporting_context="deployment change overlaps with application degraded signals",
+            )
+        )
+    elif deployment_findings:
+        candidates.append(
+            build_root_cause_candidate(
+                "deployment_regression",
+                deployment_findings,
+                confidence_override="low",
+                supporting_context=(
+                    "deployment change detected without a matching runtime error signal"
+                ),
+            )
+        )
+
+    return sorted(
+        candidates,
+        key=lambda candidate: candidate_confidence_rank(candidate["confidence"]),
+        reverse=True,
+    )[:6]
+
+
+def flatten_application_findings(signals: dict[str, Any]) -> list[dict[str, Any]]:
+    sections = signals.get("sections")
+    if not isinstance(sections, dict):
+        return []
+    findings = []
+    for section_summary in sections.values():
+        if not isinstance(section_summary, dict):
+            continue
+        section_findings = section_summary.get("findings")
+        if isinstance(section_findings, list):
+            findings.extend(
+                finding for finding in section_findings if isinstance(finding, dict)
+            )
+    return findings
+
+
+def build_root_cause_candidate(
+    candidate_type: str,
+    findings: list[dict[str, Any]],
+    *,
+    confidence_override: str | None = None,
+    supporting_context: str | None = None,
+) -> dict[str, Any]:
+    sources = sorted(
+        {
+            str(finding.get("section"))
+            for finding in findings
+            if finding.get("section")
+        }
+    )
+    evidence = [
+        (
+            f"{finding.get('section')}/{finding.get('tool_name')}: "
+            f"{finding.get('evidence')}"
+        )
+        for finding in findings[:5]
+    ]
+    if supporting_context:
+        evidence.append(supporting_context)
+    confidence = confidence_override or infer_candidate_confidence(sources, findings)
+    return {
+        "candidate_type": candidate_type,
+        "candidate": APPLICATION_CANDIDATE_LABELS.get(candidate_type, candidate_type),
+        "confidence": confidence,
+        "supporting_evidence": evidence,
+        "evidence_sources": sources,
+        "next_checks": next_checks_for_candidate(candidate_type),
+    }
+
+
+def infer_candidate_confidence(
+    sources: list[str],
+    findings: list[dict[str, Any]],
+) -> str:
+    if len(sources) >= 2:
+        return "high"
+    if len(findings) >= 2:
+        return "medium"
+    return "medium"
+
+
+def candidate_confidence_rank(confidence: str) -> int:
+    return {"high": 3, "medium": 2, "low": 1}.get(confidence, 0)
+
+
+def next_checks_for_candidate(candidate_type: str) -> list[str]:
+    checks = {
+        "db_hikaricp": [
+            "check HikariCP active/pending/max connection metrics",
+            "check PostgreSQL max_connections and current sessions",
+            "review recent datasource pool configuration changes",
+        ],
+        "sqs_publish": [
+            "check SQS SendMessage errors and IAM permissions",
+            "check queue URL/region configuration",
+            "review producer logs around the alert window",
+        ],
+        "sqs_consume": [
+            "check queue visible/not-visible message counts and DLQ depth",
+            "check consumer listener errors and processing latency",
+            "review visibility timeout and retry policy",
+        ],
+        "application_error": [
+            "inspect top exception patterns in application logs",
+            "check HTTP 5xx rate by endpoint",
+            "correlate errors with recent deployments",
+        ],
+        "trace_latency": [
+            "inspect slow/error spans by downstream service",
+            "check p95/p99 latency around the alert window",
+            "compare trace errors with application logs",
+        ],
+        "deployment_regression": [
+            "compare image tag/config before and after deployment",
+            "check rollout status and Kubernetes events",
+            "review ArgoCD sync and health status",
+        ],
+    }
+    return checks.get(candidate_type, ["review supporting evidence"])
+
+
+def select_tool_response_payload(tool_result: AgentToolExecutionResult) -> Any:
+    if tool_result.masked_response_payload is not None:
+        return tool_result.masked_response_payload
+    return tool_result.response_payload
+
+
+def stringify_signal_payload(value: Any) -> str:
+    if value is None:
+        return ""
+    try:
+        return json.dumps(
+            remove_large_llm_fields(value),
+            ensure_ascii=False,
+            default=str,
+            sort_keys=True,
+        )
+    except TypeError:
+        return str(value)
+
+
+def has_any(value: str, needles: tuple[str, ...]) -> bool:
+    return any(needle in value for needle in needles)
 
 
 def build_boundary_verdicts(boundaries: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -954,7 +1421,11 @@ def apply_rca_answer_guardrails(
 
 
 def build_rca_guardrail_prefix(result: AlertmanagerSrePlanResult) -> str:
-    contract = build_rca_analysis_contract(result)
+    root_cause_candidates = build_application_root_cause_candidates(result)
+    contract = build_rca_analysis_contract(
+        result,
+        root_cause_candidates=root_cause_candidates,
+    )
     healthy_boundaries = [
         boundary
         for boundary in contract["ruled_out_boundaries"]
@@ -1004,6 +1475,15 @@ def build_rca_guardrail_prefix(result: AlertmanagerSrePlanResult) -> str:
         lines.append(
             "- 실제 사용자 오류가 있다면 application logs, distributed traces, recent deployments, "
             "DB/HikariCP, downstream dependencies를 우선 확인합니다."
+        )
+    if healthy_boundaries and not degraded_boundaries and root_cause_candidates:
+        candidate_summary = ", ".join(
+            f"{candidate['candidate']}({candidate['confidence']})"
+            for candidate in root_cause_candidates[:3]
+        )
+        lines.append(
+            "- 라우팅 경계보다 application root_cause_candidates를 우선 확인합니다: "
+            f"{candidate_summary}"
         )
     return "\n".join(lines)
 

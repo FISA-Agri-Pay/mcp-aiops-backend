@@ -121,6 +121,20 @@ def assert_common_rca_context_tools(result) -> None:
     }.issubset(names)
 
 
+def build_success_result(tool_name: str, response_payload: dict[str, object]):
+    tool = resolve_registered_tool(
+        server_name="infraops-mcp",
+        tool_name=tool_name,
+    )
+    return build_tool_result(
+        tool=tool,
+        request_payload={},
+        response_payload=response_payload,
+        call_status=McpToolCallStatus.SUCCESS,
+        execution_policy=McpExecutionPolicy.ALLOWED,
+    )
+
+
 def test_alertmanager_sre_agent_plans_pod_crashloop_read_tools() -> None:
     result = plan_from_payload(POD_CRASH_PAYLOAD)
 
@@ -664,6 +678,138 @@ def test_analysis_notification_prepends_boundary_guardrail_verdict() -> None:
     assert "dns, onprem_metallb, onprem_ingress, k8s_service" in text
     assert "원인 후보에서 제외" in text
     assert "라우팅 경계 장애 증거는 없습니다" in text
+
+
+def test_rca_llm_snapshot_builds_application_root_cause_candidates() -> None:
+    result = AlertmanagerSrePlanResult(
+        status="COLLECTED",
+        executed_tools=[
+            build_success_result(
+                "query_multi_cluster_loki",
+                {
+                    "results": [
+                        {
+                            "line": (
+                                "HikariPool-1 - Connection is not available, "
+                                "request timed out after 30000ms"
+                            )
+                        }
+                    ]
+                },
+            ),
+            build_success_result(
+                "query_multi_cluster_prometheus",
+                {
+                    "results": [
+                        {
+                            "metric": "hikaricp_connections_pending",
+                            "value": 8,
+                        }
+                    ]
+                },
+            ),
+            build_success_result(
+                "get_service_trace_summary",
+                {
+                    "summary": {
+                        "slow_spans": [
+                            {
+                                "service": "postgres",
+                                "duration_ms": 3200,
+                                "status": "error",
+                            }
+                        ]
+                    }
+                },
+            ),
+        ],
+        context_bundle={"summary_for_llm": {}, "cross_domain": {}},
+    )
+
+    snapshot_payload = build_rca_llm_snapshot_payload(result)
+    candidates = snapshot_payload["root_cause_candidates"]
+
+    assert snapshot_payload["application_signals"]["overall_status"] == "degraded"
+    assert candidates[0]["candidate_type"] == "db_hikaricp"
+    assert candidates[0]["confidence"] == "high"
+    assert any(
+        "HikariCP" in evidence or "PostgreSQL" in evidence
+        for evidence in candidates[0]["supporting_evidence"]
+    )
+    assert snapshot_payload["analysis_contract"][
+        "application_root_cause_candidates"
+    ][0]["candidate_type"] == "db_hikaricp"
+
+
+def test_analysis_notification_prioritizes_app_candidates_after_healthy_routing() -> None:
+    result = AlertmanagerSrePlanResult(
+        status="ANALYZED",
+        incident_key="alertmanager:syntheticcurrentstateinspection:onprem:kkpp:service-payment:info",
+        alert=AlertmanagerSreAlertContext(
+            alert_name="SyntheticCurrentStateInspection",
+            status="firing",
+            cluster="onprem",
+            namespace="kkpp",
+            service_name="service-payment",
+            fingerprint="synthetic-aiops-livecheck-test-001",
+        ),
+        executed_tools=[
+            build_success_result(
+                "query_multi_cluster_loki",
+                {
+                    "results": [
+                        {
+                            "line": (
+                                "service-payment HikariPool timeout: "
+                                "Connection is not available"
+                            )
+                        }
+                    ]
+                },
+            ),
+            build_success_result(
+                "query_multi_cluster_prometheus",
+                {
+                    "results": [
+                        {
+                            "metric": "hikaricp_connections_pending",
+                            "value": 5,
+                        }
+                    ]
+                },
+            ),
+        ],
+        context_bundle={
+            "failure_boundary_candidates": [
+                {"boundary": "dns", "status": "healthy", "confidence": "medium"},
+                {
+                    "boundary": "onprem_metallb",
+                    "status": "healthy",
+                    "confidence": "high",
+                },
+                {
+                    "boundary": "onprem_ingress",
+                    "status": "healthy",
+                    "confidence": "high",
+                },
+                {
+                    "boundary": "k8s_service",
+                    "status": "healthy",
+                    "confidence": "high",
+                },
+            ],
+        },
+        rca_analysis={
+            "run_status": "SUCCESS",
+            "answer": "요약\n- 현재 라우팅 경계는 정상입니다.",
+        },
+    )
+
+    text = build_analysis_notification_text(result)
+
+    assert "application root_cause_candidates" in text
+    assert "DB/HikariCP connection pool issue(high)" in text
+    assert "라우팅 경계보다" in text
 
 
 def test_alertmanager_sre_agent_execute_collects_read_only_evidence_bundle() -> None:
