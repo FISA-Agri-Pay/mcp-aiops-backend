@@ -695,6 +695,8 @@ def plan_sre_copilot_tools(
         "environment": "all",
         "masking_level": "secrets_only",
     }
+    ingress_host = infer_sre_ingress_host(str(context["service_name"]))
+    ingress_path = infer_sre_ingress_health_path(str(context["service_name"]))
 
     plans = [
         build_sre_tool_plan(
@@ -756,6 +758,24 @@ def plan_sre_copilot_tools(
             "get_k8s_hpa",
             namespace_payload,
             "Inspect autoscaling status and resource pressure evidence.",
+        ),
+        build_sre_tool_plan(
+            "get_k8s_service_endpoints",
+            {
+                **namespace_payload,
+                "service_name": context["service_name"],
+            },
+            "Inspect service endpoint readiness for the target workload.",
+        ),
+        build_sre_tool_plan(
+            "get_k8s_ingress_backend_mapping",
+            {
+                **namespace_payload,
+                "host": ingress_host,
+                "path": ingress_path,
+                "service_name": context["service_name"],
+            },
+            "Inspect ingress host/path mapping to the expected service backend.",
         ),
         build_sre_tool_plan(
             "get_rollout_status",
@@ -829,6 +849,28 @@ def plan_sre_copilot_tools(
 
     if intent in {"routing_failure", "checkout_500", "general_incident"}:
         routing_plans = []
+        if context["edge_target"] == "onprem":
+            routing_plans.extend(
+                [
+                    build_sre_tool_plan(
+                        "check_onprem_metallb_endpoint",
+                        {"address": "10.30.2.100", "port": 80, "timeout_seconds": 3.0},
+                        "Check TCP reachability to the on-prem MetalLB ingress VIP.",
+                    ),
+                    build_sre_tool_plan(
+                        "check_onprem_ingress_route",
+                        {
+                            "endpoint": "http://10.30.2.100",
+                            "host_header": ingress_host,
+                            "path": ingress_path,
+                            "expected_status_min": 200,
+                            "expected_status_max": 399,
+                            "timeout_seconds": 5.0,
+                        },
+                        "Check HTTP routing through on-prem ingress with the service host.",
+                    ),
+                ]
+            )
         alb_payload = build_sre_alb_target_health_payload(context)
         if alb_payload:
             routing_plans.append(
@@ -1001,6 +1043,20 @@ def infer_sre_load_balancer_name(
     ):
         return "kkpp-catalog-api"
     return None
+
+
+def infer_sre_ingress_host(service_name: str) -> str | None:
+    return {
+        "service-payment": "api-payment.dev6.fisa",
+        "service-core": "api-core.dev6.fisa",
+        "service-auth": "api-auth.dev6.fisa",
+        "service-admin": "api-admin.dev6.fisa",
+        "service-catalog": "api-catalog.dev6.fisa",
+    }.get(service_name)
+
+
+def infer_sre_ingress_health_path(service_name: str) -> str:
+    return "/actuator/health"
 
 
 def infer_sre_namespace(message: str, *, service_name: str) -> str:
@@ -2030,6 +2086,8 @@ def normalize_infraops_tool_payload(
         "get_k8s_events",
         "get_k8s_deployments",
         "get_k8s_hpa",
+        "get_k8s_service_endpoints",
+        "get_k8s_ingress_backend_mapping",
         "get_current_image_tags",
         "get_recent_deployments",
         "create_rca_snapshot",
@@ -2043,6 +2101,8 @@ def normalize_infraops_tool_payload(
         "get_k8s_events",
         "get_k8s_deployments",
         "get_k8s_hpa",
+        "get_k8s_service_endpoints",
+        "get_k8s_ingress_backend_mapping",
         "get_current_image_tags",
         "get_recent_deployments",
         "get_rollout_status",
@@ -2057,6 +2117,53 @@ def normalize_infraops_tool_payload(
         normalized["deployment_name"] = (
             normalize_optional_string(normalized.get("deployment_name"))
             or str(context["deployment_name"])
+        )
+    if tool_name == "get_k8s_service_endpoints":
+        normalized["service_name"] = (
+            normalize_optional_string(normalized.get("service_name"))
+            or str(context["service_name"])
+        )
+    if tool_name == "get_k8s_ingress_backend_mapping":
+        normalized["service_name"] = (
+            normalize_optional_string(normalized.get("service_name"))
+            or str(context["service_name"])
+        )
+        normalized["host"] = normalize_optional_string(
+            normalized.get("host")
+        ) or infer_sre_ingress_host(str(context["service_name"]))
+        normalized["path"] = normalize_optional_string(
+            normalized.get("path")
+        ) or infer_sre_ingress_health_path(str(context["service_name"]))
+    if tool_name == "check_onprem_metallb_endpoint":
+        normalized["address"] = normalize_optional_string(
+            normalized.get("address")
+        ) or "10.30.2.100"
+        normalized["port"] = clamp_int(normalized.get("port"), default=80)
+        normalized["timeout_seconds"] = clamp_float(
+            normalized.get("timeout_seconds"),
+            default=3.0,
+        )
+    if tool_name == "check_onprem_ingress_route":
+        normalized["endpoint"] = normalize_optional_string(
+            normalized.get("endpoint")
+        ) or "http://10.30.2.100"
+        normalized["host_header"] = normalize_optional_string(
+            normalized.get("host_header")
+        ) or infer_sre_ingress_host(str(context["service_name"]))
+        normalized["path"] = normalize_optional_string(
+            normalized.get("path")
+        ) or infer_sre_ingress_health_path(str(context["service_name"]))
+        normalized["expected_status_min"] = clamp_int(
+            normalized.get("expected_status_min"),
+            default=200,
+        )
+        normalized["expected_status_max"] = clamp_int(
+            normalized.get("expected_status_max"),
+            default=399,
+        )
+        normalized["timeout_seconds"] = clamp_float(
+            normalized.get("timeout_seconds"),
+            default=5.0,
         )
     if tool_name == "get_recent_deployments":
         normalized["limit"] = clamp_int(normalized.get("limit"), default=10)

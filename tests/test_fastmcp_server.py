@@ -20,15 +20,19 @@ from aiops_platform.infraops.schemas import (
     InfraOpsSourceResult,
     KafkaConsumerLagResult,
     KibanaSavedObjectsResult,
+    KubernetesIngressBackendMappingResult,
     KubernetesResourceResult,
+    KubernetesServiceEndpointsResult,
     LokiQueryResult,
     MultiClusterLokiQueryResult,
     MultiClusterPrometheusQueryResult,
     MultiClusterQuerySourceResult,
+    OnpremHttpRouteCheckResult,
+    OnpremTcpConnectivityResult,
     PodLogsResult,
     PrometheusQueryResult,
-    RecentDeploymentsResult,
     RcaSnapshotResult,
+    RecentDeploymentsResult,
     RolloutStatusResult,
     TraceByIdResult,
     TraceErrorSpansResult,
@@ -43,6 +47,8 @@ from aiops_platform.mcp.server import (
     KAFKA_TOOL_NAMES,
     MCP_TRANSPORT_MOUNT_PATH,
     create_mcp_server,
+)
+from aiops_platform.mcp.server import (
     settings as mcp_server_settings,
 )
 from aiops_platform.topology_knowledge.service import TopologyKnowledgeService
@@ -142,8 +148,12 @@ def test_fastmcp_server_exposes_registry_tools() -> None:
             "get_k8s_events",
             "get_k8s_deployments",
             "get_k8s_hpa",
+            "get_k8s_service_endpoints",
+            "get_k8s_ingress_backend_mapping",
             "get_pod_logs",
             "get_rollout_status",
+            "check_onprem_metallb_endpoint",
+            "check_onprem_ingress_route",
             "get_sqs_queue_attributes",
             "get_sqs_dlq_attributes",
             "get_alb_target_health",
@@ -714,6 +724,51 @@ def test_fastmcp_kubernetes_read_tools_return_results() -> None:
                 raw={"items": []},
             )
 
+        def get_k8s_service_endpoints(
+            self,
+            service_name: str,
+            namespace: str | None = None,
+            source: str | None = None,
+        ):
+            assert service_name == "service-payment"
+            assert namespace == "default"
+            assert source == "onprem"
+            return KubernetesServiceEndpointsResult(
+                source="onprem",
+                namespace="default",
+                service_name=service_name,
+                service_type="ClusterIP",
+                cluster_ip="10.250.182.142",
+                selector={"app": service_name},
+                ports=[{"port": 8092}],
+                ready_addresses=[{"ip": "10.244.1.144"}],
+                not_ready_addresses=[],
+                ready_count=1,
+                not_ready_count=0,
+                status="HEALTHY",
+            )
+
+        def get_k8s_ingress_backend_mapping(
+            self,
+            namespace: str | None = None,
+            source: str | None = None,
+            host: str | None = None,
+            path: str | None = None,
+            service_name: str | None = None,
+        ):
+            assert namespace == "default"
+            assert source == "onprem"
+            return KubernetesIngressBackendMappingResult(
+                source="onprem",
+                namespace="default",
+                host=host,
+                path=path,
+                service_name=service_name,
+                matched_rules=[{"host": host, "backend_service": service_name}],
+                ingress_count=1,
+                status="HEALTHY",
+            )
+
     async def run() -> None:
         async with Client(create_mcp_server(infraops_service=FakeInfraOpsService())) as client:
             pods = await client.call_tool(
@@ -732,12 +787,96 @@ def test_fastmcp_kubernetes_read_tools_return_results() -> None:
                 "get_k8s_hpa",
                 {"namespace": "default", "source": "onprem"},
             )
+            endpoints = await client.call_tool(
+                "get_k8s_service_endpoints",
+                {
+                    "namespace": "default",
+                    "source": "onprem",
+                    "service_name": "service-payment",
+                },
+            )
+            ingress = await client.call_tool(
+                "get_k8s_ingress_backend_mapping",
+                {
+                    "namespace": "default",
+                    "source": "onprem",
+                    "host": "api-payment.dev6.fisa",
+                    "path": "/actuator/health",
+                    "service_name": "service-payment",
+                },
+            )
 
         assert pods.data["items"][0]["metadata"]["name"] == "api-pod"
         assert pods.data["source"] == "onprem"
         assert events.data["namespace"] == "default"
         assert deployments.data["namespace"] == "default"
         assert hpa.data["namespace"] == "default"
+        assert endpoints.data["ready_count"] == 1
+        assert ingress.data["matched_rules"][0]["backend_service"] == "service-payment"
+
+    asyncio.run(run())
+
+
+def test_fastmcp_onprem_live_check_tools_return_results() -> None:
+    class FakeInfraOpsService:
+        def check_onprem_metallb_endpoint(
+            self,
+            address: str = "10.30.2.100",
+            port: int = 80,
+            timeout_seconds: float = 3.0,
+        ):
+            return OnpremTcpConnectivityResult(
+                target_host=address,
+                port=port,
+                timeout_seconds=timeout_seconds,
+                reachable=True,
+                status="HEALTHY",
+                latency_ms=12.3,
+            )
+
+        def check_onprem_ingress_route(
+            self,
+            endpoint: str = "http://10.30.2.100",
+            host_header: str | None = None,
+            path: str = "/actuator/health",
+            expected_status_min: int = 200,
+            expected_status_max: int = 399,
+            timeout_seconds: float = 5.0,
+        ):
+            return OnpremHttpRouteCheckResult(
+                url=f"{endpoint}{path}",
+                host_header=host_header,
+                path=path,
+                timeout_seconds=timeout_seconds,
+                expected_status_min=expected_status_min,
+                expected_status_max=expected_status_max,
+                reachable=True,
+                healthy=True,
+                status="HEALTHY",
+                http_status=200,
+                latency_ms=22.5,
+                response_excerpt='{"status":"UP"}',
+            )
+
+    async def run() -> None:
+        async with Client(create_mcp_server(infraops_service=FakeInfraOpsService())) as client:
+            metallb = await client.call_tool(
+                "check_onprem_metallb_endpoint",
+                {"address": "10.30.2.100", "port": 80},
+            )
+            ingress = await client.call_tool(
+                "check_onprem_ingress_route",
+                {
+                    "endpoint": "http://10.30.2.100",
+                    "host_header": "api-payment.dev6.fisa",
+                    "path": "/actuator/health",
+                },
+            )
+
+        assert metallb.data["reachable"] is True
+        assert metallb.data["status"] == "HEALTHY"
+        assert ingress.data["http_status"] == 200
+        assert ingress.data["healthy"] is True
 
     asyncio.run(run())
 

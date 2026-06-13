@@ -936,6 +936,115 @@ def test_infraops_service_maps_onprem_kubernetes_source() -> None:
     )
 
 
+def test_infraops_service_maps_kubernetes_service_endpoints_and_ingress() -> None:
+    class RoutingHttpClient:
+        def __init__(self):
+            self.calls = []
+
+        def get_json(self, url, **kwargs):
+            self.calls.append({"method": "GET", "url": url, **kwargs})
+            if url.endswith("/services/service-payment"):
+                return {
+                    "spec": {
+                        "type": "ClusterIP",
+                        "clusterIP": "10.250.182.142",
+                        "selector": {"app": "service-payment"},
+                        "ports": [{"port": 8092, "targetPort": 8092}],
+                    }
+                }
+            if url.endswith("/endpoints/service-payment"):
+                return {
+                    "subsets": [
+                        {
+                            "addresses": [
+                                {
+                                    "ip": "10.244.1.144",
+                                    "targetRef": {
+                                        "kind": "Pod",
+                                        "name": "service-payment-abc",
+                                    },
+                                }
+                            ],
+                            "ports": [{"port": 8092}],
+                        }
+                    ]
+                }
+            if url.endswith("/ingresses"):
+                return {
+                    "items": [
+                        {
+                            "metadata": {"name": "service-payment"},
+                            "spec": {
+                                "rules": [
+                                    {
+                                        "host": "api-payment.dev6.fisa",
+                                        "http": {
+                                            "paths": [
+                                                {
+                                                    "path": "/",
+                                                    "pathType": "Prefix",
+                                                    "backend": {
+                                                        "service": {
+                                                            "name": "service-payment",
+                                                            "port": {"number": 8092},
+                                                        }
+                                                    },
+                                                }
+                                            ]
+                                        },
+                                    }
+                                ]
+                            },
+                        }
+                    ]
+                }
+            return {"items": []}
+
+    http_client = RoutingHttpClient()
+    service = make_infraops_service(
+        kubernetes_sources={
+            "onprem": (
+                KubernetesClient(
+                    "https://10.30.2.51:6443",
+                    bearer_token="token",
+                    http_client=http_client,
+                ),
+                parse_allowlist("kkpp,monitoring"),
+            ),
+        }
+    )
+
+    endpoints = service.get_k8s_service_endpoints(
+        namespace="kkpp",
+        source="onprem",
+        service_name="service-payment",
+    )
+    mapping = service.get_k8s_ingress_backend_mapping(
+        namespace="kkpp",
+        source="onprem",
+        host="api-payment.dev6.fisa",
+        path="/actuator/health",
+        service_name="service-payment",
+    )
+
+    assert endpoints.status == "HEALTHY"
+    assert endpoints.ready_count == 1
+    assert endpoints.not_ready_count == 0
+    assert endpoints.selector == {"app": "service-payment"}
+    assert mapping.status == "HEALTHY"
+    assert mapping.matched_rules[0]["backend_service"] == "service-payment"
+
+
+def test_infraops_service_rejects_public_live_check_targets() -> None:
+    service = make_infraops_service()
+
+    with pytest.raises(InfraOpsValidationError, match="private"):
+        service.check_onprem_metallb_endpoint(address="8.8.8.8")
+
+    with pytest.raises(InfraOpsValidationError, match="private"):
+        service.check_onprem_ingress_route(endpoint="http://8.8.8.8")
+
+
 def test_infraops_service_rejects_unknown_kubernetes_source() -> None:
     service = make_infraops_service()
 

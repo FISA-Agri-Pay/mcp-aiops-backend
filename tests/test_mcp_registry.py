@@ -3,7 +3,6 @@ from fastapi.testclient import TestClient
 from aiops_platform.main import create_app
 from aiops_platform.mcp.registry import list_mcp_servers, list_mcp_tools
 
-
 ELK_TOOL_NAMES = {
     "query_elasticsearch",
     "search_elasticsearch_logs",
@@ -95,6 +94,10 @@ def test_mcp_tools_include_sre_mvp_read_registry_entries() -> None:
         "get_trace_error_spans",
         "get_pod_logs",
         "get_rollout_status",
+        "get_k8s_service_endpoints",
+        "get_k8s_ingress_backend_mapping",
+        "check_onprem_metallb_endpoint",
+        "check_onprem_ingress_route",
         "get_sqs_queue_attributes",
         "get_sqs_dlq_attributes",
         "get_alb_target_health",

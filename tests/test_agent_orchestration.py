@@ -632,6 +632,38 @@ def test_llm_planner_maps_sre_capability_to_backend_tool_bundle() -> None:
     assert all(tool.server_name == "infraops-mcp" for tool in plan.tool_plans)
 
 
+def test_rule_based_planner_adds_onprem_ingress_live_checks() -> None:
+    planner = RuleBasedAgentPlanner()
+
+    plan = planner.plan(
+        chat_type="sre_copilot",
+        message=(
+            "alertname=OnpremMetalLBRoutingFailure cluster=onprem "
+            "namespace=kkpp service=service-payment"
+        ),
+        user_id="sre-1",
+    )
+
+    tools = {tool.tool_name: tool for tool in plan.tool_plans}
+    assert "check_onprem_metallb_endpoint" in tools
+    assert "check_onprem_ingress_route" in tools
+    assert "get_k8s_service_endpoints" in tools
+    assert "get_k8s_ingress_backend_mapping" in tools
+    assert tools["check_onprem_ingress_route"].request_payload == {
+        "endpoint": "http://10.30.2.100",
+        "host_header": "api-payment.dev6.fisa",
+        "path": "/actuator/health",
+        "expected_status_min": 200,
+        "expected_status_max": 399,
+        "timeout_seconds": 5.0,
+    }
+    assert tools["get_k8s_service_endpoints"].request_payload == {
+        "namespace": "kkpp",
+        "source": "onprem",
+        "service_name": "service-payment",
+    }
+
+
 def test_llm_planner_falls_back_when_supported_admin_request_skips_tools() -> None:
     planner = LlmAgentPlanner(
         llm_client=FakePlannerLlmClient(
@@ -1064,6 +1096,69 @@ def test_incident_context_bundle_filters_k8s_boundary_to_target_workload() -> No
         candidate["boundary"]: candidate
         for candidate in bundle["failure_boundary_candidates"]
     }
+    assert boundaries["k8s_service"]["status"] == "healthy"
+
+
+def test_incident_context_bundle_uses_onprem_live_checks_for_boundaries() -> None:
+    bundle = build_incident_context_bundle(
+        chat_type="sre_copilot",
+        message="routing_failure cluster=onprem namespace=kkpp service=service-payment",
+        capability="edge_routing_analysis",
+        tool_results=[
+            make_sre_tool_result(
+                "search_topology_knowledge",
+                {
+                    "matches": [
+                        {
+                            "excerpt": (
+                                "api-payment.dev6.fisa resolves to 10.30.2.100. "
+                                "service-payment is an on-prem kkpp workload, "
+                                "not an AWS EKS workload. CloudFront is not the "
+                                "current direct path."
+                            )
+                        }
+                    ]
+                },
+            ),
+            make_sre_tool_result(
+                "check_onprem_metallb_endpoint",
+                {
+                    "target_host": "10.30.2.100",
+                    "port": 80,
+                    "reachable": True,
+                    "status": "HEALTHY",
+                    "latency_ms": 12.3,
+                },
+            ),
+            make_sre_tool_result(
+                "check_onprem_ingress_route",
+                {
+                    "url": "http://10.30.2.100/actuator/health",
+                    "host_header": "api-payment.dev6.fisa",
+                    "reachable": True,
+                    "healthy": True,
+                    "status": "HEALTHY",
+                    "http_status": 200,
+                },
+            ),
+            make_sre_tool_result(
+                "get_k8s_service_endpoints",
+                {
+                    "service_name": "service-payment",
+                    "ready_count": 4,
+                    "not_ready_count": 0,
+                    "status": "HEALTHY",
+                },
+            ),
+        ],
+    )
+
+    boundaries = {
+        candidate["boundary"]: candidate
+        for candidate in bundle["failure_boundary_candidates"]
+    }
+    assert boundaries["onprem_metallb"]["status"] == "healthy"
+    assert boundaries["onprem_ingress"]["status"] == "healthy"
     assert boundaries["k8s_service"]["status"] == "healthy"
 
 

@@ -38,7 +38,7 @@ logger = logging.getLogger(__name__)
 LLM_SNAPSHOT_CHAR_BUDGET = 24000
 LLM_EVIDENCE_CHAR_BUDGET = 32000
 LLM_SECTION_CHAR_BUDGET = 6000
-LLM_TOOL_RESULT_LIMIT = 24
+LLM_TOOL_RESULT_LIMIT = 30
 LLM_TOPOLOGY_FACT_LIMIT = 10
 TOPOLOGY_LLM_TOOLS = {
     "get_topology_snapshot",
@@ -1001,8 +1001,20 @@ def summarize_tool_response_for_llm(value: Any, *, tool_name: str | None = None)
         "query",
         "namespace",
         "deployment_name",
+        "service_name",
         "resource",
         "partial",
+        "target_host",
+        "port",
+        "url",
+        "host_header",
+        "path",
+        "reachable",
+        "healthy",
+        "http_status",
+        "latency_ms",
+        "ready_count",
+        "not_ready_count",
         "error_message",
     ):
         if key in value:
@@ -1014,7 +1026,7 @@ def summarize_tool_response_for_llm(value: Any, *, tool_name: str | None = None)
                 string_limit=300,
             )
 
-    for key in ("items", "sources", "results", "alerts", "events", "data"):
+    for key in ("items", "sources", "results", "alerts", "events", "data", "matched_rules"):
         if key in value:
             summary[f"{key}_summary"] = summarize_collection_for_llm(value.get(key))
     return summary

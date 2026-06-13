@@ -216,11 +216,23 @@ class McpToolDispatcher:
             ("infraops-mcp", "get_k8s_hpa"): (
                 lambda payload: self._infraops.get_k8s_hpa(**payload)
             ),
+            ("infraops-mcp", "get_k8s_service_endpoints"): (
+                lambda payload: self._infraops.get_k8s_service_endpoints(**payload)
+            ),
+            ("infraops-mcp", "get_k8s_ingress_backend_mapping"): (
+                lambda payload: self._infraops.get_k8s_ingress_backend_mapping(**payload)
+            ),
             ("infraops-mcp", "get_pod_logs"): (
                 lambda payload: self._infraops.get_pod_logs(**payload)
             ),
             ("infraops-mcp", "get_rollout_status"): (
                 lambda payload: self._infraops.get_rollout_status(**payload)
+            ),
+            ("infraops-mcp", "check_onprem_metallb_endpoint"): (
+                lambda payload: self._infraops.check_onprem_metallb_endpoint(**payload)
+            ),
+            ("infraops-mcp", "check_onprem_ingress_route"): (
+                lambda payload: self._infraops.check_onprem_ingress_route(**payload)
             ),
             ("infraops-mcp", "get_alertmanager_alerts"): (
                 lambda payload: self._infraops.get_alertmanager_alerts(**payload)

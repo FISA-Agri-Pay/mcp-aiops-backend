@@ -1934,6 +1934,54 @@ def create_mcp_server(
         return result
 
     @mcp.tool(
+        name="get_k8s_service_endpoints",
+        description="Read Kubernetes service and endpoint readiness summary.",
+        tags={"infraops", "kubernetes", "service", "endpoints", "read"},
+        annotations={"readOnlyHint": True, "openWorldHint": False},
+    )
+    def get_k8s_service_endpoints_tool(
+        service_name: str,
+        namespace: str | None = None,
+        source: str | None = None,
+    ) -> dict[str, Any]:
+        request_payload = {
+            "service_name": service_name,
+            "namespace": namespace,
+            "source": source,
+        }
+        return call_infraops_read_tool(
+            tool_name="get_k8s_service_endpoints",
+            request_payload=request_payload,
+            operation=lambda: infraops.get_k8s_service_endpoints(**request_payload),
+        )
+
+    @mcp.tool(
+        name="get_k8s_ingress_backend_mapping",
+        description="Read Kubernetes ingress host/path to service backend mapping.",
+        tags={"infraops", "kubernetes", "ingress", "read"},
+        annotations={"readOnlyHint": True, "openWorldHint": False},
+    )
+    def get_k8s_ingress_backend_mapping_tool(
+        namespace: str | None = None,
+        source: str | None = None,
+        host: str | None = None,
+        path: str | None = None,
+        service_name: str | None = None,
+    ) -> dict[str, Any]:
+        request_payload = {
+            "namespace": namespace,
+            "source": source,
+            "host": host,
+            "path": path,
+            "service_name": service_name,
+        }
+        return call_infraops_read_tool(
+            tool_name="get_k8s_ingress_backend_mapping",
+            request_payload=request_payload,
+            operation=lambda: infraops.get_k8s_ingress_backend_mapping(**request_payload),
+        )
+
+    @mcp.tool(
         name="get_pod_logs",
         description="Read recent logs for a Kubernetes pod from an allowlisted namespace.",
         tags={"infraops", "kubernetes", "logs", "read"},
@@ -1981,6 +2029,56 @@ def create_mcp_server(
             tool_name="get_rollout_status",
             request_payload=request_payload,
             operation=lambda: infraops.get_rollout_status(**request_payload),
+        )
+
+    @mcp.tool(
+        name="check_onprem_metallb_endpoint",
+        description="Check TCP reachability to the on-prem MetalLB ingress endpoint.",
+        tags={"infraops", "onprem", "metallb", "network", "read"},
+        annotations={"readOnlyHint": True, "openWorldHint": False},
+    )
+    def check_onprem_metallb_endpoint_tool(
+        address: str = "10.30.2.100",
+        port: int = 80,
+        timeout_seconds: float = 3.0,
+    ) -> dict[str, Any]:
+        request_payload = {
+            "address": address,
+            "port": port,
+            "timeout_seconds": timeout_seconds,
+        }
+        return call_infraops_read_tool(
+            tool_name="check_onprem_metallb_endpoint",
+            request_payload=request_payload,
+            operation=lambda: infraops.check_onprem_metallb_endpoint(**request_payload),
+        )
+
+    @mcp.tool(
+        name="check_onprem_ingress_route",
+        description="Check HTTP routing through the on-prem ingress endpoint with Host header.",
+        tags={"infraops", "onprem", "ingress", "http", "read"},
+        annotations={"readOnlyHint": True, "openWorldHint": False},
+    )
+    def check_onprem_ingress_route_tool(
+        endpoint: str = "http://10.30.2.100",
+        host_header: str | None = None,
+        path: str = "/actuator/health",
+        expected_status_min: int = 200,
+        expected_status_max: int = 399,
+        timeout_seconds: float = 5.0,
+    ) -> dict[str, Any]:
+        request_payload = {
+            "endpoint": endpoint,
+            "host_header": host_header,
+            "path": path,
+            "expected_status_min": expected_status_min,
+            "expected_status_max": expected_status_max,
+            "timeout_seconds": timeout_seconds,
+        }
+        return call_infraops_read_tool(
+            tool_name="check_onprem_ingress_route",
+            request_payload=request_payload,
+            operation=lambda: infraops.check_onprem_ingress_route(**request_payload),
         )
 
     @mcp.tool(

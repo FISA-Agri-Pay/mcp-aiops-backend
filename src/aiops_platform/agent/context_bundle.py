@@ -34,7 +34,13 @@ KUBERNETES_TOOLS = {
     "get_k8s_events": "events",
     "get_k8s_deployments": "deployments",
     "get_k8s_hpa": "hpa",
+    "get_k8s_service_endpoints": "service_endpoints",
+    "get_k8s_ingress_backend_mapping": "ingress_backend_mapping",
     "get_rollout_status": "rollout_status",
+}
+NETWORK_TOOLS = {
+    "check_onprem_metallb_endpoint": "onprem_metallb_endpoint",
+    "check_onprem_ingress_route": "onprem_ingress_route",
 }
 AWS_TOOLS = {
     "get_sqs_queue_attributes": "sqs_queue",
@@ -108,10 +114,25 @@ BOUNDARY_TOOL_MAP = {
     "aws_alb": {"get_alb_target_health"},
     "aws_target_group": {"get_alb_target_health"},
     "vpn_route": {"get_topology_snapshot", "search_topology_knowledge", "get_service_routing_path"},
-    "onprem_metallb": {"get_topology_snapshot", "get_service_routing_path"},
-    "onprem_ingress": {"get_service_routing_path", "get_k8s_events", "query_multi_cluster_loki"},
+    "onprem_metallb": {
+        "get_topology_snapshot",
+        "get_service_routing_path",
+        "check_onprem_metallb_endpoint",
+    },
+    "onprem_ingress": {
+        "get_service_routing_path",
+        "get_k8s_events",
+        "query_multi_cluster_loki",
+        "check_onprem_ingress_route",
+        "get_k8s_ingress_backend_mapping",
+    },
     "eks_ingress": {"get_service_routing_path", "get_alb_target_health", "get_k8s_events"},
-    "k8s_service": {"get_k8s_pods", "get_k8s_events", "get_k8s_deployments"},
+    "k8s_service": {
+        "get_k8s_pods",
+        "get_k8s_events",
+        "get_k8s_deployments",
+        "get_k8s_service_endpoints",
+    },
     "pod_application": {
         "query_multi_cluster_loki",
         "query_loki",
@@ -190,6 +211,8 @@ BOUNDARY_DEGRADED_PATTERNS = {
         re.compile(r"\blookup\b.{0,80}\b(fail|error|timeout)\b"),
     ),
     "onprem_metallb": (
+        re.compile(r"\bstatus\b.{0,40}\bdegraded\b"),
+        re.compile(r"\breachable\b.{0,20}\bfalse\b"),
         re.compile(r"\bmetallb\b.{0,80}\b(fail|error|timeout|unavailable|down)\b"),
         re.compile(r"\bspeaker\b.{0,80}\b(fail|error|timeout|unavailable|down)\b"),
         re.compile(r"\barp\b.{0,80}\b(fail|timeout|unreachable)\b"),
@@ -197,12 +220,16 @@ BOUNDARY_DEGRADED_PATTERNS = {
         re.compile(r"\bno route to host\b"),
     ),
     "onprem_ingress": (
+        re.compile(r"\bstatus\b.{0,40}\bdegraded\b"),
+        re.compile(r"\breachable\b.{0,20}\bfalse\b"),
+        re.compile(r"\bhealthy\b.{0,20}\bfalse\b"),
         re.compile(r"\bingress\b.{0,80}\b(5xx|500|502|503|504|error|timeout|fail)\b"),
         re.compile(r"\bupstream\b.{0,80}\b(unavailable|timeout|timed out|connect.*failed)\b"),
         re.compile(r"\bdefault backend\b"),
         re.compile(r"\bno ingress rule\b"),
     ),
     "k8s_service": (
+        re.compile(r"\bstatus\b.{0,40}\bdegraded\b"),
         re.compile(r"\bno endpoints\b"),
         re.compile(r"\bempty endpoints\b"),
         re.compile(r"\bendpoint(slice)?\b.{0,80}\b(empty|missing|not ready)\b"),
@@ -249,6 +276,7 @@ def build_incident_context_bundle(
             "kubernetes": {},
             "aws": {},
             "gitops": {},
+            "network": {},
         },
         "observability": {
             "metrics": {},
@@ -283,6 +311,8 @@ def build_incident_context_bundle(
             append_entry(bundle["observability"]["alerts"], ALERT_TOOLS[tool_name], entry)
         elif tool_name in KUBERNETES_TOOLS:
             append_entry(bundle["live_state"]["kubernetes"], KUBERNETES_TOOLS[tool_name], entry)
+        elif tool_name in NETWORK_TOOLS:
+            append_entry(bundle["live_state"]["network"], NETWORK_TOOLS[tool_name], entry)
         elif tool_name in AWS_TOOLS:
             append_entry(bundle["live_state"]["aws"], AWS_TOOLS[tool_name], entry)
         elif tool_name in DEPLOYMENT_CHANGE_TOOLS:
@@ -378,6 +408,7 @@ def summarize_bundle(
             "traces": bool(bundle["observability"]["traces"]),
             "alerts": bool(bundle["observability"]["alerts"]),
             "kubernetes": bool(bundle["live_state"]["kubernetes"]),
+            "network": bool(bundle["live_state"]["network"]),
             "aws": bool(bundle["live_state"]["aws"]),
             "deployment_changes": bool(bundle["deployment_changes"]),
             "history": bool(bundle["history"]),
@@ -394,6 +425,7 @@ def summarize_bundle(
             "logs",
             "traces",
             "kubernetes",
+            "network",
             "deployment_changes",
         )
         if section not in available_sections
