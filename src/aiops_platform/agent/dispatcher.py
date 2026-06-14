@@ -1,7 +1,11 @@
 from __future__ import annotations
 
+import json
 from collections.abc import Callable
 from copy import deepcopy
+from dataclasses import dataclass
+from threading import RLock
+from time import monotonic
 from typing import Any
 
 from pydantic import BaseModel
@@ -24,6 +28,7 @@ from aiops_platform.prediction_scaling.service import PredictionScalingService
 from aiops_platform.topology_knowledge.service import TopologyKnowledgeService
 
 ToolOperation = Callable[[dict[str, Any]], Any]
+TimeProvider = Callable[[], float]
 EXECUTION_CONTEXT_KEYS = {
     "access_token",
     "api_key",
@@ -32,6 +37,23 @@ EXECUTION_CONTEXT_KEYS = {
     "secret",
     "token",
 }
+FARMER_BNPL_TOOL_CACHE_TTL_SECONDS = {
+    "get_required_documents": 300.0,
+    "get_farmer_profile": 300.0,
+    "get_user_credit_limit": 15.0,
+    "get_repayment_schedule": 30.0,
+    "get_interest_due": 30.0,
+    "get_overdue_status": 30.0,
+    "get_latest_order_delivery_status": 30.0,
+    "search_products": 60.0,
+    "search_lowest_price_fertilizer": 60.0,
+}
+
+
+@dataclass(frozen=True)
+class ToolCacheEntry:
+    expires_at: float
+    response_payload: dict[str, Any] | list[Any] | None
 
 
 class McpToolDispatcher:
@@ -44,6 +66,7 @@ class McpToolDispatcher:
         infraops_service: InfraOpsService | None = None,
         prediction_scaling_service: PredictionScalingService | None = None,
         topology_knowledge_service: TopologyKnowledgeService | None = None,
+        time_provider: TimeProvider | None = None,
     ) -> None:
         self._farmer_bnpl = farmer_bnpl_service or FarmerBnplService()
         self._farm_advisory = farm_advisory_service or FarmAdvisoryService()
@@ -53,6 +76,9 @@ class McpToolDispatcher:
         self._topology_knowledge = (
             topology_knowledge_service or TopologyKnowledgeService.from_settings()
         )
+        self._time_provider = time_provider or monotonic
+        self._tool_cache: dict[str, ToolCacheEntry] = {}
+        self._tool_cache_lock = RLock()
 
     def execute(self, plan: AgentToolPlan) -> AgentToolExecutionResult:
         tool = resolve_registered_tool(
@@ -89,6 +115,27 @@ class McpToolDispatcher:
                 error_message="Tool dispatcher is not connected for this MCP tool.",
             )
 
+        cache_ttl_seconds = resolve_tool_cache_ttl_seconds(
+            server_name=plan.server_name,
+            tool_name=plan.tool_name,
+            permission=permission,
+        )
+        cache_key = (
+            build_tool_cache_key(plan.server_name, plan.tool_name, sanitized_payload)
+            if cache_ttl_seconds is not None
+            else None
+        )
+        if cache_key is not None:
+            cache_hit, cached_payload = self._get_cached_tool_response(cache_key)
+            if cache_hit:
+                return build_tool_result(
+                    tool=tool,
+                    request_payload=sanitized_payload,
+                    response_payload=cached_payload,
+                    call_status=McpToolCallStatus.SUCCESS,
+                    execution_policy=execution_policy,
+                )
+
         try:
             response_payload = dump_payload(operation(sanitized_payload))
         except Exception as exc:
@@ -100,6 +147,9 @@ class McpToolDispatcher:
                 execution_policy=execution_policy,
                 error_message=exc.__class__.__name__,
             )
+
+        if cache_key is not None and cache_ttl_seconds is not None:
+            self._set_cached_tool_response(cache_key, response_payload, cache_ttl_seconds)
 
         return build_tool_result(
             tool=tool,
@@ -288,6 +338,32 @@ class McpToolDispatcher:
         }
         return operations.get((server_name, tool_name))
 
+    def _get_cached_tool_response(
+        self,
+        cache_key: str,
+    ) -> tuple[bool, dict[str, Any] | list[Any] | None]:
+        now = self._time_provider()
+        with self._tool_cache_lock:
+            entry = self._tool_cache.get(cache_key)
+            if entry is None:
+                return False, None
+            if entry.expires_at <= now:
+                self._tool_cache.pop(cache_key, None)
+                return False, None
+            return True, deepcopy(entry.response_payload)
+
+    def _set_cached_tool_response(
+        self,
+        cache_key: str,
+        response_payload: dict[str, Any] | list[Any] | None,
+        ttl_seconds: float,
+    ) -> None:
+        with self._tool_cache_lock:
+            self._tool_cache[cache_key] = ToolCacheEntry(
+                expires_at=self._time_provider() + ttl_seconds,
+                response_payload=deepcopy(response_payload),
+            )
+
 
 def build_tool_result(
     *,
@@ -332,6 +408,32 @@ def resolve_registered_tool(*, server_name: str, tool_name: str) -> McpToolMetad
         if tool.tool_name == tool_name:
             return tool
     raise ValueError("MCP tool is not registered.")
+
+
+def resolve_tool_cache_ttl_seconds(
+    *,
+    server_name: str,
+    tool_name: str,
+    permission: McpToolPermission,
+) -> float | None:
+    if server_name != "farmer-bnpl-mcp" or permission != McpToolPermission.READ:
+        return None
+    return FARMER_BNPL_TOOL_CACHE_TTL_SECONDS.get(tool_name)
+
+
+def build_tool_cache_key(
+    server_name: str,
+    tool_name: str,
+    request_payload: dict[str, Any],
+) -> str:
+    normalized_payload = json.dumps(
+        request_payload,
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=False,
+        default=str,
+    )
+    return f"{server_name}:{tool_name}:{normalized_payload}"
 
 
 def sanitize_execution_context(payload: dict[str, Any]) -> dict[str, Any]:
