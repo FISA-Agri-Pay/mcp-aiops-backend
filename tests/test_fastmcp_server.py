@@ -69,9 +69,10 @@ from tests.seed_constants import (
 
 def test_fastapi_app_mounts_fastmcp_transport() -> None:
     app = create_app()
+    route_paths = {getattr(route, "path", None) for route in app.routes}
 
-    assert any(route.path == MCP_TRANSPORT_MOUNT_PATH for route in app.routes)
-    assert any(route.path == f"/api/v1{MCP_TRANSPORT_MOUNT_PATH}" for route in app.routes)
+    assert MCP_TRANSPORT_MOUNT_PATH in route_paths
+    assert f"/api/v1{MCP_TRANSPORT_MOUNT_PATH}" in route_paths
 
 
 def test_fastmcp_server_exposes_registry_tools() -> None:
