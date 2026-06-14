@@ -988,6 +988,7 @@ def infer_sre_service_name(message: str, *, intent: SreCopilotIntent) -> str:
         "service-core",
         "service-admin",
         "mcp-aiops-backend",
+        "postgresql",
     )
     for service_name in explicit_services:
         if service_name in message:
@@ -996,6 +997,11 @@ def infer_sre_service_name(message: str, *, intent: SreCopilotIntent) -> str:
         return "service-payment"
     if intent in {"checkout_500", "sqs_publish_failure", "pin_verification_missing"}:
         return "service-catalog"
+    if intent == "db_hikaricp_issue" and any(
+        keyword in message
+        for keyword in ("postgresql", "postgres", "db_host", "db_role", "max_connections")
+    ):
+        return "postgresql"
     if "payment" in message or "결제" in message:
         return "service-payment"
     if "auth" in message or "인증" in message:
@@ -1068,6 +1074,8 @@ def infer_sre_namespace(message: str, *, service_name: str) -> str:
     )
     if match is not None:
         return match.group(1)
+    if service_name == "postgresql":
+        return "monitoring"
     if service_name == "service-catalog":
         return "service-catalog"
     if service_name in {"service-auth", "service-payment", "service-core", "service-admin"}:
@@ -1119,6 +1127,7 @@ def infer_sre_operation_name(intent: SreCopilotIntent) -> str | None:
         "sqs_publish_failure": "SQS Publish",
         "sqs_consume_failure": "SQS Consume",
         "pin_verification_missing": "PIN Verified Event",
+        "db_hikaricp_issue": "PostgreSQL connection usage",
     }.get(intent)
 
 
@@ -1131,6 +1140,8 @@ def infer_sre_topology_service(intent: SreCopilotIntent, *, service_name: str) -
         return "pin"
     if intent == "routing_failure":
         return service_name
+    if service_name == "postgresql":
+        return "postgresql"
     return service_name
 
 
@@ -1151,6 +1162,11 @@ def build_sre_prometheus_query(intent: SreCopilotIntent, *, service_name: str) -
     if intent == "pod_crashloop":
         return 'sum by (pod) (increase(kube_pod_container_status_restarts_total{pod=~".+"}[15m]))'
     if intent == "db_hikaricp_issue":
+        if service_name == "postgresql":
+            return (
+                "100 * sum(pg_stat_activity_count) "
+                "/ scalar(max(pg_settings_max_connections))"
+            )
         return 'max by (pool) (hikaricp_connections_active{application="' + service_name + '"})'
     return "up"
 
@@ -1170,6 +1186,11 @@ def build_sre_loki_query(intent: SreCopilotIntent, *, namespace: str, service_na
     if intent == "pod_crashloop":
         return f'{base_query} |~ "CrashLoopBackOff|OOMKilled|Exception|ERROR|panic"'
     if intent == "db_hikaricp_issue":
+        if service_name == "postgresql":
+            return (
+                f'{base_query} |~ '
+                '"PostgreSQL|postgres|connection|too many connections|max_connections|FATAL|ERROR"'
+            )
         return f'{base_query} |~ "HikariPool|JDBC|connection|timeout|postgres|SQLException"'
     return f'{base_query} |~ "{service_name}|ERROR|Exception|WARN"'
 

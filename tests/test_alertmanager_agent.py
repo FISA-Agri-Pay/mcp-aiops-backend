@@ -311,6 +311,60 @@ def test_alertmanager_sre_agent_dry_run_db_hikaricp_tool_plan() -> None:
     assert "get_service_trace_summary" in names
 
 
+def test_alertmanager_sre_agent_dry_run_postgres_saturation_tool_plan() -> None:
+    payload = {
+        "receiver": "aiops-platform",
+        "status": "firing",
+        "alerts": [
+            {
+                "status": "firing",
+                "labels": {
+                    "alertname": "PostgreSQLConnectionSaturationHigh",
+                    "alert_scope": "postgres",
+                    "namespace": "monitoring",
+                    "category": "postgresql",
+                    "component": "database",
+                    "db_host": "192.168.100.23",
+                    "db_role": "primary",
+                    "severity": "warning",
+                },
+                "annotations": {
+                    "summary": (
+                        "primary DB host connection usage exceeded "
+                        "80% of max_connections"
+                    ),
+                },
+                "fingerprint": "postgres-connection-saturation-001",
+            }
+        ],
+    }
+
+    result = plan_from_payload(payload)
+
+    names = tool_names(result)
+    prometheus_plan = next(
+        tool for tool in result.planned_tools if tool.tool_name == "query_multi_cluster_prometheus"
+    )
+    loki_plan = next(
+        tool for tool in result.planned_tools if tool.tool_name == "query_multi_cluster_loki"
+    )
+    assert_dry_run_read_only_plan(result)
+    assert_common_rca_context_tools(result)
+    assert result.intent == "db_hikaricp_issue"
+    assert result.capability == "db_connection_analysis"
+    assert result.alert is not None
+    assert result.alert.service_name == "postgresql"
+    assert result.incident_key == (
+        "alertmanager:postgresqlconnectionsaturationhigh:unknown-cluster:"
+        "monitoring:postgresql:warning"
+    )
+    assert "pg_stat_activity_count" in prometheus_plan.request_payload["query"]
+    assert "pg_settings_max_connections" in prometheus_plan.request_payload["query"]
+    assert loki_plan.request_payload["query"].startswith('{namespace="monitoring"}')
+    assert "get_cloudfront_origin_mapping" not in names
+    assert "get_alb_target_health" not in names
+
+
 def test_alertmanager_sre_agent_skips_resolved_payload() -> None:
     payload = {
         **POD_CRASH_PAYLOAD,
@@ -739,6 +793,85 @@ def test_rca_llm_snapshot_builds_application_root_cause_candidates() -> None:
     assert snapshot_payload["analysis_contract"][
         "application_root_cause_candidates"
     ][0]["candidate_type"] == "db_hikaricp"
+
+
+def test_rca_llm_snapshot_prioritizes_postgres_saturation_alert_candidate() -> None:
+    result = AlertmanagerSrePlanResult(
+        status="ANALYZED",
+        incident_key=(
+            "alertmanager:postgresqlconnectionsaturationhigh:unknown-cluster:"
+            "monitoring:postgresql:warning"
+        ),
+        alert=AlertmanagerSreAlertContext(
+            alert_name="PostgreSQLConnectionSaturationHigh",
+            status="firing",
+            namespace="monitoring",
+            service_name="postgresql",
+            severity="warning",
+            summary="primary DB connection usage exceeded 80% of max_connections",
+        ),
+        executed_tools=[
+            build_success_result(
+                "get_service_trace_summary",
+                {
+                    "summary": {
+                        "slow_spans": [
+                            {
+                                "service": "postgres",
+                                "duration_ms": 3200,
+                                "status": "error",
+                            }
+                        ]
+                    }
+                },
+            ),
+            build_success_result(
+                "search_traces",
+                {
+                    "traces": [
+                        {
+                            "trace_id": "trace-001",
+                            "duration_ms": 3400,
+                            "status": "error",
+                        }
+                    ]
+                },
+            ),
+        ],
+        context_bundle={
+            "failure_boundary_candidates": [
+                {"boundary": "dns", "status": "healthy", "confidence": "medium"},
+                {"boundary": "onprem_ingress", "status": "unknown", "confidence": "low"},
+                {"boundary": "k8s_service", "status": "unknown", "confidence": "low"},
+            ],
+        },
+        rca_analysis={
+            "run_status": "SUCCESS",
+            "answer": "Downstream latency or trace error is the likely root cause.",
+        },
+    )
+
+    snapshot_payload = build_rca_llm_snapshot_payload(result)
+    candidates = snapshot_payload["root_cause_candidates"]
+    text = build_analysis_notification_text(result)
+
+    assert snapshot_payload["analysis_contract"]["incident_focus"] == {
+        "category": "postgres_connection_saturation",
+        "primary_domain": "database",
+        "routing_boundaries_are_primary": False,
+        "expected_primary_evidence": [
+            "PostgreSQL current sessions",
+            "PostgreSQL max_connections",
+            "active versus idle sessions",
+            "application HikariCP pool pressure",
+            "recent scale-out or deployment changes",
+        ],
+    }
+    assert candidates[0]["candidate_type"] == "postgres_connection_saturation"
+    assert candidates[0]["confidence"] == "high"
+    assert candidates[1]["candidate_type"] == "trace_latency"
+    assert "PostgreSQL 계열 DB 알림" in text
+    assert "PostgreSQL connection saturation(high)" in text
 
 
 def test_rca_llm_snapshot_filters_query_only_and_low_confidence_candidates() -> None:

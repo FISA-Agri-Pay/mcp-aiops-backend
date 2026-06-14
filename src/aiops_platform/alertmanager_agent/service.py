@@ -96,6 +96,7 @@ APPLICATION_SIGNAL_TOOLS = {
     "aws": {"get_sqs_queue_attributes", "get_sqs_dlq_attributes"},
 }
 APPLICATION_CANDIDATE_LABELS = {
+    "postgres_connection_saturation": "PostgreSQL connection saturation",
     "db_hikaricp": "DB/HikariCP connection pool issue",
     "sqs_publish": "SQS publish failure",
     "sqs_consume": "SQS consume/DLQ backlog issue",
@@ -132,6 +133,32 @@ SRE_INTENT_BY_ALERT_NAME: dict[str, str] = {
     "hikariconnectionpoolstarvation": "db_hikaricp_issue",
     "dbconnectionfailure": "db_hikaricp_issue",
     "postgresconnectionfailure": "db_hikaricp_issue",
+    "postgresqlconnectionsaturationhigh": "db_hikaricp_issue",
+    "postgresqldatabasedown": "db_hikaricp_issue",
+    "postgresqlexportertargetdown": "db_hikaricp_issue",
+    "postgresqlreplicationlaghigh": "db_hikaricp_issue",
+    "postgresqllockcounthigh": "db_hikaricp_issue",
+    "postgresqlserverhighcpuusage": "db_hikaricp_issue",
+    "postgresqlserverrootfilesystemalmostfull": "db_hikaricp_issue",
+}
+
+POSTGRES_ALERT_NAMES = {
+    "postgresqlconnectionsaturationhigh",
+    "postgresqldatabasedown",
+    "postgresqlexportertargetdown",
+    "postgresqlreplicationlaghigh",
+    "postgresqllockcounthigh",
+    "postgresqlserverhighcpuusage",
+    "postgresqlserverrootfilesystemalmostfull",
+    "postgresqlcachehitratiolow",
+    "postgresqldeadtupleshigh",
+    "postgresqlcheckpointrequestedhigh",
+    "postgresqlserverhighmemoryusage",
+}
+POSTGRES_CONNECTION_SATURATION_ALERT_NAMES = {
+    "postgresqlconnectionsaturationhigh",
+    "hikaripoolexhausted",
+    "hikariconnectionpoolstarvation",
 }
 
 
@@ -898,11 +925,50 @@ def build_rca_analysis_contract(
     degraded_boundaries = boundary_names_by_status(boundaries, "degraded")
     unknown_boundaries = boundary_names_by_status(boundaries, "unknown")
     synthetic_alert = is_synthetic_sre_alert(result.alert)
+    rules = [
+        "alertname is only a hypothesis, not root-cause evidence",
+        "do not list healthy boundaries as likely root-cause candidates",
+        "likely causes require degraded or failed live evidence",
+        "unknown boundaries are data gaps, not confirmed root causes",
+        (
+            "if routing boundaries are healthy and application_root_cause_candidates "
+            "exist, use those candidates as the primary cause section"
+        ),
+        (
+            "for synthetic alerts, state that this is a current-state "
+            "inspection, not a confirmed outage"
+        ),
+        (
+            "if all checked routing boundaries are healthy, conclude that "
+            "current routing-boundary evidence is absent"
+        ),
+        (
+            "when routing boundaries are healthy, prioritize logs, traces, "
+            "recent deployments, DB/HikariCP, and downstream dependencies"
+        ),
+        "do not claim destructive remediation was executed",
+    ]
+    if is_postgres_sre_alert(result.alert):
+        rules.extend(
+            [
+                (
+                    "for PostgreSQL alerts, analyze database capacity, sessions, "
+                    "locks, replication, and application pool pressure before "
+                    "routing boundaries"
+                ),
+                (
+                    "do not choose DNS, ingress, MetalLB, or k8s_service as the "
+                    "primary cause of a PostgreSQL alert unless direct degraded "
+                    "boundary evidence exists"
+                ),
+            ]
+        )
     return {
         "language": {
             "answer_language": "ko",
             "keep_technical_identifiers_in_english": True,
         },
+        "incident_focus": build_incident_focus(result.alert),
         "is_synthetic_alert": synthetic_alert,
         "boundary_verdicts": build_boundary_verdicts(boundaries),
         "ruled_out_boundaries": healthy_boundaries,
@@ -916,29 +982,7 @@ def build_rca_analysis_contract(
             degraded_boundaries=degraded_boundaries,
             unknown_boundaries=unknown_boundaries,
         ),
-        "rules": [
-            "alertname is only a hypothesis, not root-cause evidence",
-            "do not list healthy boundaries as likely root-cause candidates",
-            "likely causes require degraded or failed live evidence",
-            "unknown boundaries are data gaps, not confirmed root causes",
-            (
-                "if routing boundaries are healthy and application_root_cause_candidates "
-                "exist, use those candidates as the primary cause section"
-            ),
-            (
-                "for synthetic alerts, state that this is a current-state "
-                "inspection, not a confirmed outage"
-            ),
-            (
-                "if all checked routing boundaries are healthy, conclude that "
-                "current routing-boundary evidence is absent"
-            ),
-            (
-                "when routing boundaries are healthy, prioritize logs, traces, "
-                "recent deployments, DB/HikariCP, and downstream dependencies"
-            ),
-            "do not claim destructive remediation was executed",
-        ],
+        "rules": rules,
     }
 
 
@@ -1059,6 +1103,28 @@ def detect_application_findings(
                 section=section,
                 tool_name=tool_name,
                 evidence="matched HikariCP/JDBC/PostgreSQL connection error signal",
+            )
+        )
+
+    if section == "metrics" and (
+        has_any(
+            text,
+            (
+                "pg_stat_activity_count",
+                "pg_settings_max_connections",
+                "max_connections",
+                "connection saturation",
+                "connection usage",
+            ),
+        )
+        and has_positive_metric_value(payload)
+    ):
+        findings.append(
+            build_application_finding(
+                "postgres_connection_saturation",
+                section=section,
+                tool_name=tool_name,
+                evidence="matched PostgreSQL connection usage/max_connections metric signal",
             )
         )
 
@@ -1196,12 +1262,14 @@ def build_application_root_cause_candidates(
 ) -> list[dict[str, Any]]:
     signals = application_signals or build_application_signal_summary(result)
     findings = flatten_application_findings(signals)
+    findings.extend(build_alert_root_cause_findings(result))
     findings_by_type: dict[str, list[dict[str, Any]]] = {}
     for finding in findings:
         findings_by_type.setdefault(str(finding.get("type")), []).append(finding)
 
     candidates = []
     for finding_type in (
+        "postgres_connection_saturation",
         "db_hikaricp",
         "sqs_publish",
         "sqs_consume",
@@ -1209,10 +1277,14 @@ def build_application_root_cause_candidates(
         "trace_latency",
     ):
         if finding_type in findings_by_type:
+            confidence_override = (
+                "high" if finding_type == "postgres_connection_saturation" else None
+            )
             candidates.append(
                 build_root_cause_candidate(
                     finding_type,
                     findings_by_type[finding_type],
+                    confidence_override=confidence_override,
                 )
             )
 
@@ -1252,6 +1324,39 @@ def build_application_root_cause_candidates(
         if candidate["confidence"] in {"high", "medium"}
     ]
     return visible_candidates[:3]
+
+
+def build_alert_root_cause_findings(
+    result: AlertmanagerSrePlanResult,
+) -> list[dict[str, Any]]:
+    alert = result.alert
+    if alert is None:
+        return []
+    if is_postgres_connection_saturation_alert(alert):
+        return [
+            build_application_finding(
+                "postgres_connection_saturation",
+                section="alertmanager",
+                tool_name="alert_labels",
+                evidence=(
+                    "PostgreSQL connection saturation alert fired; "
+                    "connection usage exceeded the configured threshold"
+                ),
+            )
+        ]
+    if is_postgres_sre_alert(alert):
+        return [
+            build_application_finding(
+                "db_hikaricp",
+                section="alertmanager",
+                tool_name="alert_labels",
+                evidence=(
+                    "PostgreSQL database alert fired; investigate DB health "
+                    "and application connection pool pressure"
+                ),
+            )
+        ]
+    return []
 
 
 def flatten_application_findings(signals: dict[str, Any]) -> list[dict[str, Any]]:
@@ -1321,6 +1426,12 @@ def candidate_confidence_rank(confidence: str) -> int:
 
 def next_checks_for_candidate(candidate_type: str) -> list[str]:
     checks = {
+        "postgres_connection_saturation": [
+            "check PostgreSQL current sessions versus max_connections",
+            "split active and idle sessions by database, user, and client",
+            "check application HikariCP active/pending/max connection metrics",
+            "review recent scale-out or deployment changes that increased DB sessions",
+        ],
         "db_hikaricp": [
             "check HikariCP active/pending/max connection metrics",
             "check PostgreSQL max_connections and current sessions",
@@ -1507,6 +1618,45 @@ def build_current_state_verdict(
     return f"{prefix}: no boundary evidence is available."
 
 
+def build_incident_focus(alert: AlertmanagerSreAlertContext | None) -> dict[str, Any]:
+    if alert is None:
+        return {
+            "category": "unknown",
+            "primary_domain": "unknown",
+            "routing_boundaries_are_primary": True,
+        }
+    if is_postgres_connection_saturation_alert(alert):
+        return {
+            "category": "postgres_connection_saturation",
+            "primary_domain": "database",
+            "routing_boundaries_are_primary": False,
+            "expected_primary_evidence": [
+                "PostgreSQL current sessions",
+                "PostgreSQL max_connections",
+                "active versus idle sessions",
+                "application HikariCP pool pressure",
+                "recent scale-out or deployment changes",
+            ],
+        }
+    if is_postgres_sre_alert(alert):
+        return {
+            "category": "postgres_database_alert",
+            "primary_domain": "database",
+            "routing_boundaries_are_primary": False,
+            "expected_primary_evidence": [
+                "PostgreSQL exporter metrics",
+                "database logs",
+                "application pool pressure",
+                "recent DB or application changes",
+            ],
+        }
+    return {
+        "category": "sre_incident",
+        "primary_domain": "service_or_routing",
+        "routing_boundaries_are_primary": True,
+    }
+
+
 def apply_rca_answer_guardrails(
     answer: str,
     *,
@@ -1541,6 +1691,13 @@ def build_rca_guardrail_prefix(result: AlertmanagerSrePlanResult) -> str:
         for boundary in contract["unknown_boundaries"]
         if boundary in ROUTING_BOUNDARIES
     ]
+    if is_postgres_sre_alert(result.alert):
+        return build_database_guardrail_prefix(
+            root_cause_candidates=root_cause_candidates,
+            healthy_boundaries=healthy_boundaries,
+            degraded_boundaries=degraded_boundaries,
+            unknown_boundaries=unknown_boundaries,
+        )
     if not (healthy_boundaries or degraded_boundaries or unknown_boundaries):
         return ""
 
@@ -1588,6 +1745,55 @@ def build_rca_guardrail_prefix(result: AlertmanagerSrePlanResult) -> str:
     return "\n".join(lines)
 
 
+def build_database_guardrail_prefix(
+    *,
+    root_cause_candidates: list[dict[str, Any]],
+    healthy_boundaries: list[str],
+    degraded_boundaries: list[str],
+    unknown_boundaries: list[str],
+) -> str:
+    lines = [
+        "자동 판정",
+        (
+            "- 이 알림은 PostgreSQL 계열 DB 알림이므로 라우팅 경계가 아니라 "
+            "DB connection/session pressure를 1차 원인 영역으로 분석합니다."
+        ),
+    ]
+    if healthy_boundaries:
+        lines.append(
+            "- 현재 live check 기준 "
+            f"{', '.join(healthy_boundaries)} 경계는 healthy이므로 "
+            "DB 알림의 원인 후보에서 제외합니다."
+        )
+    if degraded_boundaries:
+        lines.append(
+            "- degraded live boundary evidence가 있는 "
+            f"{', '.join(degraded_boundaries)} 경계는 보조 증거로만 검토합니다."
+        )
+    if unknown_boundaries:
+        lines.append(
+            "- "
+            f"{', '.join(unknown_boundaries)} 경계는 unknown이므로 "
+            "원인 확정이 아니라 데이터 한계로 다룹니다."
+        )
+    if root_cause_candidates:
+        candidate_summary = ", ".join(
+            f"{candidate['candidate']}({candidate['confidence']})"
+            for candidate in root_cause_candidates[:3]
+        )
+        lines.append(
+            "- 우선 확인할 DB/application root_cause_candidates: "
+            f"{candidate_summary}"
+        )
+    else:
+        lines.append(
+            "- 우선 확인할 항목: PostgreSQL current sessions, max_connections, "
+            "active/idle session split, HikariCP active/pending/max metrics, "
+            "최근 scale-out 또는 deployment 변경."
+        )
+    return "\n".join(lines)
+
+
 def is_synthetic_sre_alert(alert: AlertmanagerSreAlertContext | None) -> bool:
     if alert is None:
         return False
@@ -1601,6 +1807,48 @@ def is_synthetic_sre_alert(alert: AlertmanagerSreAlertContext | None) -> bool:
         )
     ).lower()
     return "synthetic" in text
+
+
+def is_postgres_sre_alert(alert: AlertmanagerSreAlertContext | None) -> bool:
+    if alert is None:
+        return False
+    normalized_name = normalize_alert_name(alert.alert_name)
+    if normalized_name in POSTGRES_ALERT_NAMES:
+        return True
+    text = " ".join(
+        str(value or "")
+        for value in (
+            alert.alert_name,
+            alert.service_name,
+            alert.workload,
+            alert.summary,
+            alert.description,
+        )
+    ).lower()
+    return "postgres" in text or "postgresql" in text
+
+
+def is_postgres_connection_saturation_alert(
+    alert: AlertmanagerSreAlertContext | None,
+) -> bool:
+    if alert is None:
+        return False
+    normalized_name = normalize_alert_name(alert.alert_name)
+    if normalized_name in POSTGRES_CONNECTION_SATURATION_ALERT_NAMES:
+        return True
+    text = " ".join(
+        str(value or "")
+        for value in (
+            alert.alert_name,
+            alert.summary,
+            alert.description,
+        )
+    ).lower()
+    return (
+        ("postgres" in text or "postgresql" in text)
+        and "connection" in text
+        and any(term in text for term in ("saturation", "usage", "80%", "max_connections"))
+    )
 
 
 def build_rca_analysis_payload(
@@ -2277,6 +2525,15 @@ def build_alert_context(
     alert_name = first_present(labels, "alertname", "alert", "name") or "unknown_alert"
     service_name = first_present(labels, "service", "service_name", "app", "application")
     workload = first_present(labels, "workload", "deployment", "statefulset", "daemonset", "job")
+    normalized_alert_name = normalize_alert_name(alert_name)
+    component = first_present(labels, "component", "category", "alert_scope")
+    if service_name is None and (
+        normalized_alert_name in POSTGRES_ALERT_NAMES
+        or (component is not None and component.lower() in {"database", "postgresql", "postgres"})
+    ):
+        service_name = "postgresql"
+    if workload is None and service_name == "postgresql":
+        workload = first_present(labels, "db_role", "db_host") or "postgresql"
     return AlertmanagerSreAlertContext(
         alert_name=alert_name,
         status=alert.status.strip().lower() or "firing",
