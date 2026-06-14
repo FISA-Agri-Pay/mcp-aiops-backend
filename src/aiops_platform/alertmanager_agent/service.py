@@ -97,6 +97,7 @@ APPLICATION_SIGNAL_TOOLS = {
 }
 APPLICATION_CANDIDATE_LABELS = {
     "postgres_connection_saturation": "PostgreSQL connection saturation",
+    "pod_waiting_state": "Kubernetes pod waiting/pending state",
     "db_hikaricp": "DB/HikariCP connection pool issue",
     "sqs_publish": "SQS publish failure",
     "sqs_consume": "SQS consume/DLQ backlog issue",
@@ -129,6 +130,8 @@ SRE_INTENT_BY_ALERT_NAME: dict[str, str] = {
     "kubepodcrashlooping": "pod_crashloop",
     "kubepodcontainerwaiting": "pod_crashloop",
     "kubepodcontainerstatuswaitingreason": "pod_crashloop",
+    "kubernetespodnothealthy": "pod_crashloop",
+    "kubernetespodwaitingproblem": "pod_crashloop",
     "hikaripoolexhausted": "db_hikaricp_issue",
     "hikariconnectionpoolstarvation": "db_hikaricp_issue",
     "dbconnectionfailure": "db_hikaricp_issue",
@@ -159,6 +162,17 @@ POSTGRES_CONNECTION_SATURATION_ALERT_NAMES = {
     "postgresqlconnectionsaturationhigh",
     "hikaripoolexhausted",
     "hikariconnectionpoolstarvation",
+}
+KUBERNETES_POD_HEALTH_ALERT_NAMES = {
+    "podcrashlooping",
+    "podcrashloopbackoff",
+    "kubepodcrashlooping",
+    "kubepodcontainerwaiting",
+    "kubepodcontainerstatuswaitingreason",
+    "kubernetespodnothealthy",
+    "kubernetespodwaitingproblem",
+    "aiopspodpendingtoolong",
+    "aiopspodcrashlooping",
 }
 
 
@@ -963,6 +977,21 @@ def build_rca_analysis_contract(
                 ),
             ]
         )
+    if is_kubernetes_pod_health_alert(result.alert):
+        rules.extend(
+            [
+                (
+                    "for Kubernetes pod health alerts, analyze pod lifecycle, "
+                    "events, image pull, scheduling, node pressure, and mounted "
+                    "configuration before traces or routing boundaries"
+                ),
+                (
+                    "do not choose DNS, ingress, MetalLB, or downstream traces as "
+                    "the primary cause of a pod Pending/Waiting alert unless direct "
+                    "degraded evidence exists"
+                ),
+            ]
+        )
     return {
         "language": {
             "answer_language": "ko",
@@ -1270,6 +1299,7 @@ def build_application_root_cause_candidates(
     candidates = []
     for finding_type in (
         "postgres_connection_saturation",
+        "pod_waiting_state",
         "db_hikaricp",
         "sqs_publish",
         "sqs_consume",
@@ -1278,7 +1308,9 @@ def build_application_root_cause_candidates(
     ):
         if finding_type in findings_by_type:
             confidence_override = (
-                "high" if finding_type == "postgres_connection_saturation" else None
+                "high"
+                if finding_type in {"postgres_connection_saturation", "pod_waiting_state"}
+                else None
             )
             candidates.append(
                 build_root_cause_candidate(
@@ -1332,6 +1364,18 @@ def build_alert_root_cause_findings(
     alert = result.alert
     if alert is None:
         return []
+    if is_kubernetes_pod_health_alert(alert):
+        return [
+            build_application_finding(
+                "pod_waiting_state",
+                section="alertmanager",
+                tool_name="alert_labels",
+                evidence=(
+                    "Kubernetes pod health alert fired; investigate pod phase, "
+                    "waiting reason, image pull, scheduling, node, and events"
+                ),
+            )
+        ]
     if is_postgres_connection_saturation_alert(alert):
         return [
             build_application_finding(
@@ -1431,6 +1475,15 @@ def next_checks_for_candidate(candidate_type: str) -> list[str]:
             "split active and idle sessions by database, user, and client",
             "check application HikariCP active/pending/max connection metrics",
             "review recent scale-out or deployment changes that increased DB sessions",
+        ],
+        "pod_waiting_state": [
+            "check Kubernetes events for image pull, scheduling, and mount errors",
+            "describe the affected pod and inspect container waiting reason",
+            (
+                "verify image tag, registry credentials, ConfigMap/Secret "
+                "references, and node pressure"
+            ),
+            "check whether the workload is a Job/CronJob and compare recent runs",
         ],
         "db_hikaricp": [
             "check HikariCP active/pending/max connection metrics",
@@ -1625,6 +1678,19 @@ def build_incident_focus(alert: AlertmanagerSreAlertContext | None) -> dict[str,
             "primary_domain": "unknown",
             "routing_boundaries_are_primary": True,
         }
+    if is_kubernetes_pod_health_alert(alert):
+        return {
+            "category": "kubernetes_pod_health",
+            "primary_domain": "kubernetes",
+            "routing_boundaries_are_primary": False,
+            "expected_primary_evidence": [
+                "pod phase and container waiting reason",
+                "Kubernetes warning events",
+                "image pull and registry credentials",
+                "ConfigMap/Secret mount references",
+                "node scheduling and resource pressure",
+            ],
+        }
     if is_postgres_connection_saturation_alert(alert):
         return {
             "category": "postgres_connection_saturation",
@@ -1691,6 +1757,13 @@ def build_rca_guardrail_prefix(result: AlertmanagerSrePlanResult) -> str:
         for boundary in contract["unknown_boundaries"]
         if boundary in ROUTING_BOUNDARIES
     ]
+    if is_kubernetes_pod_health_alert(result.alert):
+        return build_kubernetes_pod_guardrail_prefix(
+            root_cause_candidates=root_cause_candidates,
+            healthy_boundaries=healthy_boundaries,
+            degraded_boundaries=degraded_boundaries,
+            unknown_boundaries=unknown_boundaries,
+        )
     if is_postgres_sre_alert(result.alert):
         return build_database_guardrail_prefix(
             root_cause_candidates=root_cause_candidates,
@@ -1741,6 +1814,56 @@ def build_rca_guardrail_prefix(result: AlertmanagerSrePlanResult) -> str:
         lines.append(
             "- 라우팅 경계보다 application root_cause_candidates를 우선 확인합니다: "
             f"{candidate_summary}"
+        )
+    return "\n".join(lines)
+
+
+def build_kubernetes_pod_guardrail_prefix(
+    *,
+    root_cause_candidates: list[dict[str, Any]],
+    healthy_boundaries: list[str],
+    degraded_boundaries: list[str],
+    unknown_boundaries: list[str],
+) -> str:
+    lines = [
+        "자동 판정",
+        (
+            "- 이 알림은 Kubernetes Pod 상태 알림이므로 라우팅 경계가 아니라 "
+            "Pod lifecycle, image pull, scheduling, node/resource 상태를 "
+            "1차 원인 영역으로 분석합니다."
+        ),
+    ]
+    if healthy_boundaries:
+        lines.append(
+            "- 현재 live check 기준 "
+            f"{', '.join(healthy_boundaries)} 경계는 healthy이므로 "
+            "Pod Pending/Waiting 알림의 원인 후보에서 제외합니다."
+        )
+    if degraded_boundaries:
+        lines.append(
+            "- degraded live boundary evidence가 있는 "
+            f"{', '.join(degraded_boundaries)} 경계는 보조 증거로만 검토합니다."
+        )
+    if unknown_boundaries:
+        lines.append(
+            "- "
+            f"{', '.join(unknown_boundaries)} 경계는 unknown이므로 "
+            "원인 확정이 아니라 데이터 한계로 다룹니다."
+        )
+    if root_cause_candidates:
+        candidate_summary = ", ".join(
+            f"{candidate['candidate']}({candidate['confidence']})"
+            for candidate in root_cause_candidates[:3]
+        )
+        lines.append(
+            "- 우선 확인할 Kubernetes/application root_cause_candidates: "
+            f"{candidate_summary}"
+        )
+    else:
+        lines.append(
+            "- 우선 확인할 항목: pod describe/events, container waiting reason, "
+            "image pull 권한/태그, ConfigMap/Secret 참조, node pressure, "
+            "최근 Job/CronJob 실행 이력."
         )
     return "\n".join(lines)
 
@@ -1807,6 +1930,41 @@ def is_synthetic_sre_alert(alert: AlertmanagerSreAlertContext | None) -> bool:
         )
     ).lower()
     return "synthetic" in text
+
+
+def is_kubernetes_pod_health_alert_name(normalized_alert_name: str) -> bool:
+    return normalized_alert_name in KUBERNETES_POD_HEALTH_ALERT_NAMES
+
+
+def is_kubernetes_pod_health_alert(alert: AlertmanagerSreAlertContext | None) -> bool:
+    if alert is None:
+        return False
+    normalized_name = normalize_alert_name(alert.alert_name)
+    if is_kubernetes_pod_health_alert_name(normalized_name):
+        return True
+    text = " ".join(
+        str(value or "")
+        for value in (
+            alert.alert_name,
+            alert.service_name,
+            alert.workload,
+            alert.pod,
+            alert.summary,
+            alert.description,
+        )
+    ).lower()
+    return "pod" in text and any(
+        term in text
+        for term in (
+            "pending",
+            "waiting",
+            "imagepullbackoff",
+            "errimagepull",
+            "crashloop",
+            "nothealthy",
+            "not healthy",
+        )
+    )
 
 
 def is_postgres_sre_alert(alert: AlertmanagerSreAlertContext | None) -> bool:
@@ -2523,10 +2681,18 @@ def build_alert_context(
     annotations: Mapping[str, str],
 ) -> AlertmanagerSreAlertContext:
     alert_name = first_present(labels, "alertname", "alert", "name") or "unknown_alert"
+    pod_name = first_present(labels, "pod", "pod_name")
     service_name = first_present(labels, "service", "service_name", "app", "application")
     workload = first_present(labels, "workload", "deployment", "statefulset", "daemonset", "job")
     normalized_alert_name = normalize_alert_name(alert_name)
     component = first_present(labels, "component", "category", "alert_scope")
+    is_k8s_pod_alert = is_kubernetes_pod_health_alert_name(normalized_alert_name) or (
+        component is not None and component.lower() in {"pod", "kubernetes", "k8s"}
+    )
+    if workload is None and pod_name is not None and is_k8s_pod_alert:
+        workload = infer_workload_from_pod_name(pod_name)
+    if service_name is None and workload is not None and is_k8s_pod_alert:
+        service_name = workload
     if service_name is None and (
         normalized_alert_name in POSTGRES_ALERT_NAMES
         or (component is not None and component.lower() in {"database", "postgresql", "postgres"})
@@ -2539,16 +2705,39 @@ def build_alert_context(
         status=alert.status.strip().lower() or "firing",
         severity=first_present(labels, "severity", "priority"),
         cluster=first_present(labels, "cluster", "cluster_name", "source"),
-        namespace=first_present(labels, "namespace", "kubernetes_namespace"),
+        namespace=resolve_alert_namespace(labels, is_k8s_pod_alert=is_k8s_pod_alert),
         service_name=service_name or workload,
         workload=workload or service_name,
-        pod=first_present(labels, "pod", "pod_name"),
+        pod=pod_name,
         fingerprint=normalized_optional(alert.fingerprint) or fingerprint_from_labels(labels),
         starts_at=alert.startsAt,
         ends_at=alert.endsAt,
         summary=first_present(annotations, "summary", "message"),
         description=first_present(annotations, "description", "runbook", "details"),
     )
+
+
+def resolve_alert_namespace(
+    labels: Mapping[str, str],
+    *,
+    is_k8s_pod_alert: bool,
+) -> str | None:
+    if is_k8s_pod_alert:
+        namespace = first_present(labels, "k8s_namespace", "kubernetes_namespace")
+        if namespace is not None:
+            return namespace
+    return first_present(labels, "namespace", "kubernetes_namespace", "k8s_namespace")
+
+
+def infer_workload_from_pod_name(pod_name: str) -> str:
+    normalized = pod_name.strip()
+    deployment_match = re.match(r"^(.+)-[a-f0-9]{8,10}-[a-z0-9]{5}$", normalized)
+    if deployment_match is not None:
+        return deployment_match.group(1)
+    job_match = re.match(r"^(.+)-\d{6,}-[a-z0-9]{5}$", normalized)
+    if job_match is not None:
+        return job_match.group(1)
+    return normalized
 
 
 def first_present(values: Mapping[str, str], *keys: str) -> str | None:

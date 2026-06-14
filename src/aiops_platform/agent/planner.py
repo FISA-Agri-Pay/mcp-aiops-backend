@@ -981,12 +981,20 @@ def build_sre_incident_context(*, message: str, intent: SreCopilotIntent) -> dic
 
 
 def infer_sre_service_name(message: str, *, intent: SreCopilotIntent) -> str:
+    explicit_match = re.search(
+        r"\b(?:service|service_name|service-name|workload|app)[=:]"
+        r"\s*([a-z0-9][a-z0-9.-]{0,252})\b",
+        message,
+    )
+    if explicit_match is not None:
+        return explicit_match.group(1)
     explicit_services = (
         "service-catalog",
         "service-payment",
         "service-auth",
         "service-core",
         "service-admin",
+        "service-batch",
         "mcp-aiops-backend",
         "postgresql",
     )
@@ -1015,7 +1023,13 @@ def infer_sre_edge_target(
     intent: SreCopilotIntent,
     service_name: str,
 ) -> str:
-    onprem_services = {"service-auth", "service-payment", "service-core", "service-admin"}
+    onprem_services = {
+        "service-auth",
+        "service-payment",
+        "service-core",
+        "service-admin",
+        "service-batch",
+    }
     if service_name in onprem_services or any(
         keyword in message
         for keyword in ("on-prem", "onprem", "온프렘", "metallb", "metal lb")
@@ -1097,7 +1111,13 @@ def infer_sre_kubernetes_source(
         return "eks"
     if edge_target == "onprem":
         return "onprem"
-    if service_name in {"service-auth", "service-payment", "service-core", "service-admin"}:
+    if service_name in {
+        "service-auth",
+        "service-payment",
+        "service-core",
+        "service-admin",
+        "service-batch",
+    }:
         return "onprem"
     return None
 
@@ -1196,11 +1216,13 @@ def build_sre_loki_query(intent: SreCopilotIntent, *, namespace: str, service_na
 
 
 def extract_sre_pod_name(message: str) -> str | None:
-    explicit = re.search(r"\bpod[/: ]+([a-z0-9][a-z0-9.-]{0,252})\b", message)
-    if explicit is not None:
-        return explicit.group(1)
     generated = re.search(r"\b([a-z0-9][a-z0-9-]+-[a-f0-9]{8,10}-[a-z0-9]{5})\b", message)
-    return generated.group(1) if generated is not None else None
+    if generated is not None:
+        return generated.group(1)
+    for explicit in re.finditer(r"\bpod[/: ]+([a-z0-9][a-z0-9.-]{0,252})\b", message):
+        if explicit.group(1) not in {"crashloopbackoff", "pending"}:
+            return explicit.group(1)
+    return None
 
 
 def classify_admin_copilot_intent(message: str) -> AdminCopilotIntent:

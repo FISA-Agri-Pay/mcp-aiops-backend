@@ -150,6 +150,71 @@ def test_alertmanager_sre_agent_plans_pod_crashloop_read_tools() -> None:
     assert "get_pod_logs" in names
 
 
+def test_alertmanager_sre_agent_uses_k8s_namespace_for_pod_health_alert() -> None:
+    payload = {
+        "receiver": "aiops-platform",
+        "status": "firing",
+        "alerts": [
+            {
+                "status": "firing",
+                "labels": {
+                    "alertname": "KubernetesPodNotHealthy",
+                    "alert_scope": "k8s",
+                    "namespace": "monitoring",
+                    "k8s_namespace": "kkpp",
+                    "pod": "service-batch-29689980-46j66",
+                    "node": "k8s-worker-cicd-a",
+                    "phase": "Pending",
+                    "severity": "warning",
+                },
+                "annotations": {
+                    "summary": (
+                        "Pod service-batch-29689980-46j66 has been Pending "
+                        "for more than 10 minutes"
+                    ),
+                },
+                "fingerprint": "k8s-pod-not-healthy-001",
+            }
+        ],
+    }
+
+    result = plan_from_payload(payload)
+
+    names = tool_names(result)
+    pod_logs_plan = next(tool for tool in result.planned_tools if tool.tool_name == "get_pod_logs")
+    rollout_plan = next(
+        tool for tool in result.planned_tools if tool.tool_name == "get_rollout_status"
+    )
+    loki_plan = next(
+        tool for tool in result.planned_tools if tool.tool_name == "query_multi_cluster_loki"
+    )
+
+    assert_dry_run_read_only_plan(result)
+    assert result.intent == "pod_crashloop"
+    assert result.capability == "pod_crashloop_analysis"
+    assert result.alert is not None
+    assert result.alert.namespace == "kkpp"
+    assert result.alert.service_name == "service-batch"
+    assert result.alert.workload == "service-batch"
+    assert result.incident_key == (
+        "alertmanager:kubernetespodnothealthy:unknown-cluster:"
+        "kkpp:service-batch:warning"
+    )
+    assert pod_logs_plan.request_payload == {
+        "namespace": "kkpp",
+        "pod_name": "service-batch-29689980-46j66",
+        "tail_lines": 200,
+    }
+    assert rollout_plan.request_payload == {
+        "namespace": "kkpp",
+        "deployment_name": "service-batch",
+        "source": "onprem",
+    }
+    assert loki_plan.request_payload["query"].startswith('{namespace="kkpp"}')
+    assert "get_k8s_events" in names
+    assert "get_cloudfront_origin_mapping" not in names
+
+
 def test_alertmanager_sre_agent_dry_run_checkout_500_tool_plan() -> None:
     payload = build_firing_payload(
         alertname="Checkout5xxHigh",
@@ -872,6 +937,87 @@ def test_rca_llm_snapshot_prioritizes_postgres_saturation_alert_candidate() -> N
     assert candidates[1]["candidate_type"] == "trace_latency"
     assert "PostgreSQL 계열 DB 알림" in text
     assert "PostgreSQL connection saturation(high)" in text
+
+
+def test_rca_llm_snapshot_prioritizes_kubernetes_pod_health_candidate() -> None:
+    result = AlertmanagerSrePlanResult(
+        status="ANALYZED",
+        incident_key=(
+            "alertmanager:kubernetespodnothealthy:unknown-cluster:"
+            "kkpp:service-batch:warning"
+        ),
+        alert=AlertmanagerSreAlertContext(
+            alert_name="KubernetesPodNotHealthy",
+            status="firing",
+            namespace="kkpp",
+            service_name="service-batch",
+            workload="service-batch",
+            pod="service-batch-29689980-46j66",
+            severity="warning",
+            summary="Pod service-batch-29689980-46j66 is Pending",
+        ),
+        executed_tools=[
+            build_success_result(
+                "get_service_trace_summary",
+                {
+                    "summary": {
+                        "slow_spans": [
+                            {
+                                "service": "postgres",
+                                "duration_ms": 3200,
+                                "status": "error",
+                            }
+                        ]
+                    }
+                },
+            ),
+            build_success_result(
+                "search_traces",
+                {
+                    "traces": [
+                        {
+                            "trace_id": "trace-001",
+                            "duration_ms": 3400,
+                            "status": "error",
+                        }
+                    ]
+                },
+            ),
+        ],
+        context_bundle={
+            "failure_boundary_candidates": [
+                {"boundary": "dns", "status": "healthy", "confidence": "medium"},
+                {"boundary": "onprem_ingress", "status": "unknown", "confidence": "low"},
+                {"boundary": "k8s_service", "status": "unknown", "confidence": "low"},
+            ],
+        },
+        rca_analysis={
+            "run_status": "SUCCESS",
+            "answer": "Downstream latency or trace error is the likely root cause.",
+        },
+    )
+
+    snapshot_payload = build_rca_llm_snapshot_payload(result)
+    candidates = snapshot_payload["root_cause_candidates"]
+    text = build_analysis_notification_text(result)
+
+    assert snapshot_payload["analysis_contract"]["incident_focus"] == {
+        "category": "kubernetes_pod_health",
+        "primary_domain": "kubernetes",
+        "routing_boundaries_are_primary": False,
+        "expected_primary_evidence": [
+            "pod phase and container waiting reason",
+            "Kubernetes warning events",
+            "image pull and registry credentials",
+            "ConfigMap/Secret mount references",
+            "node scheduling and resource pressure",
+        ],
+    }
+    assert candidates[0]["candidate_type"] == "pod_waiting_state"
+    assert candidates[0]["confidence"] == "high"
+    assert candidates[1]["candidate_type"] == "trace_latency"
+    assert "Kubernetes Pod 상태 알림" in text
+    assert "Kubernetes pod waiting/pending state(high)" in text
 
 
 def test_rca_llm_snapshot_filters_query_only_and_low_confidence_candidates() -> None:
