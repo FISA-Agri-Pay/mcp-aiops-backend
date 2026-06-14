@@ -110,6 +110,60 @@ class KubernetesResourceResult(BaseModel):
     raw: dict[str, Any]
 
 
+class OnpremTcpConnectivityResult(BaseModel):
+    source: str = "onprem"
+    target_host: str
+    port: int
+    timeout_seconds: float
+    reachable: bool
+    status: Literal["HEALTHY", "DEGRADED"]
+    latency_ms: float | None = None
+    error: str | None = None
+
+
+class OnpremHttpRouteCheckResult(BaseModel):
+    source: str = "onprem"
+    url: str
+    host_header: str | None = None
+    path: str
+    timeout_seconds: float
+    expected_status_min: int
+    expected_status_max: int
+    reachable: bool
+    healthy: bool
+    status: Literal["HEALTHY", "DEGRADED"]
+    http_status: int | None = None
+    latency_ms: float | None = None
+    response_excerpt: str | None = None
+    error: str | None = None
+
+
+class KubernetesServiceEndpointsResult(BaseModel):
+    source: str = "default"
+    namespace: str
+    service_name: str
+    service_type: str | None = None
+    cluster_ip: str | None = None
+    selector: dict[str, str]
+    ports: list[dict[str, Any]]
+    ready_addresses: list[dict[str, Any]]
+    not_ready_addresses: list[dict[str, Any]]
+    ready_count: int
+    not_ready_count: int
+    status: Literal["HEALTHY", "DEGRADED"]
+
+
+class KubernetesIngressBackendMappingResult(BaseModel):
+    source: str = "default"
+    namespace: str
+    host: str | None = None
+    path: str | None = None
+    service_name: str | None = None
+    matched_rules: list[dict[str, Any]]
+    ingress_count: int
+    status: Literal["HEALTHY", "DEGRADED"]
+
+
 class PodLogsRequest(BaseModel):
     namespace: str | None = None
     pod_name: str = Field(min_length=1, max_length=253)
@@ -310,6 +364,7 @@ class InfraOpsSourceResult(BaseModel):
 class RcaSnapshotRequest(BaseModel):
     incident_key: str | None = Field(default=None, max_length=120)
     namespace: str | None = None
+    source: str | None = None
     index_pattern: str | None = None
     prometheus_query: str = Field(default="up", min_length=1)
     loki_query: str = Field(default='{job=~".+"}', min_length=1)

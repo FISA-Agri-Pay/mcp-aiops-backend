@@ -1,10 +1,15 @@
 from __future__ import annotations
 
 import re
+import socket
 from collections.abc import Callable
 from fnmatch import fnmatch
+from ipaddress import ip_address, ip_network
+from time import perf_counter
 from typing import Any, Literal
-from urllib.parse import urlparse
+from urllib.error import HTTPError, URLError
+from urllib.parse import urljoin, urlparse
+from urllib.request import Request, urlopen
 
 from aiops_platform.core.config import Settings, settings
 from aiops_platform.infraops.clients import (
@@ -44,21 +49,25 @@ from aiops_platform.infraops.schemas import (
     KafkaConsumerLagResult,
     KibanaSavedObjectsResult,
     KubectlExecPreviewRequest,
+    KubernetesIngressBackendMappingResult,
     KubernetesResourceResult,
+    KubernetesServiceEndpointsResult,
     LokiQueryRequest,
     LokiQueryResult,
     MultiClusterLokiQueryResult,
     MultiClusterPrometheusQueryResult,
     MultiClusterQuerySourceResult,
-    PodOperationPreviewRequest,
+    OnpremHttpRouteCheckResult,
+    OnpremTcpConnectivityResult,
     PodLogsRequest,
     PodLogsResult,
+    PodOperationPreviewRequest,
     PrometheusQueryRequest,
     PrometheusQueryResult,
-    RecentDeploymentsRequest,
-    RecentDeploymentsResult,
     RcaSnapshotRequest,
     RcaSnapshotResult,
+    RecentDeploymentsRequest,
+    RecentDeploymentsResult,
     RolloutStatusRequest,
     RolloutStatusResult,
     ScaleDeploymentPreviewRequest,
@@ -79,6 +88,14 @@ MAX_KIBANA_SAVED_OBJECTS_PER_PAGE = 100
 KUBERNETES_RESOURCE_NAME_PATTERN = re.compile(r"^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$")
 OBSERVABILITY_SOURCE_NAME_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:-]{0,63}$")
 MAX_KUBECTL_COMMAND_PART_LENGTH = 200
+DEFAULT_ONPREM_METALLB_ADDRESS = "10.30.2.100"
+DEFAULT_ONPREM_INGRESS_ENDPOINT = "http://10.30.2.100"
+DEFAULT_ONPREM_INGRESS_HEALTH_PATH = "/actuator/health"
+PRIVATE_CONNECTIVITY_NETWORKS = (
+    ip_network("10.0.0.0/8"),
+    ip_network("172.16.0.0/12"),
+    ip_network("192.168.0.0/16"),
+)
 ObservabilitySourceUrls = tuple[tuple[str, str], ...]
 KubernetesSource = tuple[KubernetesClient, tuple[str, ...]]
 
@@ -379,6 +396,180 @@ class InfraOpsService:
         source: str | None = None,
     ) -> KubernetesResourceResult:
         return self._get_kubernetes_resource("hpa", namespace=namespace, source=source)
+
+    def check_onprem_metallb_endpoint(
+        self,
+        address: str = DEFAULT_ONPREM_METALLB_ADDRESS,
+        port: int = 80,
+        timeout_seconds: float = 3.0,
+    ) -> OnpremTcpConnectivityResult:
+        validate_private_ip_target(address)
+        validate_tcp_port(port)
+        resolved_timeout = clamp_timeout_seconds(timeout_seconds)
+        started_at = perf_counter()
+        try:
+            with socket.create_connection((address, port), timeout=resolved_timeout):
+                latency_ms = round((perf_counter() - started_at) * 1000, 2)
+            return OnpremTcpConnectivityResult(
+                target_host=address,
+                port=port,
+                timeout_seconds=resolved_timeout,
+                reachable=True,
+                status="HEALTHY",
+                latency_ms=latency_ms,
+            )
+        except OSError as exc:
+            latency_ms = round((perf_counter() - started_at) * 1000, 2)
+            return OnpremTcpConnectivityResult(
+                target_host=address,
+                port=port,
+                timeout_seconds=resolved_timeout,
+                reachable=False,
+                status="DEGRADED",
+                latency_ms=latency_ms,
+                error=exc.__class__.__name__,
+            )
+
+    def check_onprem_ingress_route(
+        self,
+        endpoint: str = DEFAULT_ONPREM_INGRESS_ENDPOINT,
+        host_header: str | None = None,
+        path: str = DEFAULT_ONPREM_INGRESS_HEALTH_PATH,
+        expected_status_min: int = 200,
+        expected_status_max: int = 399,
+        timeout_seconds: float = 5.0,
+    ) -> OnpremHttpRouteCheckResult:
+        url = build_private_http_url(endpoint=endpoint, path=path)
+        validate_http_host_header(host_header)
+        validate_http_status_range(expected_status_min, expected_status_max)
+        resolved_timeout = clamp_timeout_seconds(timeout_seconds)
+        headers = {"Host": host_header} if host_header else {}
+        started_at = perf_counter()
+        request = Request(url, headers=headers, method="GET")
+        try:
+            with urlopen(request, timeout=resolved_timeout) as response:
+                response_body = response.read(512).decode("utf-8", errors="replace")
+                http_status = response.status
+                latency_ms = round((perf_counter() - started_at) * 1000, 2)
+        except HTTPError as exc:
+            response_body = exc.read(512).decode("utf-8", errors="replace")
+            http_status = exc.code
+            latency_ms = round((perf_counter() - started_at) * 1000, 2)
+            healthy = expected_status_min <= http_status <= expected_status_max
+            return OnpremHttpRouteCheckResult(
+                url=url,
+                host_header=host_header,
+                path=path,
+                timeout_seconds=resolved_timeout,
+                expected_status_min=expected_status_min,
+                expected_status_max=expected_status_max,
+                reachable=True,
+                healthy=healthy,
+                status="HEALTHY" if healthy else "DEGRADED",
+                http_status=http_status,
+                latency_ms=latency_ms,
+                response_excerpt=response_body[:256],
+                error=f"HTTP {http_status}",
+            )
+        except URLError as exc:
+            latency_ms = round((perf_counter() - started_at) * 1000, 2)
+            return OnpremHttpRouteCheckResult(
+                url=url,
+                host_header=host_header,
+                path=path,
+                timeout_seconds=resolved_timeout,
+                expected_status_min=expected_status_min,
+                expected_status_max=expected_status_max,
+                reachable=False,
+                healthy=False,
+                status="DEGRADED",
+                latency_ms=latency_ms,
+                error=exc.reason.__class__.__name__,
+            )
+
+        healthy = expected_status_min <= http_status <= expected_status_max
+        return OnpremHttpRouteCheckResult(
+            url=url,
+            host_header=host_header,
+            path=path,
+            timeout_seconds=resolved_timeout,
+            expected_status_min=expected_status_min,
+            expected_status_max=expected_status_max,
+            reachable=True,
+            healthy=healthy,
+            status="HEALTHY" if healthy else "DEGRADED",
+            http_status=http_status,
+            latency_ms=latency_ms,
+            response_excerpt=response_body[:256],
+        )
+
+    def get_k8s_service_endpoints(
+        self,
+        service_name: str,
+        namespace: str | None = None,
+        source: str | None = None,
+    ) -> KubernetesServiceEndpointsResult:
+        validate_kubernetes_resource_name(service_name, resource="service")
+        source_name, client, namespace_allowlist = self._resolve_kubernetes_source(source)
+        resolved_namespace = self._resolve_namespace(
+            namespace,
+            allowlist=namespace_allowlist,
+        )
+        service = client.service(resolved_namespace, service_name)
+        endpoints = client.endpoints(resolved_namespace, service_name)
+        ready_addresses, not_ready_addresses = summarize_endpoint_addresses(endpoints)
+        service_spec = service.get("spec", {})
+        return KubernetesServiceEndpointsResult(
+            source=source_name,
+            namespace=resolved_namespace,
+            service_name=service_name,
+            service_type=service_spec.get("type"),
+            cluster_ip=service_spec.get("clusterIP"),
+            selector=service_spec.get("selector") or {},
+            ports=service_spec.get("ports") or [],
+            ready_addresses=ready_addresses,
+            not_ready_addresses=not_ready_addresses,
+            ready_count=len(ready_addresses),
+            not_ready_count=len(not_ready_addresses),
+            status="HEALTHY" if ready_addresses and not not_ready_addresses else "DEGRADED",
+        )
+
+    def get_k8s_ingress_backend_mapping(
+        self,
+        namespace: str | None = None,
+        source: str | None = None,
+        host: str | None = None,
+        path: str | None = None,
+        service_name: str | None = None,
+    ) -> KubernetesIngressBackendMappingResult:
+        source_name, client, namespace_allowlist = self._resolve_kubernetes_source(source)
+        resolved_namespace = self._resolve_namespace(
+            namespace,
+            allowlist=namespace_allowlist,
+        )
+        if service_name is not None:
+            validate_kubernetes_resource_name(service_name, resource="service")
+        validate_optional_ingress_host(host)
+        if path is not None:
+            validate_http_path(path)
+
+        ingresses = client.ingresses(resolved_namespace).get("items", [])
+        matched_rules = find_ingress_backend_rules(
+            ingresses,
+            host=host,
+            path=path,
+            service_name=service_name,
+        )
+        return KubernetesIngressBackendMappingResult(
+            source=source_name,
+            namespace=resolved_namespace,
+            host=host,
+            path=path,
+            service_name=service_name,
+            matched_rules=matched_rules,
+            ingress_count=len(ingresses),
+            status="HEALTHY" if matched_rules else "DEGRADED",
+        )
 
     def get_pod_logs(
         self,
@@ -885,6 +1076,7 @@ class InfraOpsService:
         self,
         incident_key: str | None = None,
         namespace: str | None = None,
+        source: str | None = None,
         index_pattern: str | None = None,
         prometheus_query: str = "up",
         loki_query: str = '{job=~".+"}',
@@ -897,6 +1089,7 @@ class InfraOpsService:
         request = RcaSnapshotRequest(
             incident_key=incident_key,
             namespace=namespace,
+            source=source,
             index_pattern=index_pattern,
             prometheus_query=prometheus_query,
             loki_query=loki_query,
@@ -938,18 +1131,22 @@ class InfraOpsService:
             self._capture_source(
                 "kubernetes",
                 lambda: {
-                    "pods": self.get_k8s_pods(namespace=request.namespace).model_dump(
-                        mode="json"
-                    ),
-                    "events": self.get_k8s_events(namespace=request.namespace).model_dump(
-                        mode="json"
-                    ),
+                    "pods": self.get_k8s_pods(
+                        namespace=request.namespace,
+                        source=request.source,
+                    ).model_dump(mode="json"),
+                    "events": self.get_k8s_events(
+                        namespace=request.namespace,
+                        source=request.source,
+                    ).model_dump(mode="json"),
                     "deployments": self.get_k8s_deployments(
                         namespace=request.namespace,
+                        source=request.source,
                     ).model_dump(mode="json"),
-                    "hpa": self.get_k8s_hpa(namespace=request.namespace).model_dump(
-                        mode="json"
-                    ),
+                    "hpa": self.get_k8s_hpa(
+                        namespace=request.namespace,
+                        source=request.source,
+                    ).model_dump(mode="json"),
                 },
             ),
             self._capture_optional_source(
@@ -1107,7 +1304,10 @@ class InfraOpsService:
             raw=response,
         )
 
-    def _resolve_kubernetes_source(self, source: str | None) -> tuple[str, KubernetesClient, tuple[str, ...]]:
+    def _resolve_kubernetes_source(
+        self,
+        source: str | None,
+    ) -> tuple[str, KubernetesClient, tuple[str, ...]]:
         resolved_source = source.strip() if source else "eks"
         if resolved_source not in self._kubernetes_sources:
             available_sources = ", ".join(sorted(self._kubernetes_sources))
@@ -1192,6 +1392,160 @@ def parse_allowlist(value: str) -> tuple[str, ...]:
     if not allowlist:
         raise InfraOpsValidationError("Elasticsearch index allowlist must not be empty.")
     return allowlist
+
+
+def validate_private_ip_target(address: str) -> None:
+    try:
+        parsed_address = ip_address(address)
+    except ValueError as exc:
+        raise InfraOpsValidationError(
+            "Connectivity target must be a literal private IP address."
+        ) from exc
+    if any(parsed_address in network for network in PRIVATE_CONNECTIVITY_NETWORKS):
+        return
+    raise InfraOpsValidationError(
+        "Connectivity target must be in an approved private network."
+    )
+
+
+def validate_tcp_port(port: int) -> None:
+    if 1 <= port <= 65535:
+        return
+    raise InfraOpsValidationError("TCP port must be between 1 and 65535.")
+
+
+def clamp_timeout_seconds(timeout_seconds: float) -> float:
+    return min(max(float(timeout_seconds), 0.1), 15.0)
+
+
+def build_private_http_url(*, endpoint: str, path: str) -> str:
+    parsed_endpoint = urlparse(endpoint)
+    if parsed_endpoint.scheme not in {"http", "https"} or parsed_endpoint.hostname is None:
+        raise InfraOpsValidationError("Ingress endpoint must be an http(s) URL.")
+    validate_private_ip_target(parsed_endpoint.hostname)
+    validate_http_path(path)
+    base_url = endpoint.rstrip("/") + "/"
+    return urljoin(base_url, path.lstrip("/"))
+
+
+def validate_http_path(path: str) -> None:
+    if path.startswith("/") and len(path) <= 512 and "\r" not in path and "\n" not in path:
+        return
+    raise InfraOpsValidationError("HTTP path must start with '/' and be at most 512 chars.")
+
+
+def validate_http_host_header(host_header: str | None) -> None:
+    if host_header is None:
+        return
+    if (
+        1 <= len(host_header) <= 253
+        and "\r" not in host_header
+        and "\n" not in host_header
+        and re.fullmatch(r"[A-Za-z0-9.*-]+(?:\.[A-Za-z0-9*-]+)*", host_header)
+    ):
+        return
+    raise InfraOpsValidationError("Host header is invalid.")
+
+
+def validate_optional_ingress_host(host: str | None) -> None:
+    if host is None:
+        return
+    validate_http_host_header(host)
+
+
+def validate_http_status_range(status_min: int, status_max: int) -> None:
+    if 100 <= status_min <= status_max <= 599:
+        return
+    raise InfraOpsValidationError("Expected HTTP status range must be between 100 and 599.")
+
+
+def summarize_endpoint_addresses(
+    endpoints: dict[str, Any],
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    ready_addresses: list[dict[str, Any]] = []
+    not_ready_addresses: list[dict[str, Any]] = []
+    for subset in endpoints.get("subsets", []) or []:
+        ports = subset.get("ports", []) or []
+        for address in subset.get("addresses", []) or []:
+            ready_addresses.append(summarize_endpoint_address(address, ports=ports))
+        for address in subset.get("notReadyAddresses", []) or []:
+            not_ready_addresses.append(summarize_endpoint_address(address, ports=ports))
+    return ready_addresses, not_ready_addresses
+
+
+def summarize_endpoint_address(
+    address: dict[str, Any],
+    *,
+    ports: list[dict[str, Any]],
+) -> dict[str, Any]:
+    target_ref = address.get("targetRef") or {}
+    return {
+        key: value
+        for key, value in {
+            "ip": address.get("ip"),
+            "node_name": address.get("nodeName"),
+            "target_kind": target_ref.get("kind"),
+            "target_name": target_ref.get("name"),
+            "ports": ports,
+        }.items()
+        if value not in (None, [], {})
+    }
+
+
+def find_ingress_backend_rules(
+    ingresses: list[dict[str, Any]],
+    *,
+    host: str | None,
+    path: str | None,
+    service_name: str | None,
+) -> list[dict[str, Any]]:
+    matched_rules = []
+    for ingress in ingresses:
+        ingress_name = ingress.get("metadata", {}).get("name")
+        for rule in ingress.get("spec", {}).get("rules", []) or []:
+            rule_host = rule.get("host")
+            if host is not None and rule_host != host:
+                continue
+            http = rule.get("http") or {}
+            for path_rule in http.get("paths", []) or []:
+                backend_service = (
+                    path_rule.get("backend", {}).get("service", {}).get("name")
+                )
+                path_value = path_rule.get("path")
+                if service_name is not None and backend_service != service_name:
+                    continue
+                if path is not None and not ingress_path_matches(
+                    request_path=path,
+                    rule_path=path_value,
+                    path_type=path_rule.get("pathType"),
+                ):
+                    continue
+                matched_rules.append(
+                    {
+                        "ingress_name": ingress_name,
+                        "host": rule_host,
+                        "path": path_value,
+                        "path_type": path_rule.get("pathType"),
+                        "backend_service": backend_service,
+                        "backend_port": path_rule.get("backend", {})
+                        .get("service", {})
+                        .get("port", {}),
+                    }
+                )
+    return matched_rules
+
+
+def ingress_path_matches(
+    *,
+    request_path: str,
+    rule_path: str | None,
+    path_type: str | None,
+) -> bool:
+    if not rule_path:
+        return True
+    if path_type == "Exact":
+        return request_path == rule_path
+    return request_path.startswith(rule_path.rstrip("/") or "/")
 
 
 def build_prometheus_sources(app_settings: Settings) -> tuple[tuple[str, PrometheusClient], ...]:

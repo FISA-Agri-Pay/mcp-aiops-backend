@@ -127,7 +127,8 @@ MCP Tool이 바라보는 운영 인프라 주소는 Kubernetes `ConfigMap`과 `S
 | `infraops-mcp` | Elasticsearch/OpenSearch | `ELASTICSEARCH_BASE_URL`, `ELASTICSEARCH_USERNAME`, `ELASTICSEARCH_PASSWORD`, `ELASTICSEARCH_INDEX_ALLOWLIST` |
 | `infraops-mcp` | Kibana/OpenSearch Dashboards | `KIBANA_BASE_URL` |
 | Agent/Copilot | LLM endpoint | `LLM_PROVIDER`, `LLM_MODEL`, `LLM_API_BASE_URL`, `LLM_API_KEY`, `LLM_REQUIRE_API_KEY` |
-| Ops report | SMTP | `SMTP_HOST`, `SMTP_PORT`, `SMTP_USERNAME`, `SMTP_PASSWORD`, `SMTP_FROM`, `SMTP_USE_TLS` |
+| Ops report/RCA notification | SMTP | `SMTP_HOST`, `SMTP_PORT`, `SMTP_USERNAME`, `SMTP_PASSWORD`, `SMTP_FROM`, `SMTP_USE_TLS` |
+| RCA notification | Slack Incoming Webhook | `RCA_SLACK_WEBHOOK_URL`, `RCA_SLACK_CHANNEL`, `RCA_SLACK_TIMEOUT_SECONDS` |
 
 `INFRAOPS_ELK_ENABLED=false`는 Elasticsearch/OpenSearch와 Kibana/OpenSearch Dashboards만 비활성화합니다.
 Loki는 ELK의 Logstash가 아니므로 RCA와 운영 리포트의 로그 근거 수집에 계속 사용합니다.
@@ -199,6 +200,9 @@ GitHub Actions에 필요한 값은 아래처럼 설정합니다.
 | `SMTP_FROM` | Secret | 발신자 이메일 |
 | `OPS_REPORT_EMAIL_RECIPIENTS` | Secret | 운영 리포트 수신자 목록, 쉼표 구분 |
 | `RCA_EMAIL_RECIPIENTS` | Secret | Alertmanager 기반 preliminary/final RCA 이메일 수신자 목록, 쉼표 구분. 비워두면 `OPS_REPORT_EMAIL_RECIPIENTS`를 사용 |
+| `RCA_SLACK_WEBHOOK_URL` | Secret | Alertmanager 기반 RCA evidence 수집 결과를 보낼 Slack Incoming Webhook URL |
+| `RCA_SLACK_CHANNEL` | Variable | Slack webhook 기본 채널을 override할 때 사용하는 채널명. 비워두면 webhook 기본 채널 사용 |
+| `RCA_SLACK_TIMEOUT_SECONDS` | Variable | Slack webhook 호출 timeout |
 
 선택적으로 아래 Variables를 바꿀 수 있습니다.
 

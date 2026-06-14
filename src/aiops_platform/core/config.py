@@ -204,6 +204,13 @@ class Settings(BaseSettings):
         alias="OPS_REPORT_EMAIL_RECIPIENTS",
     )
     rca_email_recipients: str = Field(default="", alias="RCA_EMAIL_RECIPIENTS")
+    rca_slack_webhook_url: str = Field(default="", alias="RCA_SLACK_WEBHOOK_URL")
+    rca_slack_channel: str = Field(default="", alias="RCA_SLACK_CHANNEL")
+    rca_slack_timeout_seconds: float = Field(
+        default=10.0,
+        gt=0,
+        alias="RCA_SLACK_TIMEOUT_SECONDS",
+    )
 
 
 @lru_cache

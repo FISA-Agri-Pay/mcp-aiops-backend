@@ -1,5 +1,5 @@
-from aiops_platform.agent.dispatcher import McpToolDispatcher
 from aiops_platform.agent.context_bundle import build_incident_context_bundle
+from aiops_platform.agent.dispatcher import McpToolDispatcher
 from aiops_platform.agent.orchestrator import AgentOrchestrator
 from aiops_platform.agent.planner import (
     LlmAgentPlanner,
@@ -15,13 +15,13 @@ from aiops_platform.agent.planner import (
 )
 from aiops_platform.agent.schemas import AgentPlanResult, AgentToolExecutionResult, AgentToolPlan
 from aiops_platform.llmops.client import LlmCompletionResponse
+from aiops_platform.mcp.registry import list_mcp_tools
 from aiops_platform.mcp.schemas import (
     McpConfirmationPolicy,
     McpExecutionPolicy,
     McpToolCallStatus,
     McpToolPermission,
 )
-from aiops_platform.mcp.registry import list_mcp_tools
 from aiops_platform.orchestration.service import (
     build_chat_ui_cards,
     build_direct_chat_response,
@@ -452,10 +452,28 @@ def test_rule_based_planner_selects_sre_checkout_500_tool_bundle() -> None:
     rollout = next(tool for tool in plan.tool_plans if tool.tool_name == "get_rollout_status")
     assert rollout.request_payload == {
         "namespace": "service-catalog",
-        "deployment_name": "service-catalog",
+        "deployment_name": "service-catalog-deployment",
+        "source": "eks",
     }
     alb = next(tool for tool in plan.tool_plans if tool.tool_name == "get_alb_target_health")
     assert alb.request_payload == {"load_balancer_name": "kkpp-catalog-api"}
+
+
+def test_rule_based_planner_does_not_treat_descriptive_deployment_word_as_name() -> None:
+    planner = RuleBasedAgentPlanner()
+
+    plan = planner.plan(
+        chat_type="sre_copilot",
+        message="service-catalog deployment mapping 확인 포함해서 라우팅 장애 분석해줘",
+        user_id="sre-1",
+    )
+
+    rollout = next(tool for tool in plan.tool_plans if tool.tool_name == "get_rollout_status")
+    assert rollout.request_payload == {
+        "namespace": "service-catalog",
+        "deployment_name": "service-catalog-deployment",
+        "source": "eks",
+    }
 
 
 def test_rule_based_planner_does_not_reuse_catalog_alb_for_onprem_routing() -> None:
@@ -474,8 +492,9 @@ def test_rule_based_planner_does_not_reuse_catalog_alb_for_onprem_routing() -> N
     assert "get_alb_target_health" not in tool_names
     rollout = next(tool for tool in plan.tool_plans if tool.tool_name == "get_rollout_status")
     assert rollout.request_payload == {
-        "namespace": "default",
+        "namespace": "kkpp",
         "deployment_name": "service-payment",
+        "source": "onprem",
     }
 
 
@@ -611,6 +630,38 @@ def test_llm_planner_maps_sre_capability_to_backend_tool_bundle() -> None:
     assert "get_service_routing_path" in tool_names
     assert "get_service_dependency_map" in tool_names
     assert all(tool.server_name == "infraops-mcp" for tool in plan.tool_plans)
+
+
+def test_rule_based_planner_adds_onprem_ingress_live_checks() -> None:
+    planner = RuleBasedAgentPlanner()
+
+    plan = planner.plan(
+        chat_type="sre_copilot",
+        message=(
+            "alertname=OnpremMetalLBRoutingFailure cluster=onprem "
+            "namespace=kkpp service=service-payment"
+        ),
+        user_id="sre-1",
+    )
+
+    tools = {tool.tool_name: tool for tool in plan.tool_plans}
+    assert "check_onprem_metallb_endpoint" in tools
+    assert "check_onprem_ingress_route" in tools
+    assert "get_k8s_service_endpoints" in tools
+    assert "get_k8s_ingress_backend_mapping" in tools
+    assert tools["check_onprem_ingress_route"].request_payload == {
+        "endpoint": "http://10.30.2.100",
+        "host_header": "api-payment.dev6.fisa",
+        "path": "/health",
+        "expected_status_min": 200,
+        "expected_status_max": 399,
+        "timeout_seconds": 5.0,
+    }
+    assert tools["get_k8s_service_endpoints"].request_payload == {
+        "namespace": "kkpp",
+        "source": "onprem",
+        "service_name": "service-payment",
+    }
 
 
 def test_llm_planner_falls_back_when_supported_admin_request_skips_tools() -> None:
@@ -798,6 +849,317 @@ def test_incident_context_bundle_marks_degraded_edge_boundary() -> None:
     assert boundaries["cloudfront"]["status"] == "healthy"
     assert boundaries["aws_alb"]["status"] == "degraded"
     assert boundaries["aws_target_group"]["status"] == "degraded"
+
+
+def test_incident_context_bundle_uses_direct_onprem_payment_path_from_topology() -> None:
+    bundle = build_incident_context_bundle(
+        chat_type="sre_copilot",
+        message="Current state inspection for onprem kkpp service-payment",
+        capability="edge_routing_analysis",
+        tool_results=[
+            make_sre_tool_result(
+                "search_topology_knowledge",
+                {
+                    "matches": [
+                        {
+                            "snapshot_name": (
+                                "aws-onprem-service-payment-routing-topology-snapshot-2026-06-13.md"
+                            ),
+                            "excerpt": (
+                                "api-payment.dev6.fisa currently resolves to "
+                                "10.30.2.100, the known on-prem MetalLB "
+                                "LoadBalancer IP. service-payment is an on-prem "
+                                "kkpp workload, not an AWS EKS workload. "
+                                "CloudFront is not the current direct path. "
+                                "Known risks mention tunnel 2 DOWN and a previous "
+                                "route table collection failed, but this is topology "
+                                "context rather than live health evidence."
+                            ),
+                        }
+                    ]
+                },
+            ),
+            make_sre_tool_result(
+                "get_service_routing_path",
+                {
+                    "service": "service-payment",
+                    "routing_paths": [
+                        {
+                            "section": "Current observed path",
+                            "lines": [
+                                "client -> DNS api-payment.dev6.fisa",
+                                "10.30.2.100 -> on-prem MetalLB",
+                                "on-prem ingress-nginx -> kkpp/service-payment",
+                            ],
+                        }
+                    ],
+                },
+            ),
+        ],
+    )
+
+    assert bundle["cross_domain"]["scenario"] == "direct_onprem_ingress_routing"
+    assert bundle["cross_domain"]["path"] == [
+        "dns",
+        "onprem_metallb",
+        "onprem_ingress",
+        "k8s_service",
+        "pod_application",
+    ]
+    boundaries = {
+        candidate["boundary"]: candidate
+        for candidate in bundle["failure_boundary_candidates"]
+    }
+    assert boundaries["dns"]["status"] == "known_path"
+    assert boundaries["onprem_metallb"]["status"] == "known_path"
+    assert boundaries["onprem_ingress"]["status"] == "known_path"
+    assert boundaries["dns"]["health_evidence_tools"] == []
+    assert boundaries["onprem_metallb"]["health_evidence_tools"] == []
+
+
+def test_incident_context_bundle_ignores_generic_failure_for_dns_boundary() -> None:
+    bundle = build_incident_context_bundle(
+        chat_type="sre_copilot",
+        message="Current state inspection for onprem kkpp service-payment",
+        capability="edge_routing_analysis",
+        tool_results=[
+            make_sre_tool_result(
+                "search_topology_knowledge",
+                {
+                    "matches": [
+                        {
+                            "excerpt": (
+                                "api-payment.dev6.fisa resolves to 10.30.2.100. "
+                                "service-payment is an on-prem kkpp workload, "
+                                "not an AWS EKS workload. CloudFront is not the "
+                                "current direct path."
+                            )
+                        }
+                    ]
+                },
+            ),
+            make_sre_tool_result(
+                "query_multi_cluster_loki",
+                {
+                    "message": (
+                        "Synthetic current-state failure analysis completed; "
+                        "resolver checks were quiet and unrelated generic "
+                        "failure text should not mark DNS as degraded."
+                    )
+                },
+            ),
+        ],
+    )
+
+    boundaries = {
+        candidate["boundary"]: candidate
+        for candidate in bundle["failure_boundary_candidates"]
+    }
+    assert boundaries["dns"]["status"] != "degraded"
+    assert [
+        candidate["boundary"]
+        for candidate in bundle["failure_boundary_candidates"]
+    ] == [
+        "dns",
+        "onprem_metallb",
+        "onprem_ingress",
+        "k8s_service",
+        "pod_application",
+    ]
+
+
+def test_incident_context_bundle_filters_k8s_boundary_to_target_workload() -> None:
+    bundle = build_incident_context_bundle(
+        chat_type="sre_copilot",
+        message="Current state inspection cluster=onprem namespace=kkpp service=service-payment",
+        capability="edge_routing_analysis",
+        tool_results=[
+            make_sre_tool_result(
+                "search_topology_knowledge",
+                {
+                    "matches": [
+                        {
+                            "excerpt": (
+                                "api-payment.dev6.fisa resolves to 10.30.2.100. "
+                                "service-payment is an on-prem kkpp workload, "
+                                "not an AWS EKS workload. CloudFront is not the "
+                                "current direct path."
+                            )
+                        }
+                    ]
+                },
+            ),
+            make_sre_tool_result(
+                "get_k8s_pods",
+                {
+                    "source": "onprem",
+                    "namespace": "kkpp",
+                    "items": [
+                        {
+                            "metadata": {
+                                "name": "curl-core-l7-test",
+                                "labels": {"run": "curl-core-l7-test"},
+                            },
+                            "status": {
+                                "phase": "Succeeded",
+                                "conditions": [
+                                    {
+                                        "type": "Ready",
+                                        "status": "False",
+                                        "reason": "PodCompleted",
+                                    }
+                                ],
+                            },
+                        },
+                        {
+                            "metadata": {
+                                "name": "service-payment-864786cbb9-c7pnh",
+                                "labels": {"app": "service-payment"},
+                            },
+                            "spec": {
+                                "tolerations": [
+                                    {"key": "node.kubernetes.io/not-ready"}
+                                ]
+                            },
+                            "status": {
+                                "phase": "Running",
+                                "conditions": [{"type": "Ready", "status": "True"}],
+                            },
+                        },
+                    ],
+                    "raw": {
+                        "items": [
+                            {
+                                "metadata": {
+                                    "name": "service-payment-864786cbb9-c7pnh",
+                                    "labels": {"app": "service-payment"},
+                                },
+                                "spec": {
+                                    "tolerations": [
+                                        {"key": "node.kubernetes.io/not-ready"}
+                                    ]
+                                },
+                            }
+                        ]
+                    },
+                },
+            ),
+            make_sre_tool_result(
+                "get_k8s_events",
+                {
+                    "items": [
+                        {
+                            "type": "Warning",
+                            "reason": "NotReady",
+                            "involvedObject": {"name": "curl-core-l7-test"},
+                            "message": "Unrelated test pod was not ready.",
+                        },
+                        {
+                            "type": "Normal",
+                            "reason": "Started",
+                            "involvedObject": {
+                                "name": "service-payment-864786cbb9-c7pnh"
+                            },
+                            "message": "Started container service-payment.",
+                        },
+                    ]
+                },
+            ),
+            make_sre_tool_result(
+                "get_k8s_deployments",
+                {
+                    "items": [
+                        {
+                            "metadata": {
+                                "name": "service-payment",
+                                "labels": {"app": "service-payment"},
+                            },
+                            "status": {
+                                "readyReplicas": 4,
+                                "availableReplicas": 4,
+                                "conditions": [
+                                    {
+                                        "type": "Available",
+                                        "status": "True",
+                                        "reason": "MinimumReplicasAvailable",
+                                    }
+                                ],
+                            },
+                        }
+                    ]
+                },
+            ),
+        ],
+    )
+
+    boundaries = {
+        candidate["boundary"]: candidate
+        for candidate in bundle["failure_boundary_candidates"]
+    }
+    assert boundaries["k8s_service"]["status"] == "healthy"
+
+
+def test_incident_context_bundle_uses_onprem_live_checks_for_boundaries() -> None:
+    bundle = build_incident_context_bundle(
+        chat_type="sre_copilot",
+        message="routing_failure cluster=onprem namespace=kkpp service=service-payment",
+        capability="edge_routing_analysis",
+        tool_results=[
+            make_sre_tool_result(
+                "search_topology_knowledge",
+                {
+                    "matches": [
+                        {
+                            "excerpt": (
+                                "api-payment.dev6.fisa resolves to 10.30.2.100. "
+                                "service-payment is an on-prem kkpp workload, "
+                                "not an AWS EKS workload. CloudFront is not the "
+                                "current direct path."
+                            )
+                        }
+                    ]
+                },
+            ),
+            make_sre_tool_result(
+                "check_onprem_metallb_endpoint",
+                {
+                    "target_host": "10.30.2.100",
+                    "port": 80,
+                    "reachable": True,
+                    "status": "HEALTHY",
+                    "latency_ms": 12.3,
+                },
+            ),
+            make_sre_tool_result(
+                "check_onprem_ingress_route",
+                {
+                    "url": "http://10.30.2.100/actuator/health",
+                    "host_header": "api-payment.dev6.fisa",
+                    "reachable": True,
+                    "healthy": True,
+                    "status": "HEALTHY",
+                    "http_status": 200,
+                },
+            ),
+            make_sre_tool_result(
+                "get_k8s_service_endpoints",
+                {
+                    "service_name": "service-payment",
+                    "ready_count": 4,
+                    "not_ready_count": 0,
+                    "status": "HEALTHY",
+                },
+            ),
+        ],
+    )
+
+    boundaries = {
+        candidate["boundary"]: candidate
+        for candidate in bundle["failure_boundary_candidates"]
+    }
+    assert boundaries["onprem_metallb"]["status"] == "healthy"
+    assert boundaries["onprem_ingress"]["status"] == "healthy"
+    assert boundaries["k8s_service"]["status"] == "healthy"
 
 
 def test_incident_context_bundle_avoids_substring_health_matches() -> None:

@@ -121,7 +121,8 @@ DEFAULT_PROMPTS = {
             "승인 기반 조치 제안을 구분한다. "
             "answer는 프론트가 plain text로 렌더링해도 읽히도록 짧은 섹션과 줄바꿈을 포함한다. "
             "굵게 표시, 표, 긴 단일 문단은 사용하지 않는다. "
-            "운영 데이터 기반 답변은 반드시 요약, 관측 근거, 원인 후보, 권장 확인/조치, 데이터 한계 "
+            "운영 데이터 기반 답변은 반드시 요약, 관측 근거, 원인 후보, "
+            "권장 확인/조치, 데이터 한계 "
             "5개 섹션 제목만 이 순서대로 사용한다. "
             "각 섹션 제목은 한 줄로 쓰고, 섹션 사이는 빈 줄로 구분한다. "
             "각 섹션의 내용은 '- ' 불릿으로 작성하되 섹션당 1~4개로 제한한다. "
@@ -299,8 +300,28 @@ class LlmOpsService:
             prompt_key="rca.infra.v1",
             template=(
                 "Create an infrastructure RCA from Alertmanager, observability, "
-                "prediction, and autoscaling evidence. Return a concise answer "
-                "with probable root cause, impact, confidence, and recommended actions."
+                "prediction, and autoscaling evidence. Write the answer in Korean. "
+                "Return JSON with exactly one top-level answer field, and answer "
+                "must be a plain string, not an object, array, dict, or markdown AST. "
+                "The alert name is only a hypothesis and must not be treated as "
+                "root-cause evidence. If snapshot.analysis_contract is present, "
+                "follow it over alert labels or alert names. Do not list healthy "
+                "boundaries as root-cause candidates. Root-cause candidates require "
+                "degraded or failed live evidence. Unknown boundaries are data gaps, "
+                "not confirmed causes. For synthetic alerts, clearly state that this "
+                "is a current-state inspection and not a confirmed outage. If all "
+                "checked routing boundaries are healthy, conclude that current "
+                "routing-boundary failure evidence is absent and move next checks to "
+                "logs, traces, recent deployments, DB/HikariCP, and downstream "
+                "dependencies. If snapshot.root_cause_candidates or "
+                "snapshot.analysis_contract.application_root_cause_candidates are "
+                "present, use them as the primary cause candidates instead of "
+                "answering that no cause was found. Explain each candidate with its "
+                "confidence and supporting_evidence. "
+                "Use these Korean section titles only: 요약, 관측 근거, 원인 후보, "
+                "권장 확인/조치, 데이터 한계. Do not claim destructive remediation "
+                "was executed. Keep Kubernetes resource names, metric names, alert "
+                "names, and tool names in their original English form."
             ),
         )
         input_payload = {
@@ -318,7 +339,8 @@ class LlmOpsService:
         )
         try:
             response = self._llm_client.complete(request)
-            validation = validate_output_payload(response.output_payload, OUTPUT_SCHEMA)
+            output_payload = normalize_rca_output_payload(response.output_payload)
+            validation = validate_output_payload(output_payload, OUTPUT_SCHEMA)
             status: LlmRunStatus = "SUCCESS" if validation.is_valid else "VALIDATION_FAILED"
             last_error = "; ".join(validation.errors) if validation.errors else None
             return self._repository.record_llm_run(
@@ -328,7 +350,7 @@ class LlmOpsService:
                 prompt_version_id=prompt.prompt_version_id,
                 status=status,
                 masked_input=request.input_payload,
-                masked_output=mask_payload(response.output_payload) or {},
+                masked_output=mask_payload(output_payload) or {},
                 output_schema=OUTPUT_SCHEMA,
                 validation_errors=validation.errors,
                 job_id=job_id,
@@ -696,6 +718,118 @@ def format_llm_exception(exc: Exception) -> str:
     if len(formatted) <= 1000:
         return formatted
     return f"{formatted[:1000]}..."
+
+
+RCA_SECTION_LABELS = {
+    "summary": "요약",
+    "evidence": "관측 근거",
+    "observed_evidence": "관측 근거",
+    "probable_root_cause": "원인 후보",
+    "root_cause": "원인 후보",
+    "root_cause_candidates": "원인 후보",
+    "recommended_checks_actions": "권장 확인/조치",
+    "recommended_checks": "권장 확인/조치",
+    "recommended_actions": "권장 확인/조치",
+    "next_actions": "권장 확인/조치",
+    "data_limits": "데이터 한계",
+    "data_limitations": "데이터 한계",
+    "data_quality_notes": "데이터 한계",
+}
+RCA_SECTION_ORDER = (
+    "summary",
+    "evidence",
+    "observed_evidence",
+    "probable_root_cause",
+    "root_cause",
+    "root_cause_candidates",
+    "recommended_checks_actions",
+    "recommended_checks",
+    "recommended_actions",
+    "next_actions",
+    "data_limits",
+    "data_limitations",
+    "data_quality_notes",
+)
+
+
+def normalize_rca_output_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    normalized = dict(payload)
+    if isinstance(normalized.get("answer"), str):
+        normalized["answer"] = normalized["answer"].strip()
+        return normalized
+
+    answer_source = normalized.get("answer")
+    if answer_source is None:
+        answer_source = normalized
+    normalized["answer"] = format_structured_rca_answer(answer_source)
+    return normalized
+
+
+def format_structured_rca_answer(value: Any) -> str:
+    if isinstance(value, str):
+        return value.strip()
+    if isinstance(value, list):
+        return "\n".join(format_rca_list_item(item) for item in value if item is not None)
+    if isinstance(value, dict):
+        return format_rca_dict_answer(value)
+    return str(value).strip()
+
+
+def format_rca_dict_answer(value: dict[str, Any]) -> str:
+    sections = []
+    used_keys = set()
+    for key in RCA_SECTION_ORDER:
+        if key not in value:
+            continue
+        used_keys.add(key)
+        section_body = format_rca_section_body(value[key])
+        if section_body:
+            sections.append(f"{RCA_SECTION_LABELS[key]}\n{section_body}")
+
+    for key, item in value.items():
+        if key in used_keys or key == "answer":
+            continue
+        section_body = format_rca_section_body(item)
+        if section_body:
+            sections.append(f"{format_rca_unknown_label(key)}\n{section_body}")
+    return "\n\n".join(sections).strip()
+
+
+def format_rca_section_body(value: Any) -> str:
+    if isinstance(value, str):
+        stripped = value.strip()
+        return f"- {stripped}" if stripped and not stripped.startswith("-") else stripped
+    if isinstance(value, list):
+        return "\n".join(format_rca_list_item(item) for item in value if item is not None)
+    if isinstance(value, dict):
+        lines = []
+        for key, item in value.items():
+            text = format_structured_rca_answer(item)
+            if text:
+                lines.append(f"- {format_rca_unknown_label(key)}: {text}")
+        return "\n".join(lines)
+    if value is None:
+        return ""
+    return f"- {value}"
+
+
+def format_rca_list_item(value: Any) -> str:
+    if isinstance(value, str):
+        stripped = value.strip()
+        return stripped if stripped.startswith("-") else f"- {stripped}"
+    if isinstance(value, dict):
+        text = "; ".join(
+            f"{format_rca_unknown_label(key)}={format_structured_rca_answer(item)}"
+            for key, item in value.items()
+            if item is not None
+        )
+        return f"- {text}" if text else ""
+    return f"- {value}"
+
+
+def format_rca_unknown_label(value: object) -> str:
+    text = str(value).strip().replace("_", " ")
+    return text or "항목"
 
 
 def is_uuid(value: str | None) -> bool:

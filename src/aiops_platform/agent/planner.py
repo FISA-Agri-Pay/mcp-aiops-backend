@@ -681,16 +681,22 @@ def plan_sre_copilot_tools(
     intent = sre_intent_for_capability(capability=resolved_capability)
     context = build_sre_incident_context(message=message, intent=intent)
     namespace_payload = {"namespace": context["namespace"]}
+    if context["kubernetes_source"] is not None:
+        namespace_payload["source"] = context["kubernetes_source"]
     deployment_payload = {
         "namespace": context["namespace"],
         "deployment_name": context["deployment_name"],
     }
+    if context["kubernetes_source"] is not None:
+        deployment_payload["source"] = context["kubernetes_source"]
 
     topology_payload = {
         "service": context["topology_service"],
         "environment": "all",
         "masking_level": "secrets_only",
     }
+    ingress_host = infer_sre_ingress_host(str(context["service_name"]))
+    ingress_path = infer_sre_ingress_health_path(str(context["service_name"]))
 
     plans = [
         build_sre_tool_plan(
@@ -754,6 +760,24 @@ def plan_sre_copilot_tools(
             "Inspect autoscaling status and resource pressure evidence.",
         ),
         build_sre_tool_plan(
+            "get_k8s_service_endpoints",
+            {
+                **namespace_payload,
+                "service_name": context["service_name"],
+            },
+            "Inspect service endpoint readiness for the target workload.",
+        ),
+        build_sre_tool_plan(
+            "get_k8s_ingress_backend_mapping",
+            {
+                **namespace_payload,
+                "host": ingress_host,
+                "path": ingress_path,
+                "service_name": context["service_name"],
+            },
+            "Inspect ingress host/path mapping to the expected service backend.",
+        ),
+        build_sre_tool_plan(
             "get_rollout_status",
             deployment_payload,
             "Check whether the target deployment rollout is healthy.",
@@ -765,7 +789,7 @@ def plan_sre_copilot_tools(
         ),
         build_sre_tool_plan(
             "get_recent_deployments",
-            {"namespace": context["namespace"], "limit": 10},
+            {**namespace_payload, "limit": 10},
             "Check whether a recent deployment correlates with the incident window.",
         ),
         build_sre_tool_plan(
@@ -825,6 +849,28 @@ def plan_sre_copilot_tools(
 
     if intent in {"routing_failure", "checkout_500", "general_incident"}:
         routing_plans = []
+        if context["edge_target"] == "onprem":
+            routing_plans.extend(
+                [
+                    build_sre_tool_plan(
+                        "check_onprem_metallb_endpoint",
+                        {"address": "10.30.2.100", "port": 80, "timeout_seconds": 3.0},
+                        "Check TCP reachability to the on-prem MetalLB ingress VIP.",
+                    ),
+                    build_sre_tool_plan(
+                        "check_onprem_ingress_route",
+                        {
+                            "endpoint": "http://10.30.2.100",
+                            "host_header": ingress_host,
+                            "path": ingress_path,
+                            "expected_status_min": 200,
+                            "expected_status_max": 399,
+                            "timeout_seconds": 5.0,
+                        },
+                        "Check HTTP routing through on-prem ingress with the service host.",
+                    ),
+                ]
+            )
         alb_payload = build_sre_alb_target_health_payload(context)
         if alb_payload:
             routing_plans.append(
@@ -850,6 +896,16 @@ def plan_sre_copilot_tools(
         )
         plans.extend(routing_plans)
 
+    rca_snapshot_payload = {
+        "incident_key": intent,
+        "namespace": context["namespace"],
+        "prometheus_query": context["prometheus_query"],
+        "loki_query": context["loki_query"],
+        "loki_limit": 100,
+    }
+    if context["kubernetes_source"] is not None:
+        rca_snapshot_payload["source"] = context["kubernetes_source"]
+
     plans.extend(
         [
             build_sre_tool_plan(
@@ -864,13 +920,7 @@ def plan_sre_copilot_tools(
             ),
             build_sre_tool_plan(
                 "create_rca_snapshot",
-                {
-                    "incident_key": intent,
-                    "namespace": context["namespace"],
-                    "prometheus_query": context["prometheus_query"],
-                    "loki_query": context["loki_query"],
-                    "loki_limit": 100,
-                },
+                rca_snapshot_payload,
                 "Create a read-only RCA evidence snapshot for later analysis.",
             ),
         ]
@@ -878,7 +928,11 @@ def plan_sre_copilot_tools(
     return plans
 
 
-def build_sre_tool_plan(tool_name: str, request_payload: dict[str, Any], reason: str) -> AgentToolPlan:
+def build_sre_tool_plan(
+    tool_name: str,
+    request_payload: dict[str, Any],
+    reason: str,
+) -> AgentToolPlan:
     return AgentToolPlan(
         server_name="infraops-mcp",
         tool_name=tool_name,
@@ -896,14 +950,20 @@ def build_sre_alb_target_health_payload(context: dict[str, str | None]) -> dict[
 
 def build_sre_incident_context(*, message: str, intent: SreCopilotIntent) -> dict[str, str | None]:
     service_name = infer_sre_service_name(message, intent=intent)
-    namespace = infer_sre_namespace(service_name)
+    namespace = infer_sre_namespace(message, service_name=service_name)
     deployment_name = infer_sre_deployment_name(message, default=service_name)
     queue_name, dlq_name = infer_sre_queue_names(intent)
     edge_target = infer_sre_edge_target(message, intent=intent, service_name=service_name)
+    kubernetes_source = infer_sre_kubernetes_source(
+        message,
+        service_name=service_name,
+        edge_target=edge_target,
+    )
     return {
         "service_name": service_name,
         "namespace": namespace,
         "deployment_name": deployment_name,
+        "kubernetes_source": kubernetes_source,
         "queue_name": queue_name,
         "dlq_name": dlq_name,
         "edge_target": edge_target,
@@ -921,13 +981,22 @@ def build_sre_incident_context(*, message: str, intent: SreCopilotIntent) -> dic
 
 
 def infer_sre_service_name(message: str, *, intent: SreCopilotIntent) -> str:
+    explicit_match = re.search(
+        r"\b(?:service|service_name|service-name|workload|app)[=:]"
+        r"\s*([a-z0-9][a-z0-9.-]{0,252})\b",
+        message,
+    )
+    if explicit_match is not None:
+        return explicit_match.group(1)
     explicit_services = (
         "service-catalog",
         "service-payment",
         "service-auth",
         "service-core",
         "service-admin",
+        "service-batch",
         "mcp-aiops-backend",
+        "postgresql",
     )
     for service_name in explicit_services:
         if service_name in message:
@@ -936,6 +1005,11 @@ def infer_sre_service_name(message: str, *, intent: SreCopilotIntent) -> str:
         return "service-payment"
     if intent in {"checkout_500", "sqs_publish_failure", "pin_verification_missing"}:
         return "service-catalog"
+    if intent == "db_hikaricp_issue" and any(
+        keyword in message
+        for keyword in ("postgresql", "postgres", "db_host", "db_role", "max_connections")
+    ):
+        return "postgresql"
     if "payment" in message or "결제" in message:
         return "service-payment"
     if "auth" in message or "인증" in message:
@@ -949,7 +1023,13 @@ def infer_sre_edge_target(
     intent: SreCopilotIntent,
     service_name: str,
 ) -> str:
-    onprem_services = {"service-auth", "service-payment", "service-core", "service-admin"}
+    onprem_services = {
+        "service-auth",
+        "service-payment",
+        "service-core",
+        "service-admin",
+        "service-batch",
+    }
     if service_name in onprem_services or any(
         keyword in message
         for keyword in ("on-prem", "onprem", "온프렘", "metallb", "metal lb")
@@ -985,16 +1065,73 @@ def infer_sre_load_balancer_name(
     return None
 
 
-def infer_sre_namespace(service_name: str) -> str:
+def infer_sre_ingress_host(service_name: str) -> str | None:
+    return {
+        "service-payment": "api-payment.dev6.fisa",
+        "service-core": "api-core.dev6.fisa",
+        "service-auth": "api-auth.dev6.fisa",
+        "service-admin": "api-admin.dev6.fisa",
+        "service-catalog": "api-catalog.dev6.fisa",
+    }.get(service_name)
+
+
+def infer_sre_ingress_health_path(service_name: str) -> str:
+    if service_name == "service-payment":
+        return "/health"
+    return "/actuator/health"
+
+
+def infer_sre_namespace(message: str, *, service_name: str) -> str:
+    match = re.search(
+        r"\bnamespace[=:]\s*([a-z0-9][a-z0-9.-]{0,62})\b",
+        message,
+    )
+    if match is not None:
+        return match.group(1)
+    if service_name == "postgresql":
+        return "monitoring"
     if service_name == "service-catalog":
         return "service-catalog"
+    if service_name in {"service-auth", "service-payment", "service-core", "service-admin"}:
+        return "kkpp"
     return "default"
 
 
+def infer_sre_kubernetes_source(
+    message: str,
+    *,
+    service_name: str,
+    edge_target: str,
+) -> str | None:
+    if re.search(r"\bcluster[=:]\s*(aws-eks|eks)\b", message):
+        return "eks"
+    if re.search(r"\bcluster[=:]\s*(onprem|on-prem|on_prem)\b", message):
+        return "onprem"
+    if edge_target == "aws_eks":
+        return "eks"
+    if edge_target == "onprem":
+        return "onprem"
+    if service_name in {
+        "service-auth",
+        "service-payment",
+        "service-core",
+        "service-admin",
+        "service-batch",
+    }:
+        return "onprem"
+    return None
+
+
 def infer_sre_deployment_name(message: str, *, default: str) -> str:
-    match = re.search(r"\bdeployment[/: ]+([a-z0-9][a-z0-9.-]{0,252})\b", message)
+    match = re.search(
+        r"\b(?:deployment|deployment_name|deployment-name)"
+        r"(?:[/:=]\s*|\s+name[=: ]+)([a-z0-9][a-z0-9.-]{0,252})\b",
+        message,
+    )
     if match is not None:
         return match.group(1)
+    if default == "service-catalog":
+        return "service-catalog-deployment"
     return default
 
 
@@ -1010,6 +1147,7 @@ def infer_sre_operation_name(intent: SreCopilotIntent) -> str | None:
         "sqs_publish_failure": "SQS Publish",
         "sqs_consume_failure": "SQS Consume",
         "pin_verification_missing": "PIN Verified Event",
+        "db_hikaricp_issue": "PostgreSQL connection usage",
     }.get(intent)
 
 
@@ -1022,6 +1160,8 @@ def infer_sre_topology_service(intent: SreCopilotIntent, *, service_name: str) -
         return "pin"
     if intent == "routing_failure":
         return service_name
+    if service_name == "postgresql":
+        return "postgresql"
     return service_name
 
 
@@ -1042,6 +1182,11 @@ def build_sre_prometheus_query(intent: SreCopilotIntent, *, service_name: str) -
     if intent == "pod_crashloop":
         return 'sum by (pod) (increase(kube_pod_container_status_restarts_total{pod=~".+"}[15m]))'
     if intent == "db_hikaricp_issue":
+        if service_name == "postgresql":
+            return (
+                "100 * sum(pg_stat_activity_count) "
+                "/ scalar(max(pg_settings_max_connections))"
+            )
         return 'max by (pool) (hikaricp_connections_active{application="' + service_name + '"})'
     return "up"
 
@@ -1061,16 +1206,23 @@ def build_sre_loki_query(intent: SreCopilotIntent, *, namespace: str, service_na
     if intent == "pod_crashloop":
         return f'{base_query} |~ "CrashLoopBackOff|OOMKilled|Exception|ERROR|panic"'
     if intent == "db_hikaricp_issue":
+        if service_name == "postgresql":
+            return (
+                f'{base_query} |~ '
+                '"PostgreSQL|postgres|connection|too many connections|max_connections|FATAL|ERROR"'
+            )
         return f'{base_query} |~ "HikariPool|JDBC|connection|timeout|postgres|SQLException"'
     return f'{base_query} |~ "{service_name}|ERROR|Exception|WARN"'
 
 
 def extract_sre_pod_name(message: str) -> str | None:
-    explicit = re.search(r"\bpod[/: ]+([a-z0-9][a-z0-9.-]{0,252})\b", message)
-    if explicit is not None:
-        return explicit.group(1)
     generated = re.search(r"\b([a-z0-9][a-z0-9-]+-[a-f0-9]{8,10}-[a-z0-9]{5})\b", message)
-    return generated.group(1) if generated is not None else None
+    if generated is not None:
+        return generated.group(1)
+    for explicit in re.finditer(r"\bpod[/: ]+([a-z0-9][a-z0-9.-]{0,252})\b", message):
+        if explicit.group(1) not in {"crashloopbackoff", "pending"}:
+            return explicit.group(1)
+    return None
 
 
 def classify_admin_copilot_intent(message: str) -> AdminCopilotIntent:
@@ -1258,23 +1410,37 @@ def classify_sre_copilot_intent(message: str) -> SreCopilotIntent:
     if is_sre_mutating_request(normalized):
         return "unsupported"
 
-    if any(keyword in normalized for keyword in ("cloudfront", "alb", "origin", "라우팅", "routing", "route")):
+    if any(
+        keyword in normalized
+        for keyword in ("cloudfront", "alb", "origin", "라우팅", "routing", "route")
+    ):
         return "routing_failure"
     if any(keyword in normalized for keyword in ("crashloop", "crashloopbackoff", "oomkilled")):
         return "pod_crashloop"
-    if any(keyword in normalized for keyword in ("hikari", "hikaricp", "db", "database", "postgres", "connection pool")):
+    if any(
+        keyword in normalized
+        for keyword in ("hikari", "hikaricp", "db", "database", "postgres", "connection pool")
+    ):
         return "db_hikaricp_issue"
 
     has_sqs = "sqs" in normalized or "queue" in normalized or "dlq" in normalized
-    if has_sqs and any(keyword in normalized for keyword in ("발행", "publish", "send", "producer")):
+    if has_sqs and any(
+        keyword in normalized for keyword in ("발행", "publish", "send", "producer")
+    ):
         return "sqs_publish_failure"
-    if has_sqs and any(keyword in normalized for keyword in ("소비", "consume", "consumer", "listener", "lag", "dlq")):
+    if has_sqs and any(
+        keyword in normalized
+        for keyword in ("소비", "consume", "consumer", "listener", "lag", "dlq")
+    ):
         return "sqs_consume_failure"
     if any(keyword in normalized for keyword in ("pin", "핀")) and any(
-        keyword in normalized for keyword in ("검증", "verified", "verification", "미반영", "event", "이벤트")
+        keyword in normalized
+        for keyword in ("검증", "verified", "verification", "미반영", "event", "이벤트")
     ):
         return "pin_verification_missing"
-    if "checkout" in normalized and any(keyword in normalized for keyword in ("500", "error", "오류", "장애")):
+    if "checkout" in normalized and any(
+        keyword in normalized for keyword in ("500", "error", "오류", "장애")
+    ):
         return "checkout_500"
     if any(keyword in normalized for keyword in ("pod", "파드")) and any(
         keyword in normalized for keyword in ("restart", "재시작", "error", "오류", "장애")
@@ -1431,7 +1597,10 @@ def available_capabilities_for_prompt(chat_type: ChatType) -> list[dict[str, str
             },
             {
                 "capability": "checkout_500_analysis",
-                "description": "Analyze checkout 500 errors using logs, metrics, traces, K8s, AWS, and GitOps.",
+                "description": (
+                    "Analyze checkout 500 errors using logs, metrics, traces, "
+                    "K8s, AWS, and GitOps."
+                ),
             },
             {
                 "capability": "sqs_publish_failure_analysis",
@@ -1459,7 +1628,10 @@ def available_capabilities_for_prompt(chat_type: ChatType) -> list[dict[str, str
             },
             {
                 "capability": "general_incident_analysis",
-                "description": "General read-only SRE incident triage using available observability evidence.",
+                "description": (
+                    "General read-only SRE incident triage using available "
+                    "observability evidence."
+                ),
             },
         ]
     if chat_type == "farmer_bnpl":
@@ -1959,6 +2131,8 @@ def normalize_infraops_tool_payload(
         "get_k8s_events",
         "get_k8s_deployments",
         "get_k8s_hpa",
+        "get_k8s_service_endpoints",
+        "get_k8s_ingress_backend_mapping",
         "get_current_image_tags",
         "get_recent_deployments",
         "create_rca_snapshot",
@@ -1967,10 +2141,74 @@ def normalize_infraops_tool_payload(
             normalize_optional_string(normalized.get("namespace"))
             or str(context["namespace"])
         )
+    if tool_name in {
+        "get_k8s_pods",
+        "get_k8s_events",
+        "get_k8s_deployments",
+        "get_k8s_hpa",
+        "get_k8s_service_endpoints",
+        "get_k8s_ingress_backend_mapping",
+        "get_current_image_tags",
+        "get_recent_deployments",
+        "get_rollout_status",
+        "get_pod_logs",
+    }:
+        kubernetes_source = normalize_optional_string(
+            normalized.get("source")
+        ) or normalize_optional_string(context.get("kubernetes_source"))
+        if kubernetes_source is not None:
+            normalized["source"] = kubernetes_source
     if tool_name in {"get_rollout_status", "get_current_image_tags"}:
         normalized["deployment_name"] = (
             normalize_optional_string(normalized.get("deployment_name"))
             or str(context["deployment_name"])
+        )
+    if tool_name == "get_k8s_service_endpoints":
+        normalized["service_name"] = (
+            normalize_optional_string(normalized.get("service_name"))
+            or str(context["service_name"])
+        )
+    if tool_name == "get_k8s_ingress_backend_mapping":
+        normalized["service_name"] = (
+            normalize_optional_string(normalized.get("service_name"))
+            or str(context["service_name"])
+        )
+        normalized["host"] = normalize_optional_string(
+            normalized.get("host")
+        ) or infer_sre_ingress_host(str(context["service_name"]))
+        normalized["path"] = normalize_optional_string(
+            normalized.get("path")
+        ) or infer_sre_ingress_health_path(str(context["service_name"]))
+    if tool_name == "check_onprem_metallb_endpoint":
+        normalized["address"] = normalize_optional_string(
+            normalized.get("address")
+        ) or "10.30.2.100"
+        normalized["port"] = clamp_int(normalized.get("port"), default=80)
+        normalized["timeout_seconds"] = clamp_float(
+            normalized.get("timeout_seconds"),
+            default=3.0,
+        )
+    if tool_name == "check_onprem_ingress_route":
+        normalized["endpoint"] = normalize_optional_string(
+            normalized.get("endpoint")
+        ) or "http://10.30.2.100"
+        normalized["host_header"] = normalize_optional_string(
+            normalized.get("host_header")
+        ) or infer_sre_ingress_host(str(context["service_name"]))
+        normalized["path"] = normalize_optional_string(
+            normalized.get("path")
+        ) or infer_sre_ingress_health_path(str(context["service_name"]))
+        normalized["expected_status_min"] = clamp_int(
+            normalized.get("expected_status_min"),
+            default=200,
+        )
+        normalized["expected_status_max"] = clamp_int(
+            normalized.get("expected_status_max"),
+            default=399,
+        )
+        normalized["timeout_seconds"] = clamp_float(
+            normalized.get("timeout_seconds"),
+            default=5.0,
         )
     if tool_name == "get_recent_deployments":
         normalized["limit"] = clamp_int(normalized.get("limit"), default=10)
@@ -2016,19 +2254,33 @@ def normalize_infraops_tool_payload(
         ) and context["load_balancer_name"] is not None:
             normalized["load_balancer_name"] = context["load_balancer_name"]
     if tool_name == "get_pod_logs":
-        pod_name = normalize_optional_string(normalized.get("pod_name")) or extract_sre_pod_name(message)
+        pod_name = normalize_optional_string(normalized.get("pod_name")) or extract_sre_pod_name(
+            message
+        )
         if pod_name is not None:
             normalized["pod_name"] = pod_name
         normalized["namespace"] = (
             normalize_optional_string(normalized.get("namespace"))
             or str(context["namespace"])
         )
+        kubernetes_source = normalize_optional_string(
+            normalized.get("source")
+        ) or normalize_optional_string(context.get("kubernetes_source"))
+        if kubernetes_source is not None:
+            normalized["source"] = kubernetes_source
         normalized["tail_lines"] = clamp_int(normalized.get("tail_lines"), default=200)
     if tool_name in {"search_incidents", "search_rca_history"}:
         normalized["query"] = normalize_optional_string(normalized.get("query")) or intent
         normalized["limit"] = clamp_int(normalized.get("limit"), default=5)
     if tool_name == "create_rca_snapshot":
-        normalized["incident_key"] = normalize_optional_string(normalized.get("incident_key")) or intent
+        normalized["incident_key"] = (
+            normalize_optional_string(normalized.get("incident_key")) or intent
+        )
+        kubernetes_source = normalize_optional_string(
+            normalized.get("source")
+        ) or normalize_optional_string(context.get("kubernetes_source"))
+        if kubernetes_source is not None:
+            normalized["source"] = kubernetes_source
         normalized["prometheus_query"] = (
             normalize_optional_string(normalized.get("prometheus_query"))
             or str(context["prometheus_query"])
@@ -2087,10 +2339,14 @@ def build_direct_answer(*, chat_type: ChatType, intent: str) -> str | None:
                 "안녕하세요. 로그, 메트릭, 트레이스, Kubernetes, AWS, GitOps 근거로 "
                 "장애 원인 분석을 도와드릴 수 있습니다."
             ),
-            "thanks": "필요하면 장애 증상과 대상 서비스를 알려주세요. READ 기반으로 분석하겠습니다.",
+            "thanks": (
+                "필요하면 장애 증상과 대상 서비스를 알려주세요. "
+                "READ 기반으로 분석하겠습니다."
+            ),
             "help": (
                 "checkout 500, SQS 발행/소비 실패, PIN 이벤트 미반영, "
-                "CloudFront-ALB-EKS 라우팅 실패, CrashLoopBackOff, DB/HikariCP 문제를 분석할 수 있습니다."
+                "CloudFront-ALB-EKS 라우팅 실패, CrashLoopBackOff, "
+                "DB/HikariCP 문제를 분석할 수 있습니다."
             ),
             "unsupported": (
                 "현재 SRE Copilot은 READ 기반 관측/분석만 지원합니다. "

@@ -366,6 +366,41 @@ class KubernetesClient:
             ssl_context=self._ssl_context,
         )
 
+    def service(self, namespace: str, service_name: str) -> dict[str, Any]:
+        encoded_service_name = quote(service_name, safe="")
+        return self._http_client.get_json(
+            urljoin(
+                self._base_url,
+                f"api/v1/namespaces/{namespace}/services/{encoded_service_name}",
+            ),
+            headers=self._headers,
+            timeout=self._timeout_seconds,
+            ssl_context=self._ssl_context,
+        )
+
+    def endpoints(self, namespace: str, service_name: str) -> dict[str, Any]:
+        encoded_service_name = quote(service_name, safe="")
+        return self._http_client.get_json(
+            urljoin(
+                self._base_url,
+                f"api/v1/namespaces/{namespace}/endpoints/{encoded_service_name}",
+            ),
+            headers=self._headers,
+            timeout=self._timeout_seconds,
+            ssl_context=self._ssl_context,
+        )
+
+    def ingresses(self, namespace: str) -> dict[str, Any]:
+        return self._http_client.get_json(
+            urljoin(
+                self._base_url,
+                f"apis/networking.k8s.io/v1/namespaces/{namespace}/ingresses",
+            ),
+            headers=self._headers,
+            timeout=self._timeout_seconds,
+            ssl_context=self._ssl_context,
+        )
+
     def deployment(self, namespace: str, deployment_name: str) -> dict[str, Any]:
         encoded_deployment_name = quote(deployment_name, safe="")
         return self._http_client.get_json(
