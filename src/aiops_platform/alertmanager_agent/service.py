@@ -738,20 +738,20 @@ def build_collection_notification_text(result: AlertmanagerSrePlanResult) -> str
     lines = [
         build_collection_notification_subject(result),
         "",
-        "1. 수집 요약",
+        "📦 1. 수집 요약",
         f"- 사고 유형: {view['incident_type']}",
         f"- 대상: {view['target']}",
         f"- 상태: {result.status} / intent: {result.intent or 'unknown'}",
         f"- 수집 도구: {view['tool_success']}",
         f"- 시간창: {view['window']}",
         "",
-        "2. 핵심 근거",
+        "🔎 2. 핵심 근거",
         *format_bullets(view["evidence"], empty="수집된 핵심 근거가 없습니다."),
         "",
-        "3. 미수집/주의",
+        "⚠️ 3. 미수집/주의",
         *format_bullets(view["data_limits"], empty="미수집 항목 없음"),
         "",
-        "4. 원문 제한",
+        "🔒 4. 원문 제한",
         "- raw logs, traces, secrets are not included in this notification.",
     ]
     return "\n".join(lines)
@@ -774,12 +774,12 @@ def build_collection_notification_html(result: AlertmanagerSrePlanResult) -> str
     ]
     return (
         "<html><body>"
-        "<h2>AIOps SRE RCA evidence collected</h2>"
+        "<h2>📦 AIOps SRE RCA evidence collected</h2>"
         "<p>Alertmanager triggered read-only RCA evidence collection. "
         "Raw logs, traces, and secret-like values are not included in this email.</p>"
         f"{render_html_table(rows)}"
-        f"{render_html_section('핵심 근거', view['evidence'])}"
-        f"{render_html_section('미수집/주의', view['data_limits'])}"
+        f"{render_html_section('🔎 핵심 근거', view['evidence'])}"
+        f"{render_html_section('⚠️ 미수집/주의', view['data_limits'])}"
         "</body></html>"
     )
 
@@ -2028,7 +2028,7 @@ def build_analysis_notification_text(result: AlertmanagerSrePlanResult) -> str:
     lines = [
         build_analysis_notification_subject(result),
         "",
-        "1. 요약",
+        "🚦 1. 요약",
         f"- 사고 유형: {view['incident_type']}",
         f"- 대상: {view['target']}",
         f"- 심각도: {view['severity']}",
@@ -2037,25 +2037,25 @@ def build_analysis_notification_text(result: AlertmanagerSrePlanResult) -> str:
         f"- 영향 범위: {view['impact_scope']}",
         f"- LLM 상태: {run_status}",
         "",
-        "2. 자동 판정",
+        "🧭 2. 자동 판정",
         *format_bullets(view["verdict"], empty="자동 판정 정보 없음"),
         "",
-        "3. 핵심 근거",
+        "🔎 3. 핵심 근거",
         *format_bullets(view["evidence"], empty="수집된 핵심 근거가 없습니다."),
         "",
-        "4. 원인 후보",
+        "🎯 4. 원인 후보",
         *format_bullets(view["candidate_lines"], empty="명확한 원인 후보 없음"),
         "",
-        "5. 권장 확인/조치",
+        "🛠 5. 권장 확인/조치",
         *format_bullets(view["next_checks"], empty="추가 확인 항목 없음"),
         "",
-        "6. 데이터 한계",
+        "⚠️ 6. 데이터 한계",
         *format_bullets(view["data_limits"], empty="확인된 데이터 한계 없음"),
         "",
-        "7. LLM 분석 요약",
+        "🤖 7. 모델 보조 분석",
         answer or "No RCA answer was generated.",
         "",
-        "- note: destructive remediation was not executed.",
+        "🔒 note: destructive remediation was not executed.",
     ]
     return "\n".join(lines)
 
@@ -2082,14 +2082,14 @@ def build_analysis_notification_html(result: AlertmanagerSrePlanResult) -> str:
     ]
     return (
         "<html><body>"
-        "<h2>AIOps SRE RCA analysis completed</h2>"
+        "<h2>🚦 AIOps SRE RCA analysis completed</h2>"
         f"{render_html_table(rows)}"
-        f"{render_html_section('자동 판정', view['verdict'])}"
-        f"{render_html_section('핵심 근거', view['evidence'])}"
-        f"{render_html_section('원인 후보', view['candidate_lines'])}"
-        f"{render_html_section('권장 확인/조치', view['next_checks'])}"
-        f"{render_html_section('데이터 한계', view['data_limits'])}"
-        "<h3>LLM 분석 요약</h3>"
+        f"{render_html_section('🧭 자동 판정', view['verdict'])}"
+        f"{render_html_section('🔎 핵심 근거', view['evidence'])}"
+        f"{render_html_section('🎯 원인 후보', view['candidate_lines'])}"
+        f"{render_html_section('🛠 권장 확인/조치', view['next_checks'])}"
+        f"{render_html_section('⚠️ 데이터 한계', view['data_limits'])}"
+        "<h3>🤖 모델 보조 분석</h3>"
         "<pre>"
         f"{html.escape(truncate_text(answer or 'No RCA answer was generated.', limit=8000))}"
         "</pre>"
@@ -2114,7 +2114,7 @@ def build_notification_view(result: AlertmanagerSrePlanResult) -> dict[str, Any]
         "incident_type": determine_incident_type(result),
         "target": format_alert_target(alert),
         "severity": alert.severity if alert is not None and alert.severity else "unknown",
-        "primary_candidate": str(primary_candidate.get("candidate") or "unknown"),
+        "primary_candidate": format_candidate_name(primary_candidate),
         "primary_confidence": str(primary_candidate.get("confidence") or "unknown"),
         "impact_scope": determine_impact_scope(result),
         "window": window,
@@ -2224,10 +2224,17 @@ def build_deterministic_verdict_lines(
     healthy = boundary_names_by_status(boundaries, "healthy")
     degraded = boundary_names_by_status(boundaries, "degraded")
     unknown = boundary_names_by_status(boundaries, "unknown")
+    non_routing_focus = is_kubernetes_pod_health_alert(alert) or is_postgres_sre_alert(alert)
     if healthy:
         lines.append(f"healthy 경계는 원인 후보에서 제외합니다: {', '.join(healthy)}")
     if degraded:
-        lines.append(f"degraded 경계는 우선 확인 대상입니다: {', '.join(degraded)}")
+        if non_routing_focus:
+            lines.append(
+                "라우팅 경계 degraded 신호는 보조 신호로만 기록합니다: "
+                f"{', '.join(degraded)}"
+            )
+        else:
+            lines.append(f"degraded 경계는 우선 확인 대상입니다: {', '.join(degraded)}")
     if unknown:
         lines.append(
             "unknown 경계는 원인 확정이 아니라 데이터 한계로 둡니다: "
@@ -2237,7 +2244,7 @@ def build_deterministic_verdict_lines(
         lines.append(
             "우선 원인 후보: "
             + ", ".join(
-                f"{candidate.get('candidate')}({candidate.get('confidence')})"
+                f"{format_candidate_name(candidate)}({candidate.get('confidence')})"
                 for candidate in candidates[:3]
             )
         )
@@ -2282,13 +2289,29 @@ def build_candidate_lines(candidates: list[dict[str, Any]]) -> list[str]:
     lines = []
     for index, candidate in enumerate(candidates[:5], start=1):
         lines.append(
-            f"{index}. {candidate.get('candidate')} "
+            f"{index}. {format_candidate_name(candidate)} "
             f"({candidate.get('confidence', 'unknown')})"
         )
         evidence = candidate.get("supporting_evidence")
         if isinstance(evidence, list) and evidence:
             lines.append(f"   근거: {truncate_text(str(evidence[0]), limit=180)}")
     return lines
+
+
+def format_candidate_name(candidate: dict[str, Any]) -> str:
+    candidate_type = str(candidate.get("candidate_type") or "")
+    fallback = str(candidate.get("candidate") or "unknown")
+    names = {
+        "pod_waiting_state": "Pod Pending/Waiting 상태",
+        "postgres_connection_saturation": "PostgreSQL connection 포화",
+        "db_hikaricp": "DB/HikariCP connection pool 압박",
+        "sqs_publish": "SQS publish 실패",
+        "sqs_consume": "SQS consume/DLQ backlog",
+        "application_error": "Application runtime error/HTTP 5xx",
+        "trace_latency": "Downstream latency/trace error",
+        "deployment_regression": "최근 배포 회귀",
+    }
+    return names.get(candidate_type, fallback)
 
 
 def build_next_check_lines(
@@ -2301,19 +2324,56 @@ def build_next_check_lines(
         if isinstance(next_checks, list):
             checks.extend(str(item) for item in next_checks if str(item).strip())
     if checks:
-        return dedupe_strings(checks)[:6]
+        return [format_next_check(item) for item in dedupe_strings(checks)[:6]]
     if is_kubernetes_pod_health_alert(result.alert):
-        return next_checks_for_candidate("pod_waiting_state")
+        return [format_next_check(item) for item in next_checks_for_candidate("pod_waiting_state")]
     if is_postgres_sre_alert(result.alert):
-        return next_checks_for_candidate("postgres_connection_saturation")
+        return [
+            format_next_check(item)
+            for item in next_checks_for_candidate("postgres_connection_saturation")
+        ]
     if result.intent == "routing_failure":
         return [
-            "check MetalLB endpoint reachability",
-            "check ingress host/path backend mapping",
-            "check service endpoints and pod readiness",
-            "compare recent deployment or ingress changes",
+            "MetalLB endpoint 도달성을 확인합니다.",
+            "Ingress host/path가 올바른 backend service로 연결되는지 확인합니다.",
+            "Service endpoint와 pod readiness를 확인합니다.",
+            "최근 deployment 또는 ingress 변경 이력을 비교합니다.",
         ]
-    return ["review logs, metrics, traces, and recent deployment changes"]
+    return ["logs, metrics, traces, 최근 deployment 변경 이력을 함께 확인합니다."]
+
+
+def format_next_check(value: str) -> str:
+    normalized = value.strip()
+    translations = {
+        "check Kubernetes events for image pull, scheduling, and mount errors": (
+            "Kubernetes events에서 image pull, scheduling, mount 오류를 확인합니다."
+        ),
+        "describe the affected pod and inspect container waiting reason": (
+            "영향받은 pod describe 결과에서 container waiting reason을 확인합니다."
+        ),
+        (
+            "verify image tag, registry credentials, ConfigMap/Secret references, "
+            "and node pressure"
+        ): (
+            "image tag, registry 인증, ConfigMap/Secret 참조, node pressure를 확인합니다."
+        ),
+        "check whether the workload is a Job/CronJob and compare recent runs": (
+            "대상이 Job/CronJob인지 확인하고 최근 실행 이력을 비교합니다."
+        ),
+        "check PostgreSQL current sessions versus max_connections": (
+            "PostgreSQL 현재 session 수와 max_connections를 비교합니다."
+        ),
+        "split active and idle sessions by database, user, and client": (
+            "active/idle session을 database, user, client 기준으로 나눠 확인합니다."
+        ),
+        "check application HikariCP active/pending/max connection metrics": (
+            "애플리케이션 HikariCP active/pending/max connection metric을 확인합니다."
+        ),
+        "review recent scale-out or deployment changes that increased DB sessions": (
+            "DB session 증가를 유발한 최근 scale-out 또는 deployment 변경을 확인합니다."
+        ),
+    }
+    return translations.get(normalized, normalized)
 
 
 def build_data_limit_lines(

@@ -953,7 +953,7 @@ def test_rca_llm_snapshot_prioritizes_postgres_saturation_alert_candidate() -> N
     assert candidates[0]["confidence"] == "high"
     assert candidates[1]["candidate_type"] == "trace_latency"
     assert "PostgreSQL 계열 DB 알림" in text
-    assert "PostgreSQL connection saturation(high)" in text
+    assert "PostgreSQL connection 포화(high)" in text
 
 
 def test_rca_llm_snapshot_prioritizes_kubernetes_pod_health_candidate() -> None:
@@ -1034,7 +1034,7 @@ def test_rca_llm_snapshot_prioritizes_kubernetes_pod_health_candidate() -> None:
     assert candidates[0]["confidence"] == "high"
     assert candidates[1]["candidate_type"] == "trace_latency"
     assert "Kubernetes Pod 상태 알림" in text
-    assert "Kubernetes pod waiting/pending state(high)" in text
+    assert "Pod Pending/Waiting 상태(high)" in text
 
 
 def test_rca_llm_snapshot_filters_query_only_and_low_confidence_candidates() -> None:
@@ -1150,8 +1150,8 @@ def test_analysis_notification_prioritizes_app_candidates_after_healthy_routing(
     text = build_analysis_notification_text(result)
 
     assert "우선 원인 후보" in text
-    assert "DB/HikariCP connection pool issue(high)" in text
-    assert "1순위 후보: DB/HikariCP connection pool issue" in text
+    assert "DB/HikariCP connection pool 압박(high)" in text
+    assert "1순위 후보: DB/HikariCP connection pool 압박" in text
 
 
 def test_analysis_notification_formats_routing_incident_sections() -> None:
@@ -1198,7 +1198,7 @@ def test_analysis_notification_formats_routing_incident_sections() -> None:
     assert "1. 요약" in text
     assert "사고 유형: Routing/Ingress/MetalLB 문제" in text
     assert "degraded 경계는 우선 확인 대상입니다: onprem_metallb" in text
-    assert "LLM 분석 요약" in text
+    assert "모델 보조 분석" in text
     assert "요약: MetalLB 경로에서 장애 후보가 확인되었습니다." in text
 
 
