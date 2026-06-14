@@ -12,6 +12,7 @@ from aiops_platform.alertmanager_agent.schemas import (
 from aiops_platform.alertmanager_agent.service import (
     AlertmanagerSreAgentService,
     build_analysis_notification_text,
+    build_collection_notification_text,
     build_notification_idempotency_key,
     build_rca_llm_snapshot_payload,
 )
@@ -132,6 +133,21 @@ def build_success_result(tool_name: str, response_payload: dict[str, object]):
         response_payload=response_payload,
         call_status=McpToolCallStatus.SUCCESS,
         execution_policy=McpExecutionPolicy.ALLOWED,
+    )
+
+
+def build_failed_result(tool_name: str, error_message: str = "tool failed"):
+    tool = resolve_registered_tool(
+        server_name="infraops-mcp",
+        tool_name=tool_name,
+    )
+    return build_tool_result(
+        tool=tool,
+        request_payload={},
+        response_payload=None,
+        call_status=McpToolCallStatus.FAILED,
+        execution_policy=McpExecutionPolicy.ALLOWED,
+        error_message=error_message,
     )
 
 
@@ -795,8 +811,9 @@ def test_analysis_notification_prepends_boundary_guardrail_verdict() -> None:
     assert "자동 판정" in text
     assert "synthetic current-state inspection" in text
     assert "dns, onprem_metallb, onprem_ingress, k8s_service" in text
-    assert "원인 후보에서 제외" in text
-    assert "라우팅 경계 장애 증거는 없습니다" in text
+    assert "healthy 경계는 원인 후보에서 제외" in text
+    assert "2. 자동 판정" in text
+    assert "3. 핵심 근거" in text
 
 
 def test_rca_llm_snapshot_builds_application_root_cause_candidates() -> None:
@@ -1132,9 +1149,93 @@ def test_analysis_notification_prioritizes_app_candidates_after_healthy_routing(
 
     text = build_analysis_notification_text(result)
 
-    assert "application root_cause_candidates" in text
+    assert "우선 원인 후보" in text
     assert "DB/HikariCP connection pool issue(high)" in text
-    assert "라우팅 경계보다" in text
+    assert "1순위 후보: DB/HikariCP connection pool issue" in text
+
+
+def test_analysis_notification_formats_routing_incident_sections() -> None:
+    result = AlertmanagerSrePlanResult(
+        status="ANALYZED",
+        incident_key="alertmanager:onpremmetallbroutingfailure:onprem:kkpp:service-payment:critical",
+        intent="routing_failure",
+        alert=AlertmanagerSreAlertContext(
+            alert_name="OnpremMetalLBRoutingFailure",
+            status="firing",
+            cluster="onprem",
+            namespace="kkpp",
+            service_name="service-payment",
+            severity="critical",
+            summary="MetalLB ingress route failed",
+        ),
+        context_bundle={
+            "failure_boundary_candidates": [
+                {"boundary": "dns", "status": "healthy", "confidence": "medium"},
+                {
+                    "boundary": "onprem_metallb",
+                    "status": "degraded",
+                    "confidence": "high",
+                },
+            ],
+        },
+        rca_analysis={
+            "run_status": "SUCCESS",
+            "answer": json.dumps(
+                {
+                    "요약": "MetalLB 경로에서 장애 후보가 확인되었습니다.",
+                    "관측 근거": "onprem_metallb boundary가 degraded입니다.",
+                    "원인 후보": "MetalLB VIP 또는 ingress endpoint 문제",
+                    "권장 확인/조치": "MetalLB endpoint와 ingress route를 확인하세요.",
+                    "데이터 한계": "추가 애플리케이션 로그는 요약만 포함됩니다.",
+                },
+                ensure_ascii=False,
+            ),
+        },
+    )
+
+    text = build_analysis_notification_text(result)
+
+    assert "1. 요약" in text
+    assert "사고 유형: Routing/Ingress/MetalLB 문제" in text
+    assert "degraded 경계는 우선 확인 대상입니다: onprem_metallb" in text
+    assert "LLM 분석 요약" in text
+    assert "요약: MetalLB 경로에서 장애 후보가 확인되었습니다." in text
+
+
+def test_collection_notification_explains_failed_tools() -> None:
+    result = AlertmanagerSrePlanResult(
+        status="COLLECTED",
+        incident_key="alertmanager:kubernetespodnothealthy:unknown-cluster:kkpp:service-batch:warning",
+        intent="pod_crashloop",
+        alert=AlertmanagerSreAlertContext(
+            alert_name="KubernetesPodNotHealthy",
+            status="firing",
+            namespace="kkpp",
+            service_name="service-batch",
+            pod="service-batch-29689980-46j66",
+            severity="warning",
+            summary="Pod service-batch is Pending",
+        ),
+        executed_tools=[
+            build_success_result("get_k8s_events", {"items": []}),
+            build_failed_result("get_pod_logs"),
+            build_failed_result("get_rollout_status"),
+        ],
+        context_bundle={
+            "summary_for_llm": {
+                "available_sections": ["kubernetes", "logs"],
+                "missing_sections": ["traces"],
+            }
+        },
+    )
+
+    text = build_collection_notification_text(result)
+
+    assert "1. 수집 요약" in text
+    assert "3. 미수집/주의" in text
+    assert "pod logs 미수집" in text
+    assert "rollout 상태 미수집" in text
+    assert "missing evidence section: traces" in text
 
 
 def test_alertmanager_sre_agent_execute_collects_read_only_evidence_bundle() -> None:

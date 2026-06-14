@@ -734,81 +734,43 @@ def build_collection_notification_payload(
 
 
 def build_collection_notification_text(result: AlertmanagerSrePlanResult) -> str:
-    stats = summarize_tool_execution(result)
-    summary = extract_bundle_summary(result)
-    alert = result.alert
-    incident_window = result.incident_window
-    target = format_alert_target(alert)
-    failed_tools = compact_list(stats["failed_tools"])
-    sections = compact_list(summary.get("available_sections", []))
-    boundaries = format_boundary_summary(
-        summary.get("failure_boundary_candidates", [])
-    )
+    view = build_notification_view(result)
     lines = [
         build_collection_notification_subject(result),
-        f"- incident: {result.incident_key or 'unknown'}",
-        f"- target: {target}",
-        f"- status: {result.status} / intent: {result.intent or 'unknown'}",
-        (
-            "- window: "
-            f"{incident_window.start} ~ {incident_window.end}"
-            if incident_window is not None
-            else "- window: unknown"
-        ),
-        (
-            "- tools: "
-            f"{stats['successful_tools']}/{stats['total_tools']} succeeded"
-        ),
-        f"- failed_tools: {failed_tools or 'none'}",
-        f"- evidence_sections: {sections or 'none'}",
-        f"- boundaries: {boundaries or 'unknown'}",
-        "- note: raw logs, traces, and secrets are not included in this notification.",
+        "",
+        "1. 수집 요약",
+        f"- 사고 유형: {view['incident_type']}",
+        f"- 대상: {view['target']}",
+        f"- 상태: {result.status} / intent: {result.intent or 'unknown'}",
+        f"- 수집 도구: {view['tool_success']}",
+        f"- 시간창: {view['window']}",
+        "",
+        "2. 핵심 근거",
+        *format_bullets(view["evidence"], empty="수집된 핵심 근거가 없습니다."),
+        "",
+        "3. 미수집/주의",
+        *format_bullets(view["data_limits"], empty="미수집 항목 없음"),
+        "",
+        "4. 원문 제한",
+        "- raw logs, traces, secrets are not included in this notification.",
     ]
     return "\n".join(lines)
 
 
 def build_collection_notification_html(result: AlertmanagerSrePlanResult) -> str:
-    stats = summarize_tool_execution(result)
-    summary = extract_bundle_summary(result)
-    alert = result.alert
-    incident_window = result.incident_window
+    view = build_notification_view(result)
     rows = [
         ("Incident", result.incident_key or ""),
-        ("Alert", alert.alert_name if alert is not None else ""),
-        ("Target", format_alert_target(alert)),
-        ("Severity", alert.severity if alert is not None and alert.severity else ""),
+        ("Alert", result.alert.alert_name if result.alert is not None else ""),
+        ("Incident Type", view["incident_type"]),
+        ("Target", view["target"]),
+        ("Severity", view["severity"]),
         ("Intent", result.intent or ""),
         ("Capability", result.capability or ""),
-        (
-            "Window",
-            (
-                f"{incident_window.start} ~ {incident_window.end}"
-                if incident_window is not None
-                else ""
-            ),
-        ),
-        (
-            "Tool Success",
-            f"{stats['successful_tools']}/{stats['total_tools']}",
-        ),
-        ("Failed Tools", compact_list(stats["failed_tools"]) or "none"),
-        (
-            "Evidence Sections",
-            compact_list(summary.get("available_sections", [])) or "none",
-        ),
-        (
-            "Missing Sections",
-            compact_list(summary.get("missing_sections", [])) or "none",
-        ),
-        (
-            "Cross Domain",
-            str(summary.get("cross_domain_scenario") or ""),
-        ),
-        (
-            "Boundary Candidates",
-            format_boundary_summary(summary.get("failure_boundary_candidates", []))
-            or "unknown",
-        ),
+        ("Window", view["window"]),
+        ("Tool Success", view["tool_success"]),
+        ("Primary Candidate", view["primary_candidate"]),
+        ("Confidence", view["primary_confidence"]),
     ]
     return (
         "<html><body>"
@@ -816,6 +778,8 @@ def build_collection_notification_html(result: AlertmanagerSrePlanResult) -> str
         "<p>Alertmanager triggered read-only RCA evidence collection. "
         "Raw logs, traces, and secret-like values are not included in this email.</p>"
         f"{render_html_table(rows)}"
+        f"{render_html_section('핵심 근거', view['evidence'])}"
+        f"{render_html_section('미수집/주의', view['data_limits'])}"
         "</body></html>"
     )
 
@@ -2059,19 +2023,38 @@ def build_analysis_notification_payload(
 def build_analysis_notification_text(result: AlertmanagerSrePlanResult) -> str:
     analysis = result.rca_analysis or {}
     run_status = str(analysis.get("run_status") or "UNKNOWN")
-    answer = str(analysis.get("answer") or "").strip()
-    last_error = str(analysis.get("last_error") or "").strip()
-    if run_status != "SUCCESS":
-        answer = last_error or "LLM RCA analysis did not complete successfully."
-    elif answer:
-        answer = apply_rca_answer_guardrails(answer, result=result)
+    answer = build_notification_answer(result, limit=1400)
+    view = build_notification_view(result)
     lines = [
         build_analysis_notification_subject(result),
-        f"- incident: {result.incident_key or 'unknown'}",
-        f"- target: {format_alert_target(result.alert)}",
-        f"- llm_status: {run_status}",
-        "- answer:",
-        truncate_text(answer or "No RCA answer was generated.", limit=3500),
+        "",
+        "1. 요약",
+        f"- 사고 유형: {view['incident_type']}",
+        f"- 대상: {view['target']}",
+        f"- 심각도: {view['severity']}",
+        f"- 1순위 후보: {view['primary_candidate']}",
+        f"- 신뢰도: {view['primary_confidence']}",
+        f"- 영향 범위: {view['impact_scope']}",
+        f"- LLM 상태: {run_status}",
+        "",
+        "2. 자동 판정",
+        *format_bullets(view["verdict"], empty="자동 판정 정보 없음"),
+        "",
+        "3. 핵심 근거",
+        *format_bullets(view["evidence"], empty="수집된 핵심 근거가 없습니다."),
+        "",
+        "4. 원인 후보",
+        *format_bullets(view["candidate_lines"], empty="명확한 원인 후보 없음"),
+        "",
+        "5. 권장 확인/조치",
+        *format_bullets(view["next_checks"], empty="추가 확인 항목 없음"),
+        "",
+        "6. 데이터 한계",
+        *format_bullets(view["data_limits"], empty="확인된 데이터 한계 없음"),
+        "",
+        "7. LLM 분석 요약",
+        answer or "No RCA answer was generated.",
+        "",
         "- note: destructive remediation was not executed.",
     ]
     return "\n".join(lines)
@@ -2080,31 +2063,370 @@ def build_analysis_notification_text(result: AlertmanagerSrePlanResult) -> str:
 def build_analysis_notification_html(result: AlertmanagerSrePlanResult) -> str:
     analysis = result.rca_analysis or {}
     run_status = str(analysis.get("run_status") or "UNKNOWN")
-    answer = str(analysis.get("answer") or "").strip()
-    last_error = str(analysis.get("last_error") or "").strip()
-    if run_status != "SUCCESS":
-        answer = last_error or "LLM RCA analysis did not complete successfully."
-    elif answer:
-        answer = apply_rca_answer_guardrails(answer, result=result)
+    answer = build_notification_answer(result, limit=8000)
+    view = build_notification_view(result)
     rows = [
         ("Incident", result.incident_key or ""),
         ("Alert", result.alert.alert_name if result.alert is not None else ""),
-        ("Target", format_alert_target(result.alert)),
+        ("Incident Type", view["incident_type"]),
+        ("Target", view["target"]),
+        ("Severity", view["severity"]),
         ("Intent", result.intent or ""),
+        ("Primary Candidate", view["primary_candidate"]),
+        ("Confidence", view["primary_confidence"]),
+        ("Impact Scope", view["impact_scope"]),
         ("LLM Status", run_status),
         ("LLM Run", str(analysis.get("llm_run_id") or "")),
+        ("Tool Success", view["tool_success"]),
+        ("Window", view["window"]),
     ]
     return (
         "<html><body>"
         "<h2>AIOps SRE RCA analysis completed</h2>"
         f"{render_html_table(rows)}"
-        "<h3>Analysis</h3>"
+        f"{render_html_section('자동 판정', view['verdict'])}"
+        f"{render_html_section('핵심 근거', view['evidence'])}"
+        f"{render_html_section('원인 후보', view['candidate_lines'])}"
+        f"{render_html_section('권장 확인/조치', view['next_checks'])}"
+        f"{render_html_section('데이터 한계', view['data_limits'])}"
+        "<h3>LLM 분석 요약</h3>"
         "<pre>"
         f"{html.escape(truncate_text(answer or 'No RCA answer was generated.', limit=8000))}"
         "</pre>"
         "<p>Destructive remediation was not executed.</p>"
         "</body></html>"
     )
+
+
+def build_notification_view(result: AlertmanagerSrePlanResult) -> dict[str, Any]:
+    stats = summarize_tool_execution(result)
+    summary = extract_bundle_summary(result)
+    candidates = build_application_root_cause_candidates(result)
+    alert = result.alert
+    primary_candidate = candidates[0] if candidates else {}
+    boundaries = notification_boundaries(result, summary=summary)
+    window = (
+        f"{result.incident_window.start} ~ {result.incident_window.end}"
+        if result.incident_window is not None
+        else "unknown"
+    )
+    return {
+        "incident_type": determine_incident_type(result),
+        "target": format_alert_target(alert),
+        "severity": alert.severity if alert is not None and alert.severity else "unknown",
+        "primary_candidate": str(primary_candidate.get("candidate") or "unknown"),
+        "primary_confidence": str(primary_candidate.get("confidence") or "unknown"),
+        "impact_scope": determine_impact_scope(result),
+        "window": window,
+        "tool_success": f"{stats['successful_tools']}/{stats['total_tools']} succeeded",
+        "verdict": build_deterministic_verdict_lines(
+            result,
+            candidates=candidates,
+            boundaries=boundaries,
+        ),
+        "evidence": build_key_evidence_lines(
+            result,
+            stats=stats,
+            summary=summary,
+            candidates=candidates,
+            boundaries=boundaries,
+        ),
+        "candidate_lines": build_candidate_lines(candidates),
+        "next_checks": build_next_check_lines(result, candidates),
+        "data_limits": build_data_limit_lines(
+            result,
+            stats=stats,
+            summary=summary,
+            boundaries=boundaries,
+        ),
+    }
+
+
+def notification_boundaries(
+    result: AlertmanagerSrePlanResult,
+    *,
+    summary: dict[str, Any],
+) -> list[dict[str, Any]]:
+    boundaries = trim_boundary_candidates(summary.get("failure_boundary_candidates", []))
+    if boundaries:
+        return boundaries
+    bundle = result.context_bundle or {}
+    return trim_boundary_candidates(bundle.get("failure_boundary_candidates", []))
+
+
+def determine_incident_type(result: AlertmanagerSrePlanResult) -> str:
+    if is_kubernetes_pod_health_alert(result.alert):
+        return "Kubernetes Pod 상태 이상"
+    if is_postgres_connection_saturation_alert(result.alert):
+        return "PostgreSQL connection 포화"
+    if is_postgres_sre_alert(result.alert):
+        return "PostgreSQL/DB 문제"
+    if result.intent in {"routing_failure", "checkout_500"}:
+        return "Routing/Ingress/MetalLB 문제"
+    if result.intent in {"sqs_publish_failure", "sqs_consume_failure", "pin_verification_missing"}:
+        return "SQS 메시징 문제"
+    if result.intent == "pod_crashloop":
+        return "Kubernetes Pod 상태 이상"
+    if result.intent == "db_hikaricp_issue":
+        return "DB/HikariCP 문제"
+    return "일반 application incident"
+
+
+def determine_impact_scope(result: AlertmanagerSrePlanResult) -> str:
+    alert = result.alert
+    if alert is None:
+        return "unknown"
+    if is_kubernetes_pod_health_alert(alert):
+        return "/".join(
+            part
+            for part in (
+                alert.namespace,
+                alert.workload or alert.service_name,
+                alert.pod,
+            )
+            if part
+        )
+    if is_postgres_sre_alert(alert):
+        return "/".join(
+            part for part in (alert.namespace, alert.service_name or alert.workload) if part
+        )
+    return format_alert_target(alert)
+
+
+def build_deterministic_verdict_lines(
+    result: AlertmanagerSrePlanResult,
+    *,
+    candidates: list[dict[str, Any]],
+    boundaries: list[dict[str, Any]],
+) -> list[str]:
+    alert = result.alert
+    lines = []
+    if is_kubernetes_pod_health_alert(alert):
+        lines.append(
+            "Kubernetes Pod 상태 알림이므로 routing/trace보다 pod lifecycle을 우선 분석합니다."
+        )
+    elif is_postgres_sre_alert(alert):
+        lines.append(
+            "PostgreSQL 계열 DB 알림이므로 routing boundary보다 "
+            "DB session/connection 압박을 우선 분석합니다."
+        )
+    elif result.intent == "routing_failure":
+        lines.append("Routing/Ingress/MetalLB 경계 상태를 우선 분석합니다.")
+    else:
+        lines.append(
+            "Alertmanager 알림과 수집된 관측 신호를 기준으로 "
+            "READ-only RCA를 수행했습니다."
+        )
+
+    if is_synthetic_sre_alert(alert):
+        lines.append("synthetic current-state inspection이며 실제 장애 유발 검증은 아닙니다.")
+
+    healthy = boundary_names_by_status(boundaries, "healthy")
+    degraded = boundary_names_by_status(boundaries, "degraded")
+    unknown = boundary_names_by_status(boundaries, "unknown")
+    if healthy:
+        lines.append(f"healthy 경계는 원인 후보에서 제외합니다: {', '.join(healthy)}")
+    if degraded:
+        lines.append(f"degraded 경계는 우선 확인 대상입니다: {', '.join(degraded)}")
+    if unknown:
+        lines.append(
+            "unknown 경계는 원인 확정이 아니라 데이터 한계로 둡니다: "
+            f"{', '.join(unknown)}"
+        )
+    if candidates:
+        lines.append(
+            "우선 원인 후보: "
+            + ", ".join(
+                f"{candidate.get('candidate')}({candidate.get('confidence')})"
+                for candidate in candidates[:3]
+            )
+        )
+    return lines
+
+
+def build_key_evidence_lines(
+    result: AlertmanagerSrePlanResult,
+    *,
+    stats: dict[str, Any],
+    summary: dict[str, Any],
+    candidates: list[dict[str, Any]],
+    boundaries: list[dict[str, Any]],
+) -> list[str]:
+    alert = result.alert
+    lines = []
+    if alert is not None:
+        lines.append(
+            "alert="
+            f"{alert.alert_name}, severity={alert.severity or 'unknown'}, "
+            f"target={format_alert_target(alert)}"
+        )
+        if alert.pod:
+            lines.append(f"pod={alert.pod}")
+        if alert.summary:
+            lines.append(f"summary={truncate_text(alert.summary, limit=180)}")
+    lines.append(f"tools={stats['successful_tools']}/{stats['total_tools']} succeeded")
+    sections = compact_list(summary.get("available_sections", []), limit=6)
+    if sections:
+        lines.append(f"evidence_sections={sections}")
+    boundary_summary = format_boundary_summary(boundaries)
+    if boundary_summary:
+        lines.append(f"boundaries={boundary_summary}")
+    if candidates:
+        evidence = candidates[0].get("supporting_evidence")
+        if isinstance(evidence, list) and evidence:
+            lines.append(f"primary_evidence={truncate_text(str(evidence[0]), limit=220)}")
+    return lines
+
+
+def build_candidate_lines(candidates: list[dict[str, Any]]) -> list[str]:
+    lines = []
+    for index, candidate in enumerate(candidates[:5], start=1):
+        lines.append(
+            f"{index}. {candidate.get('candidate')} "
+            f"({candidate.get('confidence', 'unknown')})"
+        )
+        evidence = candidate.get("supporting_evidence")
+        if isinstance(evidence, list) and evidence:
+            lines.append(f"   근거: {truncate_text(str(evidence[0]), limit=180)}")
+    return lines
+
+
+def build_next_check_lines(
+    result: AlertmanagerSrePlanResult,
+    candidates: list[dict[str, Any]],
+) -> list[str]:
+    checks = []
+    for candidate in candidates[:2]:
+        next_checks = candidate.get("next_checks")
+        if isinstance(next_checks, list):
+            checks.extend(str(item) for item in next_checks if str(item).strip())
+    if checks:
+        return dedupe_strings(checks)[:6]
+    if is_kubernetes_pod_health_alert(result.alert):
+        return next_checks_for_candidate("pod_waiting_state")
+    if is_postgres_sre_alert(result.alert):
+        return next_checks_for_candidate("postgres_connection_saturation")
+    if result.intent == "routing_failure":
+        return [
+            "check MetalLB endpoint reachability",
+            "check ingress host/path backend mapping",
+            "check service endpoints and pod readiness",
+            "compare recent deployment or ingress changes",
+        ]
+    return ["review logs, metrics, traces, and recent deployment changes"]
+
+
+def build_data_limit_lines(
+    result: AlertmanagerSrePlanResult,
+    *,
+    stats: dict[str, Any],
+    summary: dict[str, Any],
+    boundaries: list[dict[str, Any]],
+) -> list[str]:
+    lines = []
+    for tool_name in stats.get("failed_tools", [])[:8]:
+        lines.append(explain_failed_tool(str(tool_name), result=result))
+    missing_sections = summary.get("missing_sections")
+    if isinstance(missing_sections, list):
+        lines.extend(f"missing evidence section: {section}" for section in missing_sections[:5])
+    unknown_boundaries = boundary_names_by_status(boundaries, "unknown")
+    if unknown_boundaries:
+        lines.append(f"unknown boundaries: {', '.join(unknown_boundaries)}")
+    return dedupe_strings(lines)
+
+
+def explain_failed_tool(tool_name: str, *, result: AlertmanagerSrePlanResult) -> str:
+    explanations = {
+        "get_pod_logs": (
+            "pod logs 미수집: 컨테이너가 아직 시작되지 않았거나 대상 pod 로그가 없을 수 있음"
+        ),
+        "get_rollout_status": (
+            "rollout 상태 미수집: 대상이 Deployment가 아니라 Job/CronJob일 수 있음"
+        ),
+        "get_current_image_tags": (
+            "image tag 미수집: 대상 workload의 현재 이미지 정보를 확인하지 못함"
+        ),
+        "get_k8s_service_endpoints": (
+            "service endpoint 미수집: 대상이 Service 뒤의 서버가 아닌 batch/job pod일 수 있음"
+        ),
+        "get_k8s_ingress_backend_mapping": (
+            "ingress mapping 미수집: 대상 workload가 외부 ingress 경로를 갖지 않을 수 있음"
+        ),
+        "get_service_trace_summary": (
+            "trace summary 미수집: Tempo/trace backend 또는 service mapping 확인 필요"
+        ),
+        "search_traces": (
+            "trace 검색 미수집: trace backend 연결 또는 service name mapping 확인 필요"
+        ),
+    }
+    return explanations.get(tool_name, f"{tool_name} 미수집: tool 실행 결과를 확인해야 함")
+
+
+def build_notification_answer(result: AlertmanagerSrePlanResult, *, limit: int) -> str:
+    analysis = result.rca_analysis or {}
+    run_status = str(analysis.get("run_status") or "UNKNOWN")
+    raw_answer = str(analysis.get("answer") or "").strip()
+    last_error = str(analysis.get("last_error") or "").strip()
+    if run_status != "SUCCESS":
+        return truncate_text(
+            last_error or "LLM RCA analysis did not complete successfully.",
+            limit=limit,
+        )
+    if raw_answer:
+        raw_answer = apply_rca_answer_guardrails(raw_answer, result=result)
+    return normalize_rca_answer_for_notification(raw_answer, limit=limit)
+
+
+def normalize_rca_answer_for_notification(answer: str, *, limit: int) -> str:
+    if not answer:
+        return ""
+    llm_part = answer
+    if "\n\nLLM 분석\n" in answer:
+        llm_part = answer.split("\n\nLLM 분석\n", 1)[1].strip()
+    parsed = parse_json_object(llm_part)
+    if isinstance(parsed, dict):
+        lines = []
+        for key in ("요약", "관측 근거", "원인 후보", "권장 확인/조치", "데이터 한계"):
+            value = parsed.get(key)
+            if value:
+                lines.append(f"{key}: {value}")
+        if lines:
+            return truncate_text("\n".join(lines), limit=limit)
+    return truncate_text(llm_part, limit=limit)
+
+
+def parse_json_object(value: str) -> dict[str, Any] | None:
+    stripped = value.strip()
+    if not stripped.startswith("{"):
+        start = stripped.find("{")
+        end = stripped.rfind("}")
+        if start < 0 or end <= start:
+            return None
+        stripped = stripped[start : end + 1]
+    try:
+        parsed = json.loads(stripped)
+    except json.JSONDecodeError:
+        return None
+    return parsed if isinstance(parsed, dict) else None
+
+
+def format_bullets(items: list[str], *, empty: str) -> list[str]:
+    values = [str(item).strip() for item in items if str(item).strip()]
+    if not values:
+        return [f"- {empty}"]
+    return [f"- {item}" for item in values]
+
+
+def dedupe_strings(items: list[str]) -> list[str]:
+    deduped = []
+    seen = set()
+    for item in items:
+        normalized = item.strip()
+        if not normalized or normalized in seen:
+            continue
+        seen.add(normalized)
+        deduped.append(normalized)
+    return deduped
 
 
 def summarize_rca_snapshot_for_llm(value: Any) -> Any:
@@ -2607,6 +2929,14 @@ def render_html_table(rows: list[tuple[str, str]]) -> str:
         f"<tbody>{rendered_rows}</tbody>"
         "</table>"
     )
+
+
+def render_html_section(title: str, items: list[str]) -> str:
+    values = [str(item).strip() for item in items if str(item).strip()]
+    if not values:
+        values = ["none"]
+    rendered_items = "".join(f"<li>{html.escape(item)}</li>" for item in values)
+    return f"<h3>{html.escape(title)}</h3><ul>{rendered_items}</ul>"
 
 
 def parse_recipients(value: str) -> list[str]:
