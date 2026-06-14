@@ -1,0 +1,163 @@
+# Apply this manifest to the on-prem Kubernetes cluster, not the AWS EKS cluster.
+# It lets on-prem Prometheus scrape VESSL vLLM metrics without exposing vLLM port 8000 publicly.
+#
+# Prerequisite, create this Secret outside Git:
+# kubectl create secret generic vessl-llm-ssh-key \
+#   -n monitoring \
+#   --from-file=id_ed25519=/path/to/kkpp-llm-server-ver1.pem
+#
+# If the existing pfsense ScrapeConfig uses different selector labels, copy the same labels
+# onto the ScrapeConfig below so the Prometheus CR picks it up.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: vessl-vllm-metrics-tunnel
+  namespace: monitoring
+  labels:
+    app.kubernetes.io/name: vessl-vllm-metrics-tunnel
+    app.kubernetes.io/part-of: aiops-observability
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: vessl-vllm-metrics-tunnel
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: vessl-vllm-metrics-tunnel
+        app.kubernetes.io/part-of: aiops-observability
+    spec:
+      containers:
+        - name: ssh-tunnel
+          image: alpine:3.20
+          imagePullPolicy: IfNotPresent
+          command:
+            - /bin/sh
+            - -ec
+          args:
+            - |
+              apk add --no-cache autossh openssh-client
+              chmod 600 /ssh/id_ed25519
+              exec autossh -M 0 -N \
+                -o ServerAliveInterval=30 \
+                -o ServerAliveCountMax=3 \
+                -o ExitOnForwardFailure=yes \
+                -o StrictHostKeyChecking=accept-new \
+                -i /ssh/id_ed25519 \
+                -p 31541 \
+                -L 0.0.0.0:8000:127.0.0.1:8000 \
+                -L 0.0.0.0:9400:127.0.0.1:9400 \
+                root@deneb.cloud.vessl.ai
+          ports:
+            - name: vllm-metrics
+              containerPort: 8000
+              protocol: TCP
+            - name: gpu-metrics
+              containerPort: 9400
+              protocol: TCP
+          readinessProbe:
+            httpGet:
+              path: /v1/models
+              port: vllm-metrics
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            timeoutSeconds: 3
+          livenessProbe:
+            httpGet:
+              path: /metrics
+              port: vllm-metrics
+            initialDelaySeconds: 30
+            periodSeconds: 30
+            timeoutSeconds: 5
+          resources:
+            requests:
+              cpu: 20m
+              memory: 64Mi
+            limits:
+              cpu: 200m
+              memory: 256Mi
+          volumeMounts:
+            - name: ssh-key
+              mountPath: /ssh
+              readOnly: true
+      volumes:
+        - name: ssh-key
+          secret:
+            secretName: vessl-llm-ssh-key
+            defaultMode: 0400
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: vessl-vllm-metrics
+  namespace: monitoring
+  labels:
+    app.kubernetes.io/name: vessl-vllm-metrics-tunnel
+    app.kubernetes.io/part-of: aiops-observability
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: vessl-vllm-metrics-tunnel
+  ports:
+    - name: metrics
+      port: 8000
+      targetPort: vllm-metrics
+      protocol: TCP
+    - name: gpu-metrics
+      port: 9400
+      targetPort: gpu-metrics
+      protocol: TCP
+---
+apiVersion: monitoring.coreos.com/v1alpha1
+kind: ScrapeConfig
+metadata:
+  name: vessl-vllm-qwen3
+  namespace: monitoring
+  labels:
+    release: onprem-kube-prometheus-stack
+    app.kubernetes.io/name: vessl-vllm-qwen3
+    app.kubernetes.io/part-of: aiops-observability
+spec:
+  staticConfigs:
+    - targets:
+        - vessl-vllm-metrics.monitoring.svc.cluster.local:8000
+      labels:
+        env: vessl
+        service: sre-llm
+        provider: internal-vllm
+        model: Qwen/Qwen3-32B
+        gpu_type: H100-80GB
+        instance: kkpp-llm-server-ver1
+  metricsPath: /metrics
+  scrapeInterval: 15s
+  scrapeTimeout: 10s
+  relabelings:
+    - targetLabel: job
+      replacement: vessl-vllm-qwen3
+---
+apiVersion: monitoring.coreos.com/v1alpha1
+kind: ScrapeConfig
+metadata:
+  name: vessl-h100-gpu
+  namespace: monitoring
+  labels:
+    release: onprem-kube-prometheus-stack
+    app.kubernetes.io/name: vessl-h100-gpu
+    app.kubernetes.io/part-of: aiops-observability
+spec:
+  staticConfigs:
+    - targets:
+        - vessl-vllm-metrics.monitoring.svc.cluster.local:9400
+      labels:
+        env: vessl
+        service: sre-llm
+        provider: internal-vllm
+        model: Qwen/Qwen3-32B
+        gpu_type: H100-80GB
+        instance: kkpp-llm-server-ver1
+  metricsPath: /metrics
+  scrapeInterval: 15s
+  scrapeTimeout: 10s
+  relabelings:
+    - targetLabel: job
+      replacement: vessl-h100-gpu

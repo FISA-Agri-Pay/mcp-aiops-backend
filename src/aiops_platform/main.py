@@ -10,6 +10,7 @@ from aiops_platform.api.farmer_bnpl import router as farmer_bnpl_router
 from aiops_platform.api.health import router as health_router
 from aiops_platform.api.jobs import router as jobs_router
 from aiops_platform.api.llmops import router as llmops_router
+from aiops_platform.api.metrics import router as metrics_router
 from aiops_platform.api.mcp import router as mcp_router
 from aiops_platform.api.rca import router as rca_router
 from aiops_platform.api.reports import router as reports_router
@@ -60,6 +61,7 @@ def create_app() -> FastAPI:
     app.include_router(health_router)
     app.include_router(jobs_router)
     app.include_router(llmops_router)
+    app.include_router(metrics_router)
     app.include_router(mcp_router)
     app.include_router(mcp_router, prefix=EXTERNAL_API_PREFIX)
     app.include_router(rca_router)

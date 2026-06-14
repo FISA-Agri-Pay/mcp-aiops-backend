@@ -6,6 +6,10 @@ metadata:
   labels:
     app.kubernetes.io/name: mcp-aiops-backend
     app.kubernetes.io/part-of: aiops-platform
+  annotations:
+    prometheus.io/scrape: "true"
+    prometheus.io/path: /metrics
+    prometheus.io/port: "80"
 spec:
   type: ClusterIP
   selector:
