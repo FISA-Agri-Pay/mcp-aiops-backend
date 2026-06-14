@@ -21,6 +21,7 @@ _HELP_TEXT = {
     "aiops_llm_estimated_prompt_tokens_last": "Most recent estimated LLM prompt token count.",
     "aiops_llm_prompt_chars_last": "Most recent serialized LLM prompt character count.",
     "aiops_llm_latency_ms_last": "Most recent LLM request latency in milliseconds.",
+    "aiops_llm_latency_ms_sum": "Cumulative LLM request latency in milliseconds.",
     "aiops_llm_request_timestamp_seconds": "Unix timestamp of the most recent LLM request.",
     "aiops_llm_requests_total": "Total LLM requests recorded by the AIOps backend.",
     "aiops_llm_failures_total": "Total failed LLM requests recorded by error type.",
@@ -64,6 +65,7 @@ def record_llm_request_metrics(
         _set_gauge("aiops_llm_total_tokens_last", labels, total_tokens or 0)
         _set_gauge("aiops_llm_latency_ms_last", labels, latency_ms or 0)
         _set_gauge("aiops_llm_request_timestamp_seconds", labels, time.time())
+        _inc_counter("aiops_llm_latency_ms_sum", labels, latency_ms or 0)
         _inc_counter(
             "aiops_llm_requests_total",
             {**labels, "status": status or "unknown"},

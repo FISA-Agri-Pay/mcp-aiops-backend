@@ -27,4 +27,5 @@ def test_metrics_endpoint_exports_llm_token_usage() -> None:
     assert "aiops_llm_prompt_tokens_last" in body
     assert 'prompt_key="rca.infra.v1"' in body
     assert "aiops_llm_estimated_prompt_tokens_last" in body
+    assert "aiops_llm_latency_ms_sum" in body
     assert "aiops_llm_requests_total" in body
