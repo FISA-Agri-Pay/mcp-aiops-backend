@@ -7,7 +7,14 @@ from uuid import UUID
 from aiops_platform.agent.context_bundle import build_incident_context_bundle
 from aiops_platform.agent.schemas import AgentToolExecutionResult
 from aiops_platform.core.config import settings
-from aiops_platform.llmops.client import LlmClient, LlmCompletionRequest, create_llm_client
+from aiops_platform.core.metrics import json_char_size, record_llm_request_metrics
+from aiops_platform.llmops.client import (
+    LlmClient,
+    LlmCompletionRequest,
+    LlmCompletionResponse,
+    build_chat_messages,
+    create_llm_client,
+)
 from aiops_platform.llmops.repository import LlmOpsRepository, SqlLlmOpsRepository
 from aiops_platform.llmops.schemas import (
     AgentSnapshotListResult,
@@ -173,6 +180,42 @@ class LlmOpsService:
         self._repository = repository or SqlLlmOpsRepository()
         self._llm_client = llm_client or create_llm_client(settings)
 
+    def _record_llm_success_metrics(
+        self,
+        *,
+        request: LlmCompletionRequest,
+        response: LlmCompletionResponse,
+        status: LlmRunStatus,
+    ) -> None:
+        record_llm_request_metrics(
+            provider=response.provider,
+            model=response.model,
+            prompt_key=request.prompt_key,
+            chat_type=request.chat_type,
+            status=status,
+            prompt_chars=calculate_prompt_chars(request),
+            prompt_tokens=response.prompt_tokens,
+            completion_tokens=response.completion_tokens,
+            total_tokens=response.total_tokens,
+            latency_ms=response.latency_ms,
+        )
+
+    def _record_llm_failure_metrics(
+        self,
+        *,
+        request: LlmCompletionRequest,
+        exc: Exception,
+    ) -> None:
+        record_llm_request_metrics(
+            provider=self._llm_client.provider,
+            model=self._llm_client.model,
+            prompt_key=request.prompt_key,
+            chat_type=request.chat_type,
+            status="FAILED",
+            prompt_chars=calculate_prompt_chars(request),
+            error_type=classify_llm_error(exc),
+        )
+
     def ensure_prompt_version(
         self,
         *,
@@ -247,6 +290,11 @@ class LlmOpsService:
             response = self._llm_client.complete(request)
             validation = validate_output_payload(response.output_payload, OUTPUT_SCHEMA)
             status: LlmRunStatus = "SUCCESS" if validation.is_valid else "VALIDATION_FAILED"
+            self._record_llm_success_metrics(
+                request=request,
+                response=response,
+                status=status,
+            )
             last_error = "; ".join(validation.errors) if validation.errors else None
             return self._repository.record_llm_run(
                 provider=response.provider,
@@ -265,6 +313,7 @@ class LlmOpsService:
             )
         except Exception as exc:
             last_error = format_llm_exception(exc)
+            self._record_llm_failure_metrics(request=request, exc=exc)
             logger.exception(
                 "LLM agent completion failed provider=%s model=%s prompt_key=%s.",
                 self._llm_client.provider,
@@ -342,6 +391,11 @@ class LlmOpsService:
             output_payload = normalize_rca_output_payload(response.output_payload)
             validation = validate_output_payload(output_payload, OUTPUT_SCHEMA)
             status: LlmRunStatus = "SUCCESS" if validation.is_valid else "VALIDATION_FAILED"
+            self._record_llm_success_metrics(
+                request=request,
+                response=response,
+                status=status,
+            )
             last_error = "; ".join(validation.errors) if validation.errors else None
             return self._repository.record_llm_run(
                 provider=response.provider,
@@ -360,6 +414,7 @@ class LlmOpsService:
             )
         except Exception as exc:
             last_error = format_llm_exception(exc)
+            self._record_llm_failure_metrics(request=request, exc=exc)
             logger.exception(
                 "RCA LLM completion failed provider=%s model=%s prompt_key=%s.",
                 self._llm_client.provider,
@@ -446,6 +501,11 @@ class LlmOpsService:
                 OPS_REPORT_OUTPUT_SCHEMA,
             )
             status: LlmRunStatus = "SUCCESS" if validation.is_valid else "VALIDATION_FAILED"
+            self._record_llm_success_metrics(
+                request=request,
+                response=response,
+                status=status,
+            )
             last_error = "; ".join(validation.errors) if validation.errors else None
             return self._repository.record_llm_run(
                 provider=response.provider,
@@ -464,6 +524,7 @@ class LlmOpsService:
             )
         except Exception as exc:
             last_error = format_llm_exception(exc)
+            self._record_llm_failure_metrics(request=request, exc=exc)
             logger.exception(
                 "Ops report LLM completion failed provider=%s model=%s prompt_key=%s.",
                 self._llm_client.provider,
@@ -870,3 +931,28 @@ def serialize_tool_result_for_llm(
     payload["masked_response_payload"] = {}
     payload["failure_policy"] = "hide_internal_error_from_user"
     return payload
+
+
+def calculate_prompt_chars(request: LlmCompletionRequest) -> int:
+    try:
+        return sum(len(message["content"]) for message in build_chat_messages(request))
+    except Exception:
+        return json_char_size(
+            {
+                "chat_type": request.chat_type,
+                "prompt_key": request.prompt_key,
+                "prompt_template": request.prompt_template,
+                "input_payload": request.input_payload,
+                "output_schema": request.output_schema,
+            }
+        )
+
+
+def classify_llm_error(exc: Exception) -> str:
+    text = str(exc).lower()
+    if "context_length_exceeded" in text or "maximum context length" in text:
+        return "context_length_exceeded"
+    error_type = getattr(exc, "error_type", None)
+    if isinstance(error_type, str) and error_type:
+        return error_type
+    return exc.__class__.__name__

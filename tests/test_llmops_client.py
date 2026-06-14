@@ -52,7 +52,12 @@ def test_openai_compatible_client_sends_mcp_context_and_parses_json_answer() -> 
                             )
                         }
                     }
-                ]
+                ],
+                "usage": {
+                    "prompt_tokens": 123,
+                    "completion_tokens": 45,
+                    "total_tokens": 168,
+                },
             }
         )
 
@@ -91,6 +96,9 @@ def test_openai_compatible_client_sends_mcp_context_and_parses_json_answer() -> 
     user_message = captured["body"]["messages"][1]["content"]
     assert "farmer-bnpl-mcp" in user_message
     assert response.provider == "openai-compatible"
+    assert response.prompt_tokens == 123
+    assert response.completion_tokens == 45
+    assert response.total_tokens == 168
     assert response.output_payload["answer"] == (
         "한도는 255만원이고 checkout은 사용자 확인이 필요합니다."
     )

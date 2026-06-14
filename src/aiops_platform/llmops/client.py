@@ -32,6 +32,9 @@ class LlmCompletionResponse(BaseModel):
     content: str
     output_payload: dict[str, Any]
     latency_ms: int = 0
+    prompt_tokens: int | None = None
+    completion_tokens: int | None = None
+    total_tokens: int | None = None
 
 
 class LlmClient(Protocol):
@@ -83,6 +86,9 @@ class FakeLlmClient:
                 "tool_count": tool_count,
                 "prompt_key": request.prompt_key,
             },
+            prompt_tokens=None,
+            completion_tokens=None,
+            total_tokens=None,
         )
 
 
@@ -134,6 +140,7 @@ class OpenAICompatibleLlmClient:
                     content=content,
                     output_payload=output_payload,
                     latency_ms=max(int((time.perf_counter() - started) * 1000), 0),
+                    **extract_openai_token_usage(response),
                 )
             except LlmClientError as exc:
                 if not exc.retryable or attempt >= 2:
@@ -238,6 +245,7 @@ class AnthropicLlmClient:
                     content=content,
                     output_payload=output_payload,
                     latency_ms=max(int((time.perf_counter() - started) * 1000), 0),
+                    **extract_anthropic_token_usage(response),
                 )
             except LlmClientError as exc:
                 if not exc.retryable or attempt >= 2:
@@ -397,6 +405,55 @@ def extract_chat_content(response: dict[str, Any]) -> str:
             retryable=True,
         )
     return content
+
+
+def extract_openai_token_usage(response: dict[str, Any]) -> dict[str, int | None]:
+    usage = response.get("usage")
+    if not isinstance(usage, dict):
+        return {
+            "prompt_tokens": None,
+            "completion_tokens": None,
+            "total_tokens": None,
+        }
+    return {
+        "prompt_tokens": coerce_int(usage.get("prompt_tokens")),
+        "completion_tokens": coerce_int(usage.get("completion_tokens")),
+        "total_tokens": coerce_int(usage.get("total_tokens")),
+    }
+
+
+def extract_anthropic_token_usage(response: dict[str, Any]) -> dict[str, int | None]:
+    usage = response.get("usage")
+    if not isinstance(usage, dict):
+        return {
+            "prompt_tokens": None,
+            "completion_tokens": None,
+            "total_tokens": None,
+        }
+    prompt_tokens = coerce_int(usage.get("input_tokens"))
+    completion_tokens = coerce_int(usage.get("output_tokens"))
+    total_tokens = (
+        prompt_tokens + completion_tokens
+        if prompt_tokens is not None and completion_tokens is not None
+        else None
+    )
+    return {
+        "prompt_tokens": prompt_tokens,
+        "completion_tokens": completion_tokens,
+        "total_tokens": total_tokens,
+    }
+
+
+def coerce_int(value: Any) -> int | None:
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float):
+        return int(value)
+    if isinstance(value, str) and value.strip().isdigit():
+        return int(value)
+    return None
 
 
 def extract_anthropic_content(response: dict[str, Any]) -> str:

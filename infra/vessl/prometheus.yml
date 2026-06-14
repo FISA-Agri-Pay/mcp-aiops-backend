@@ -1,0 +1,29 @@
+global:
+  scrape_interval: 15s
+  scrape_timeout: 10s
+  evaluation_interval: 15s
+  external_labels:
+    env: vessl
+    instance: kkpp-llm-server-ver1
+    provider: internal-vllm
+
+scrape_configs:
+  - job_name: vessl-vllm-qwen3
+    metrics_path: /metrics
+    static_configs:
+      - targets:
+          - 127.0.0.1:8000
+        labels:
+          service: sre-llm
+          model: Qwen/Qwen3-32B
+          gpu_type: H100-80GB
+
+  - job_name: vessl-h100-gpu
+    metrics_path: /metrics
+    static_configs:
+      - targets:
+          - 127.0.0.1:9400
+        labels:
+          service: sre-llm
+          model: Qwen/Qwen3-32B
+          gpu_type: H100-80GB
