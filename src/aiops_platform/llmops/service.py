@@ -919,7 +919,7 @@ def serialize_tool_result_for_llm(
 
     call_status = McpToolCallStatus(result.call_status)
     if call_status == McpToolCallStatus.SUCCESS:
-        return payload
+        return compact_successful_farmer_tool_result(result)
     if call_status not in {McpToolCallStatus.FAILED, McpToolCallStatus.TIMEOUT}:
         return payload
 
@@ -931,6 +931,238 @@ def serialize_tool_result_for_llm(
     payload["masked_response_payload"] = {}
     payload["failure_policy"] = "hide_internal_error_from_user"
     return payload
+
+
+def compact_successful_farmer_tool_result(result: AgentToolExecutionResult) -> dict[str, Any]:
+    response_payload = (
+        result.masked_response_payload
+        if result.masked_response_payload is not None
+        else result.response_payload
+    )
+    return {
+        "server_name": result.server_name,
+        "tool_name": result.tool_name,
+        "call_status": McpToolCallStatus(result.call_status).value,
+        "response_payload": compact_farmer_response_payload(
+            result.tool_name,
+            response_payload,
+        ),
+        "input_optimized": True,
+    }
+
+
+def compact_farmer_response_payload(tool_name: str, payload: Any) -> Any:
+    if not isinstance(payload, dict):
+        return compact_generic_llm_payload(payload)
+
+    compactors = {
+        "get_required_documents": compact_required_documents_payload,
+        "get_credit_limit_status": compact_credit_limit_status_payload,
+        "get_user_credit_limit": compact_user_credit_limit_payload,
+        "get_farmer_profile": compact_farmer_profile_payload,
+        "get_repayment_schedule": compact_repayment_schedule_payload,
+        "get_interest_due": compact_interest_due_payload,
+        "get_overdue_status": compact_overdue_status_payload,
+        "get_latest_order_delivery_status": compact_delivery_status_payload,
+        "search_products": compact_product_search_payload,
+        "search_lowest_price_fertilizer": compact_product_search_payload,
+        "get_product_detail": compact_product_detail_payload,
+        "calculate_cart_total": compact_cart_total_payload,
+        "prepare_bnpl_checkout_payload": compact_checkout_payload,
+        "create_checkout_intent": compact_checkout_intent_payload,
+    }
+    compact = compactors.get(tool_name)
+    if compact is None:
+        return compact_generic_llm_payload(payload)
+    return compact(payload)
+
+
+def compact_required_documents_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    return pick_present(payload, ("application_type", "documents"))
+
+
+def compact_credit_limit_status_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    return pick_present(payload, ("status", "missing_documents"))
+
+
+def compact_user_credit_limit_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    return pick_present(
+        payload,
+        ("total_limit", "used_amount", "available_limit", "currency", "status"),
+    )
+
+
+def compact_farmer_profile_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    return pick_present(payload, ("display_name", "region", "main_crop", "profile_status"))
+
+
+def compact_repayment_schedule_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    schedule = payload.get("schedule")
+    if not isinstance(schedule, list):
+        return pick_present(payload, ("currency",))
+    next_item = next(
+        (
+            item
+            for item in schedule
+            if isinstance(item, dict) and item.get("status") != "PAID"
+        ),
+        schedule[0] if schedule else None,
+    )
+    return {
+        **pick_present(payload, ("currency",)),
+        "schedule_count": len(schedule),
+        "next_due": compact_repayment_item(next_item),
+    }
+
+
+def compact_repayment_item(item: Any) -> dict[str, Any] | None:
+    if not isinstance(item, dict):
+        return None
+    return pick_present(
+        item,
+        ("installment_no", "due_date", "principal_due", "interest_due", "status"),
+    )
+
+
+def compact_interest_due_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    return pick_present(payload, ("due_date", "interest_due", "currency"))
+
+
+def compact_overdue_status_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    return pick_present(payload, ("is_overdue", "overdue_amount", "days_overdue", "currency"))
+
+
+def compact_delivery_status_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    return pick_present(
+        payload,
+        (
+            "order_id",
+            "item_name",
+            "order_status",
+            "delivery_status",
+            "total_amount",
+            "currency",
+            "ordered_at",
+        ),
+    )
+
+
+def compact_product_search_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    items = payload.get("items")
+    compacted_items = []
+    if isinstance(items, list):
+        compacted_items = [
+            compact_product_item(item)
+            for item in items[:3]
+            if isinstance(item, dict)
+        ]
+    return {
+        **pick_present(payload, ("query", "category")),
+        "returned_count": len(items) if isinstance(items, list) else 0,
+        "items": compacted_items,
+    }
+
+
+def compact_product_detail_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    product = payload.get("product")
+    tags = payload.get("tags")
+    return {
+        "product": compact_product_item(product) if isinstance(product, dict) else None,
+        "description": truncate_text(payload.get("description")),
+        "tags": tags[:5] if isinstance(tags, list) else tags,
+    }
+
+
+def compact_product_item(item: dict[str, Any]) -> dict[str, Any]:
+    return pick_present(
+        item,
+        ("product_id", "name", "category", "unit_price", "currency", "stock_status"),
+    )
+
+
+def compact_cart_total_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    return {
+        **pick_present(payload, ("currency", "total_amount")),
+        "item_count": len(payload.get("items", []))
+        if isinstance(payload.get("items"), list)
+        else 0,
+        "items": compact_cart_items(payload.get("items")),
+    }
+
+
+def compact_checkout_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    nested_payload = payload.get("payload")
+    items = nested_payload.get("items") if isinstance(nested_payload, dict) else []
+    return {
+        **pick_present(payload, ("currency", "total_amount", "available_limit", "eligible")),
+        "item_count": len(items) if isinstance(items, list) else 0,
+        "items": compact_cart_items(items),
+    }
+
+
+def compact_checkout_intent_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    return pick_present(
+        payload,
+        ("checkout_intent_id", "status", "total_amount", "currency", "dry_run"),
+    )
+
+
+def compact_cart_items(items: Any) -> list[dict[str, Any]]:
+    if not isinstance(items, list):
+        return []
+    compacted = []
+    for item in items[:3]:
+        if isinstance(item, dict):
+            compacted.append(
+                pick_present(
+                    item,
+                    ("product_id", "product_name", "quantity", "unit_price", "line_total"),
+                )
+            )
+    return compacted
+
+
+def compact_generic_llm_payload(value: Any, *, depth: int = 0) -> Any:
+    if depth >= 2:
+        return summarize_leaf(value)
+    if isinstance(value, dict):
+        compacted: dict[str, Any] = {}
+        for key, item in list(value.items())[:10]:
+            if key in {"debug", "raw", "stacktrace", "traceback"}:
+                continue
+            compacted[key] = compact_generic_llm_payload(item, depth=depth + 1)
+        return compacted
+    if isinstance(value, list):
+        return {
+            "count": len(value),
+            "sample": [
+                compact_generic_llm_payload(item, depth=depth + 1)
+                for item in value[:3]
+            ],
+        }
+    return summarize_leaf(value)
+
+
+def summarize_leaf(value: Any) -> Any:
+    if isinstance(value, str):
+        return truncate_text(value)
+    return value
+
+
+def pick_present(payload: dict[str, Any], keys: tuple[str, ...]) -> dict[str, Any]:
+    return {
+        key: payload[key]
+        for key in keys
+        if key in payload and payload[key] is not None
+    }
+
+
+def truncate_text(value: Any, *, max_length: int = 200) -> Any:
+    if not isinstance(value, str):
+        return value
+    if len(value) <= max_length:
+        return value
+    return f"{value[:max_length].rstrip()}..."
 
 
 def calculate_prompt_chars(request: LlmCompletionRequest) -> int:
