@@ -84,6 +84,63 @@ class Settings(BaseSettings):
         ge=1,
         alias="PREDICTION_SCALING_STALE_AFTER_HOURS",
     )
+    prediction_scaling_actual_rps_query_template: str = Field(
+        default='sum(rate(http_server_requests_seconds_count{application="$service"}[5m]))',
+        alias="PREDICTION_SCALING_ACTUAL_RPS_QUERY_TEMPLATE",
+    )
+    prediction_scaling_actual_rps_prometheus_source: str = Field(
+        default="onprem",
+        alias="PREDICTION_SCALING_ACTUAL_RPS_PROMETHEUS_SOURCE",
+    )
+    prediction_scaling_rps_warning_deviation_percent: float = Field(
+        default=20.0,
+        ge=0,
+        alias="PREDICTION_SCALING_RPS_WARNING_DEVIATION_PERCENT",
+    )
+    prediction_scaling_rps_critical_deviation_percent: float = Field(
+        default=40.0,
+        ge=0,
+        alias="PREDICTION_SCALING_RPS_CRITICAL_DEVIATION_PERCENT",
+    )
+    prediction_scaling_slack_webhook_url: str = Field(
+        default="",
+        alias="PREDICTION_SCALING_SLACK_WEBHOOK_URL",
+    )
+    prediction_scaling_slack_channel: str = Field(
+        default="",
+        alias="PREDICTION_SCALING_SLACK_CHANNEL",
+    )
+    prediction_scaling_slack_min_risk: str = Field(
+        default="high",
+        alias="PREDICTION_SCALING_SLACK_MIN_RISK",
+    )
+    prediction_scaling_slack_dedupe_enabled: bool = Field(
+        default=True,
+        alias="PREDICTION_SCALING_SLACK_DEDUPE_ENABLED",
+    )
+    prediction_scaling_watcher_enabled: bool = Field(
+        default=False,
+        alias="PREDICTION_SCALING_WATCHER_ENABLED",
+    )
+    prediction_scaling_watcher_interval_seconds: int = Field(
+        default=300,
+        ge=30,
+        alias="PREDICTION_SCALING_WATCHER_INTERVAL_SECONDS",
+    )
+    prediction_scaling_watcher_namespace: str = Field(
+        default="kkpp",
+        alias="PREDICTION_SCALING_WATCHER_NAMESPACE",
+    )
+    prediction_scaling_watcher_service: str = Field(
+        default="",
+        alias="PREDICTION_SCALING_WATCHER_SERVICE",
+    )
+    prediction_scaling_watcher_horizon_minutes: int = Field(
+        default=180,
+        ge=1,
+        le=1440,
+        alias="PREDICTION_SCALING_WATCHER_HORIZON_MINUTES",
+    )
     llm_provider: str = Field(default="fake", alias="LLM_PROVIDER")
     llm_model: str = Field(default="fake-agentic-planner", alias="LLM_MODEL")
     llm_api_key: str = Field(default="", alias="LLM_API_KEY")

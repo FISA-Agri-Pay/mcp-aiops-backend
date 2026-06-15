@@ -9,6 +9,7 @@ from aiops_platform.infra_rca.service import InfraRcaService
 from aiops_platform.llmops.service import LlmOpsService
 from aiops_platform.ops_reports.service import OpsReportService
 from aiops_platform.orchestration.service import OrchestrationService
+from aiops_platform.prediction_scaling.agent import PredictiveScalingSlackAgentService
 
 
 def get_orchestration_service(request: Request) -> OrchestrationService:
@@ -39,6 +40,12 @@ def get_alertmanager_sre_agent_service(request: Request) -> AlertmanagerSreAgent
     return request.app.state.alertmanager_sre_agent_service
 
 
+def get_predictive_scaling_slack_agent_service(
+    request: Request,
+) -> PredictiveScalingSlackAgentService:
+    return request.app.state.predictive_scaling_slack_agent_service
+
+
 OrchestrationServiceDep = Annotated[
     OrchestrationService,
     Depends(get_orchestration_service),
@@ -66,4 +73,8 @@ FarmerBnplServiceDep = Annotated[
 AlertmanagerSreAgentServiceDep = Annotated[
     AlertmanagerSreAgentService,
     Depends(get_alertmanager_sre_agent_service),
+]
+PredictiveScalingSlackAgentServiceDep = Annotated[
+    PredictiveScalingSlackAgentService,
+    Depends(get_predictive_scaling_slack_agent_service),
 ]

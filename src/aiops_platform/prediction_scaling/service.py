@@ -5,6 +5,7 @@ import math
 import re
 from collections.abc import Callable
 from datetime import UTC, datetime
+from string import Template
 from typing import Any, Protocol
 
 from aiops_platform.core.config import settings
@@ -58,6 +59,7 @@ PREDICTIVE_METRIC_NAMES = (
     "allocation_score",
     "onprem_adjusted_pods",
 )
+PREDICTIVE_EXPORTER_METRIC_NAMES = PREDICTIVE_METRIC_NAMES + ("actual_rps",)
 PREDICTIVE_SERVICE_MAP = {
     "service-payment": "payment",
     "service-core": "core",
@@ -98,20 +100,37 @@ class PredictiveKubernetesReader(Protocol):
         pass
 
 
+class PredictivePrometheusReader(Protocol):
+    def query_multi_cluster_prometheus(
+        self,
+        query: str,
+        time: str | None = None,
+    ):
+        pass
+
+
 class PredictionScalingService:
     def __init__(
         self,
         repository: PredictionScalingRepository | None = None,
         metrics_reader: PredictiveMetricsReader | None = None,
         kubernetes_reader: PredictiveKubernetesReader | None = None,
+        prometheus_reader: PredictivePrometheusReader | None = None,
         now_provider: Callable[[], datetime] | None = None,
     ) -> None:
+        infraops_service = InfraOpsService.from_settings() if kubernetes_reader is None else None
         self._repository = repository or SqlPredictionScalingRepository()
         self._metrics_reader = metrics_reader or MetricsExporterClient(
             settings.prediction_scaling_metrics_exporter_url,
             timeout_seconds=settings.prediction_scaling_metrics_timeout_seconds,
         )
-        self._kubernetes_reader = kubernetes_reader or InfraOpsService.from_settings()
+        self._kubernetes_reader = kubernetes_reader or infraops_service
+        self._prometheus_reader = prometheus_reader
+        if self._prometheus_reader is None and hasattr(
+            self._kubernetes_reader,
+            "query_multi_cluster_prometheus",
+        ):
+            self._prometheus_reader = self._kubernetes_reader
         self._now_provider = now_provider or (lambda: datetime.now(UTC))
 
     def _list_model_versions(
@@ -605,6 +624,33 @@ class PredictionScalingService:
         max_replicas = extract_max_replicas(hpa=hpa, scaled_object=scaled_object)
         onprem_adjusted_pods = values.get("onprem_adjusted_pods")
         scale_gap = calculate_scale_gap(onprem_adjusted_pods, current_replicas)
+        scaling_track_status = calculate_scaling_track_status(
+            scale_gap=scale_gap,
+            onprem_adjusted_pods=onprem_adjusted_pods,
+            current_replicas=current_replicas,
+        )
+        predicted_rps = values.get("predicted_rps")
+        actual_rps, actual_rps_evidence = self._resolve_actual_rps(
+            namespace=namespace,
+            service_name=service_name,
+            short_service=short_service,
+            values=values,
+        )
+        rps_deviation = calculate_rps_deviation(
+            actual_rps=actual_rps,
+            predicted_rps=predicted_rps,
+        )
+        rps_deviation_percent = calculate_rps_deviation_percent(
+            actual_rps=actual_rps,
+            predicted_rps=predicted_rps,
+        )
+        prediction_match_status = calculate_prediction_match_status(
+            actual_rps=actual_rps,
+            predicted_rps=predicted_rps,
+            warning_deviation_percent=(
+                settings.prediction_scaling_rps_warning_deviation_percent
+            ),
+        )
         freshness = calculate_prediction_freshness(
             created_at=extract_latest_created_at(db_metrics),
             generated_at=generated_at,
@@ -621,11 +667,21 @@ class PredictionScalingService:
             onprem_adjusted_pods=onprem_adjusted_pods,
             current_replicas=current_replicas,
             predicted_pods=values.get("predicted_pods"),
+            prediction_match_status=prediction_match_status,
+            rps_deviation_percent=rps_deviation_percent,
+            rps_warning_deviation_percent=(
+                settings.prediction_scaling_rps_warning_deviation_percent
+            ),
+            rps_critical_deviation_percent=(
+                settings.prediction_scaling_rps_critical_deviation_percent
+            ),
             max_replicas=max_replicas,
         )
         evidence_errors = list(k8s_state["errors"])
         if exporter_error is not None:
             evidence_errors.append(f"metrics_exporter: {exporter_error}")
+        if actual_rps_evidence.get("error") is not None:
+            evidence_errors.append(f"actual_rps: {actual_rps_evidence['error']}")
         return PredictiveScalingStatusItem(
             namespace=namespace,
             service=service_name,
@@ -636,7 +692,11 @@ class PredictionScalingService:
             model_version=extract_latest_model_version(db_metrics, exporter_metrics, short_service),
             target_time=extract_latest_target_time(db_metrics),
             created_at=extract_latest_created_at(db_metrics),
-            predicted_rps=values.get("predicted_rps"),
+            predicted_rps=predicted_rps,
+            actual_rps=actual_rps,
+            rps_deviation=rps_deviation,
+            rps_deviation_percent=rps_deviation_percent,
+            prediction_match_status=prediction_match_status,
             predicted_pods=values.get("predicted_pods"),
             base_pods=values.get("base_pods"),
             extra_demand=values.get("extra_demand"),
@@ -646,6 +706,7 @@ class PredictionScalingService:
             desired_replicas=desired_replicas,
             max_replicas=max_replicas,
             scale_gap=scale_gap,
+            scaling_track_status=scaling_track_status,
             scaling_active=scaling_active,
             scaling_limited=scaling_limited,
             prediction_freshness=freshness,
@@ -660,20 +721,67 @@ class PredictionScalingService:
                 current_replicas=current_replicas,
                 onprem_adjusted_pods=onprem_adjusted_pods,
                 max_replicas=max_replicas,
+                actual_rps=actual_rps,
+                predicted_rps=predicted_rps,
+                rps_deviation_percent=rps_deviation_percent,
+                prediction_match_status=prediction_match_status,
+                scaling_track_status=scaling_track_status,
             ),
             evidence={
                 "db_metric_names": sorted(db_metrics),
                 "exporter_used": any(
                     (settings.prediction_scaling_prediction_namespace, short_service, metric_name)
                     in exporter_metrics
-                    for metric_name in PREDICTIVE_METRIC_NAMES
+                    for metric_name in PREDICTIVE_EXPORTER_METRIC_NAMES
                 ),
+                "actual_rps": actual_rps_evidence,
                 "deployment_found": deployment is not None,
                 "hpa_found": hpa is not None,
                 "scaled_object_found": scaled_object is not None,
                 "errors": evidence_errors,
             },
         )
+
+    def _resolve_actual_rps(
+        self,
+        *,
+        namespace: str,
+        service_name: str,
+        short_service: str,
+        values: dict[str, float],
+    ) -> tuple[float | None, dict[str, Any]]:
+        exported_actual_rps = values.get("actual_rps")
+        if exported_actual_rps is not None:
+            return exported_actual_rps, {"source": "metrics_exporter"}
+        query = build_actual_rps_query(
+            template=settings.prediction_scaling_actual_rps_query_template,
+            namespace=namespace,
+            service_name=service_name,
+            short_service=short_service,
+        )
+        if not query:
+            return None, {"source": "disabled"}
+        if self._prometheus_reader is None:
+            return None, {"source": "prometheus", "query": query}
+        try:
+            result = self._prometheus_reader.query_multi_cluster_prometheus(query=query)
+        except Exception as exc:
+            return None, {
+                "source": "prometheus",
+                "query": query,
+                "error": exc.__class__.__name__,
+            }
+        actual_rps, source_name, error = extract_actual_rps_from_prometheus_result(
+            result,
+            preferred_source=settings.prediction_scaling_actual_rps_prometheus_source,
+        )
+        evidence: dict[str, Any] = {
+            "source": source_name or "prometheus",
+            "query": query,
+        }
+        if error is not None:
+            evidence["error"] = error
+        return actual_rps, evidence
 
     def _read_predictive_metric_values(
         self,
@@ -729,7 +837,7 @@ def merge_predictive_metric_values(
 ) -> dict[str, float]:
     values: dict[str, float] = {}
     prediction_namespace = settings.prediction_scaling_prediction_namespace
-    for metric_name in PREDICTIVE_METRIC_NAMES:
+    for metric_name in PREDICTIVE_EXPORTER_METRIC_NAMES:
         exported = exporter_metrics.get((prediction_namespace, short_service, metric_name))
         if exported is not None:
             values[metric_name] = exported.value
@@ -814,6 +922,60 @@ def calculate_scale_gap(
     return round(onprem_adjusted_pods - current_replicas, 2)
 
 
+def calculate_scaling_track_status(
+    *,
+    scale_gap: float | None,
+    onprem_adjusted_pods: float | None,
+    current_replicas: int | None,
+) -> str:
+    if scale_gap is None or onprem_adjusted_pods is None or current_replicas is None:
+        return "unknown"
+    if scale_gap > 0:
+        return "lagging"
+    if current_replicas > onprem_adjusted_pods:
+        return "overprovisioned"
+    return "tracking"
+
+
+def calculate_rps_deviation(
+    *,
+    actual_rps: float | None,
+    predicted_rps: float | None,
+) -> float | None:
+    if actual_rps is None or predicted_rps is None:
+        return None
+    return round(actual_rps - predicted_rps, 4)
+
+
+def calculate_rps_deviation_percent(
+    *,
+    actual_rps: float | None,
+    predicted_rps: float | None,
+) -> float | None:
+    if actual_rps is None or predicted_rps is None or predicted_rps <= 0:
+        return None
+    return round(abs(actual_rps - predicted_rps) / predicted_rps * 100, 2)
+
+
+def calculate_prediction_match_status(
+    *,
+    actual_rps: float | None,
+    predicted_rps: float | None,
+    warning_deviation_percent: float,
+) -> str:
+    deviation_percent = calculate_rps_deviation_percent(
+        actual_rps=actual_rps,
+        predicted_rps=predicted_rps,
+    )
+    if actual_rps is None or predicted_rps is None or deviation_percent is None:
+        return "unknown"
+    if deviation_percent < warning_deviation_percent:
+        return "matched"
+    if actual_rps > predicted_rps:
+        return "under_predicted"
+    return "over_predicted"
+
+
 def calculate_prediction_freshness(
     *,
     created_at: str | None,
@@ -839,9 +1001,19 @@ def calculate_predictive_risk_level(
     onprem_adjusted_pods: float | None,
     current_replicas: int | None,
     predicted_pods: float | None,
+    prediction_match_status: str,
+    rps_deviation_percent: float | None,
+    rps_warning_deviation_percent: float,
+    rps_critical_deviation_percent: float,
     max_replicas: int | None,
 ) -> str:
     if not has_prediction:
+        return "high"
+    if (
+        prediction_match_status == "under_predicted"
+        and rps_deviation_percent is not None
+        and rps_deviation_percent >= rps_critical_deviation_percent
+    ):
         return "high"
     if scale_gap is not None and scale_gap >= 3:
         return "high"
@@ -855,6 +1027,18 @@ def calculate_predictive_risk_level(
         and onprem_adjusted_pods > max_replicas
     ):
         return "high"
+    if (
+        prediction_match_status == "under_predicted"
+        and rps_deviation_percent is not None
+        and rps_deviation_percent >= rps_warning_deviation_percent
+    ):
+        return "medium"
+    if (
+        prediction_match_status == "over_predicted"
+        and rps_deviation_percent is not None
+        and rps_deviation_percent >= rps_critical_deviation_percent
+    ):
+        return "medium"
     if scale_gap is not None and scale_gap > 0:
         return "medium"
     if freshness in {"stale", "missing", "unknown"}:
@@ -879,8 +1063,20 @@ def build_predictive_item_summary(
     current_replicas: int | None,
     onprem_adjusted_pods: float | None,
     max_replicas: int | None,
+    actual_rps: float | None,
+    predicted_rps: float | None,
+    rps_deviation_percent: float | None,
+    prediction_match_status: str,
+    scaling_track_status: str,
 ) -> str:
     if risk_level == "high":
+        if prediction_match_status == "under_predicted":
+            return (
+                f"{service}: actual RPS is above prediction "
+                f"({format_number(actual_rps)} vs {format_number(predicted_rps)}, "
+                f"deviation={format_number(rps_deviation_percent)}%); "
+                "pre-scale investigation is recommended."
+            )
         if freshness == "missing":
             return (
                 f"{service}: prediction evidence is missing; "
@@ -898,6 +1094,17 @@ def build_predictive_item_summary(
                 return f"{service}: predicted demand exceeds max replicas ({max_replicas})."
         return f"{service}: predictive scale gap is high; pre-scale investigation is recommended."
     if risk_level == "medium":
+        if prediction_match_status == "under_predicted":
+            return (
+                f"{service}: actual RPS is trending above prediction "
+                f"(deviation={format_number(rps_deviation_percent)}%)."
+            )
+        if prediction_match_status == "over_predicted":
+            return (
+                f"{service}: actual RPS is below prediction "
+                f"(deviation={format_number(rps_deviation_percent)}%); "
+                "watch for overprovisioning."
+            )
         if freshness != "fresh":
             return (
                 f"{service}: prediction is {freshness}; "
@@ -905,9 +1112,15 @@ def build_predictive_item_summary(
             )
         return f"{service}: predictive demand is slightly ahead of current replicas."
     if scale_gap is not None:
+        if scaling_track_status == "overprovisioned":
+            return (
+                f"{service}: current replicas are above adjusted predictive demand "
+                f"(current={current_replicas}, adjusted={onprem_adjusted_pods})."
+            )
         return (
             f"{service}: predictive scaling is tracking demand "
-            f"(current={current_replicas}, adjusted={onprem_adjusted_pods}, gap={scale_gap})."
+            f"(scale_status={scaling_track_status}, current={current_replicas}, "
+            f"adjusted={onprem_adjusted_pods}, gap={scale_gap})."
         )
     return f"{service}: predictive scaling evidence is available with low risk."
 
@@ -922,6 +1135,72 @@ def build_predictive_status_summary(items: list[PredictiveScalingStatusItem]) ->
     if medium:
         return f"{medium} service(s) show medium predictive scaling risk."
     return "All evaluated services show low predictive scaling risk."
+
+
+def format_number(value: float | int | None) -> str:
+    if value is None:
+        return "unknown"
+    return f"{value:g}"
+
+
+def build_actual_rps_query(
+    *,
+    template: str,
+    namespace: str,
+    service_name: str,
+    short_service: str,
+) -> str:
+    normalized_template = template.strip()
+    if not normalized_template:
+        return ""
+    return Template(normalized_template).safe_substitute(
+        namespace=namespace,
+        service=service_name,
+        short_service=short_service,
+    )
+
+
+def extract_actual_rps_from_prometheus_result(
+    result,
+    *,
+    preferred_source: str,
+) -> tuple[float | None, str | None, str | None]:
+    sources = getattr(result, "sources", [])
+    if not sources:
+        return None, None, "no Prometheus source returned"
+    preferred = preferred_source.strip()
+    ordered_sources = sorted(
+        sources,
+        key=lambda source: 0 if preferred and source.source == preferred else 1,
+    )
+    first_error: str | None = None
+    for source in ordered_sources:
+        if source.status != "SUCCESS" or source.data is None:
+            first_error = source.error or f"{source.source} failed"
+            continue
+        value = extract_prometheus_vector_value(source.data)
+        if value is not None:
+            return value, source.source, None
+        first_error = f"{source.source} returned no vector value"
+    return None, preferred or None, first_error
+
+
+def extract_prometheus_vector_value(data: dict[str, Any]) -> float | None:
+    if data.get("status") != "success":
+        return None
+    result = data.get("data", {}).get("result", [])
+    if not isinstance(result, list):
+        return None
+    for item in result:
+        if not isinstance(item, dict):
+            continue
+        value = item.get("value")
+        if not isinstance(value, list) or len(value) < 2:
+            continue
+        parsed = parse_float(value[1])
+        if parsed is not None:
+            return parsed
+    return None
 
 
 def extract_latest_created_at(metrics: dict[str, PredictiveMetricValue]) -> str | None:
@@ -972,6 +1251,20 @@ def int_or_none(value: Any) -> int | None:
         return int(value)
     except (TypeError, ValueError):
         return None
+
+
+def parse_float(value: Any) -> float | None:
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, (int, float)):
+        if math.isfinite(float(value)):
+            return float(value)
+        return None
+    try:
+        parsed = float(str(value))
+    except (TypeError, ValueError):
+        return None
+    return parsed if math.isfinite(parsed) else None
 
 
 def normalize_optional_identifier(value: str | None, *, field_name: str) -> str | None:

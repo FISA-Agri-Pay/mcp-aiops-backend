@@ -2,7 +2,11 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 
-from aiops_platform.infraops.schemas import KubernetesResourceResult
+from aiops_platform.infraops.schemas import (
+    KubernetesResourceResult,
+    MultiClusterPrometheusQueryResult,
+    MultiClusterQuerySourceResult,
+)
 from aiops_platform.prediction_scaling.repository import SqlPredictionScalingRepository
 from aiops_platform.prediction_scaling.schemas import PredictiveMetricValue
 from aiops_platform.prediction_scaling.service import (
@@ -166,6 +170,43 @@ class FakePredictiveKubernetesReader:
         )
 
 
+class FakePredictivePrometheusReader:
+    def __init__(self, value: float = 260.0, source: str = "onprem") -> None:
+        self.value = value
+        self.source = source
+        self.queries: list[str] = []
+
+    def query_multi_cluster_prometheus(
+        self,
+        query: str,
+        time: str | None = None,
+    ) -> MultiClusterPrometheusQueryResult:
+        self.queries.append(query)
+        return MultiClusterPrometheusQueryResult(
+            query=query,
+            time=time,
+            partial=False,
+            sources=[
+                MultiClusterQuerySourceResult(
+                    source=self.source,
+                    status="SUCCESS",
+                    data={
+                        "status": "success",
+                        "data": {
+                            "resultType": "vector",
+                            "result": [
+                                {
+                                    "metric": {},
+                                    "value": [1781452800, str(self.value)],
+                                }
+                            ],
+                        },
+                    },
+                )
+            ],
+        )
+
+
 def test_model_versions_and_prediction_runs_can_be_filtered() -> None:
     service = PredictionScalingService()
 
@@ -275,6 +316,7 @@ def test_prediction_and_scaling_snapshots_include_evidence() -> None:
 def test_predictive_scaling_status_merges_prediction_exporter_and_k8s_state() -> None:
     metrics_text = """
 aiops_predicted_rps{namespace="onprem",service="payment",model_version="exporter-v1"} 275
+aiops_actual_rps{namespace="onprem",service="payment",model_version="exporter-v1"} 280
 aiops_onprem_adjusted_pods{namespace="onprem",service="payment",model_version="exporter-v1"} 4
 """
     service = PredictionScalingService(
@@ -292,9 +334,14 @@ aiops_onprem_adjusted_pods{namespace="onprem",service="payment",model_version="e
     assert item.service == "service-payment"
     assert item.short_service == "payment"
     assert item.predicted_rps == 275.0
+    assert item.actual_rps == 280.0
+    assert item.rps_deviation == 5.0
+    assert item.rps_deviation_percent == 1.82
+    assert item.prediction_match_status == "matched"
     assert item.onprem_adjusted_pods == 4.0
     assert item.current_replicas == 4
     assert item.scale_gap == 0
+    assert item.scaling_track_status == "tracking"
     assert item.scaling_active is True
     assert item.scaling_limited is False
     assert item.prediction_freshness == "fresh"
@@ -332,6 +379,51 @@ aiops_predicted_pods{namespace="onprem",service="payment"} 7
 
     assert item.scale_gap == 4
     assert item.risk_level == "high"
+
+
+def test_predictive_scaling_status_marks_high_risk_when_actual_rps_exceeds_prediction() -> None:
+    metrics_text = """
+aiops_predicted_rps{namespace="onprem",service="payment"} 100
+aiops_actual_rps{namespace="onprem",service="payment"} 150
+aiops_onprem_adjusted_pods{namespace="onprem",service="payment"} 4
+"""
+    service = PredictionScalingService(
+        repository=FakePredictiveRepository(),
+        metrics_reader=FakeMetricsReader(metrics_text),
+        kubernetes_reader=FakePredictiveKubernetesReader(current_replicas=4),
+        now_provider=lambda: NOW,
+    )
+
+    item = service.get_predictive_scaling_status(service="payment").items[0]
+
+    assert item.actual_rps == 150.0
+    assert item.predicted_rps == 100.0
+    assert item.rps_deviation == 50.0
+    assert item.rps_deviation_percent == 50.0
+    assert item.prediction_match_status == "under_predicted"
+    assert item.scale_gap == 0
+    assert item.risk_level == "high"
+
+
+def test_predictive_scaling_status_reads_actual_rps_from_prometheus_when_exporter_missing() -> None:
+    prometheus_reader = FakePredictivePrometheusReader(value=260.0)
+    service = PredictionScalingService(
+        repository=FakePredictiveRepository(),
+        metrics_reader=FakeMetricsReader(),
+        kubernetes_reader=FakePredictiveKubernetesReader(),
+        prometheus_reader=prometheus_reader,
+        now_provider=lambda: NOW,
+    )
+
+    item = service.get_predictive_scaling_status(service="payment").items[0]
+
+    assert item.predicted_rps == 250.0
+    assert item.actual_rps == 260.0
+    assert item.prediction_match_status == "matched"
+    assert prometheus_reader.queries == [
+        'sum(rate(http_server_requests_seconds_count{application="service-payment"}[5m]))'
+    ]
+    assert item.evidence["actual_rps"]["source"] == "onprem"
 
 
 def test_predictive_scaling_status_marks_stale_prediction_as_medium() -> None:

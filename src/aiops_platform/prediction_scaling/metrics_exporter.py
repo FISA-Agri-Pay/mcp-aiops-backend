@@ -20,6 +20,7 @@ class ExportedMetricValue:
 
 
 METRIC_NAME_BY_PROMETHEUS_NAME = {
+    "aiops_actual_rps": "actual_rps",
     "aiops_predicted_rps": "predicted_rps",
     "aiops_predicted_pods": "predicted_pods",
     "aiops_base_pods": "base_pods",
