@@ -1,8 +1,9 @@
-FROM python:3.11-slim AS builder
+FROM python:3.11-slim-bookworm AS builder
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
-    PIP_NO_CACHE_DIR=1
+    PIP_NO_CACHE_DIR=1 \
+    PIP_DISABLE_PIP_VERSION_CHECK=1
 
 WORKDIR /app
 
@@ -13,21 +14,20 @@ COPY pyproject.toml README.md ./
 COPY src ./src
 
 RUN python -m pip install --upgrade pip \
-    && python -m pip install . \
+    && python -m pip install --no-compile . \
     && python -m pip uninstall -y pip setuptools wheel
 
-FROM python:3.11-slim AS runtime
+FROM python:3.11-slim-bookworm AS runtime
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
-    PIP_NO_CACHE_DIR=1 \
     PATH="/opt/venv/bin:$PATH"
 
 WORKDIR /app
 
 RUN addgroup --system app && adduser --system --ingroup app app
 
-COPY --from=builder /opt/venv /opt/venv
+COPY --from=builder --chown=app:app /opt/venv /opt/venv
 
 USER app
 
