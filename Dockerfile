@@ -1,4 +1,4 @@
-FROM python:3.11-alpine3.22 AS builder
+FROM python:3.11-alpine3.21 AS builder
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
@@ -17,7 +17,7 @@ RUN python -m pip install --upgrade pip \
     && python -m pip install --no-compile . \
     && python -m pip uninstall -y pip setuptools wheel
 
-FROM python:3.11-alpine3.22 AS runtime
+FROM python:3.11-alpine3.21 AS runtime
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
