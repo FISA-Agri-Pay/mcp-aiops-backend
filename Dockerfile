@@ -1,4 +1,4 @@
-FROM python:3.11-slim-bookworm AS builder
+FROM python:3.11-alpine3.22 AS builder
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
@@ -17,7 +17,7 @@ RUN python -m pip install --upgrade pip \
     && python -m pip install --no-compile . \
     && python -m pip uninstall -y pip setuptools wheel
 
-FROM python:3.11-slim-bookworm AS runtime
+FROM python:3.11-alpine3.22 AS runtime
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
@@ -25,7 +25,7 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 
 WORKDIR /app
 
-RUN addgroup --system app && adduser --system --ingroup app app
+RUN addgroup -S app && adduser -S -G app app
 
 COPY --from=builder --chown=app:app /opt/venv /opt/venv
 
