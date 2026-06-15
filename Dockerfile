@@ -1,4 +1,4 @@
-FROM python:3.11-alpine3.21 AS builder
+FROM python:3.11-slim-bookworm AS builder
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
@@ -7,30 +7,22 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 
 WORKDIR /app
 
-RUN python -m venv /opt/venv
-ENV PATH="/opt/venv/bin:$PATH"
-
 COPY pyproject.toml README.md ./
 COPY src ./src
 
 RUN python -m pip install --upgrade pip \
-    && python -m pip install --no-compile . \
-    && python -m pip uninstall -y pip setuptools wheel
+    && python -m pip install --no-compile --target=/app/site-packages .
 
-FROM python:3.11-alpine3.21 AS runtime
+FROM gcr.io/distroless/python3-debian12:nonroot AS runtime
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
-    PATH="/opt/venv/bin:$PATH"
+    PYTHONPATH="/app/site-packages"
 
 WORKDIR /app
 
-RUN addgroup -S app && adduser -S -G app app
-
-COPY --from=builder --chown=app:app /opt/venv /opt/venv
-
-USER app
+COPY --from=builder --chown=nonroot:nonroot /app/site-packages /app/site-packages
 
 EXPOSE 8000
 
-CMD ["uvicorn", "aiops_platform.main:app", "--host", "0.0.0.0", "--port", "8000"]
+CMD ["-m", "uvicorn", "aiops_platform.main:app", "--host", "0.0.0.0", "--port", "8000"]
