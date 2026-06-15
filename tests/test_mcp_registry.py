@@ -158,6 +158,7 @@ def test_mcp_tools_trims_server_name_filter() -> None:
 
     assert response.status_code == 200
     tools = response.json()
-    assert len(tools) == 11
+    assert len(tools) == 12
     assert {tool["server_name"] for tool in tools} == {"prediction-scaling-mcp"}
     assert "get_model_versions" in {tool["tool_name"] for tool in tools}
+    assert "get_predictive_scaling_status" in {tool["tool_name"] for tool in tools}

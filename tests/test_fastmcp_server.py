@@ -51,6 +51,7 @@ from aiops_platform.mcp.server import (
 from aiops_platform.mcp.server import (
     settings as mcp_server_settings,
 )
+from aiops_platform.prediction_scaling.schemas import PredictiveScalingStatusResult
 from aiops_platform.topology_knowledge.service import TopologyKnowledgeService
 from tests.seed_constants import (
     CREDIT_APP_2_ID,
@@ -138,6 +139,7 @@ def test_fastmcp_server_exposes_registry_tools() -> None:
             "get_prediction_error_metrics",
             "get_scaling_events",
             "get_scaling_summary",
+            "get_predictive_scaling_status",
             "create_prediction_snapshot",
             "create_scaling_analysis_snapshot",
             "query_prometheus",
@@ -339,6 +341,72 @@ def test_fastmcp_prediction_scaling_tools_return_results() -> None:
         assert snapshot.data["evidence"]["related_prediction_run_ids"] == [
             PREDICTION_RUN_API_ID
         ]
+
+    asyncio.run(run())
+
+
+def test_fastmcp_predictive_scaling_status_tool_returns_result() -> None:
+    class FakePredictionScalingService:
+        def get_predictive_scaling_status(
+            self,
+            namespace: str | None = "kkpp",
+            service: str | None = None,
+            horizon_minutes: int = 180,
+            include_keda: bool = True,
+            include_hpa: bool = True,
+        ) -> PredictiveScalingStatusResult:
+            assert namespace == "kkpp"
+            assert service == "payment"
+            assert horizon_minutes == 180
+            assert include_keda is True
+            assert include_hpa is True
+            return PredictiveScalingStatusResult(
+                namespace="kkpp",
+                service=service,
+                horizon_minutes=horizon_minutes,
+                generated_at="2026-06-15T00:00:00+00:00",
+                items=[
+                    {
+                        "namespace": "kkpp",
+                        "service": "service-payment",
+                        "short_service": "payment",
+                        "deployment": "service-payment",
+                        "scaled_object": "service-payment-gru",
+                        "hpa": "keda-hpa-service-payment-gru",
+                        "model_version": "exporter-v1",
+                        "target_time": "2026-06-15T00:05:00+00:00",
+                        "created_at": "2026-06-14T10:00:00+00:00",
+                        "predicted_rps": 275.0,
+                        "predicted_pods": 4.0,
+                        "base_pods": 1.0,
+                        "extra_demand": 8.0,
+                        "allocation_score": 8.0,
+                        "onprem_adjusted_pods": 4.0,
+                        "current_replicas": 4,
+                        "desired_replicas": 4,
+                        "max_replicas": 8,
+                        "scale_gap": 0.0,
+                        "scaling_active": True,
+                        "scaling_limited": False,
+                        "prediction_freshness": "fresh",
+                        "risk_level": "low",
+                        "summary": "service-payment: predictive scaling is tracking demand.",
+                    }
+                ],
+                summary="All evaluated services show low predictive scaling risk.",
+            )
+
+    async def run() -> None:
+        async with Client(
+            create_mcp_server(prediction_scaling_service=FakePredictionScalingService())
+        ) as client:
+            result = await client.call_tool(
+                "get_predictive_scaling_status",
+                {"namespace": "kkpp", "service": "payment"},
+            )
+
+        assert result.data["items"][0]["service"] == "service-payment"
+        assert result.data["items"][0]["risk_level"] == "low"
 
     asyncio.run(run())
 

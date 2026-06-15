@@ -1822,6 +1822,7 @@ def allowed_tool_keys(chat_type: ChatType) -> set[tuple[str, str]]:
         ("admin-riskops-mcp", "create_risk_analysis_snapshot"),
         ("infraops-mcp", "query_multi_cluster_prometheus"),
         ("prediction-scaling-mcp", "get_scaling_summary"),
+        ("prediction-scaling-mcp", "get_predictive_scaling_status"),
     }
 
 

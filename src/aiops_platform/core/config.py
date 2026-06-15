@@ -62,6 +62,28 @@ class Settings(BaseSettings):
         ge=1,
         alias="PREDICTION_SCALING_MAX_SEARCH_LIMIT",
     )
+    prediction_scaling_metrics_exporter_url: str = Field(
+        default="",
+        alias="PREDICTION_SCALING_METRICS_EXPORTER_URL",
+    )
+    prediction_scaling_metrics_timeout_seconds: float = Field(
+        default=5.0,
+        gt=0,
+        alias="PREDICTION_SCALING_METRICS_TIMEOUT_SECONDS",
+    )
+    prediction_scaling_kubernetes_source: str = Field(
+        default="onprem",
+        alias="PREDICTION_SCALING_KUBERNETES_SOURCE",
+    )
+    prediction_scaling_prediction_namespace: str = Field(
+        default="onprem",
+        alias="PREDICTION_SCALING_PREDICTION_NAMESPACE",
+    )
+    prediction_scaling_stale_after_hours: int = Field(
+        default=24,
+        ge=1,
+        alias="PREDICTION_SCALING_STALE_AFTER_HOURS",
+    )
     llm_provider: str = Field(default="fake", alias="LLM_PROVIDER")
     llm_model: str = Field(default="fake-agentic-planner", alias="LLM_MODEL")
     llm_api_key: str = Field(default="", alias="LLM_API_KEY")

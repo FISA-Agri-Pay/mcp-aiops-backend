@@ -16,6 +16,7 @@ from aiops_platform.prediction_scaling.schemas import (
     ModelVersionResult,
     PredictionMetricPoint,
     PredictionRunResult,
+    PredictiveMetricValue,
     ScalingEventItem,
 )
 
@@ -72,6 +73,16 @@ class PredictionScalingRepository(Protocol):
         workload: str | None = None,
         limit: int = 20,
     ) -> list[ScalingEventItem]:
+        pass
+
+    def get_predictive_metric_values(
+        self,
+        *,
+        prediction_namespace: str,
+        service_name: str,
+        metric_names: tuple[str, ...],
+        horizon_minutes: int,
+    ) -> list[PredictiveMetricValue]:
         pass
 
 
@@ -303,6 +314,80 @@ class SqlPredictionScalingRepository:
             ).mappings().all()
         return [build_scaling_event(row) for row in rows]
 
+    def get_predictive_metric_values(
+        self,
+        *,
+        prediction_namespace: str,
+        service_name: str,
+        metric_names: tuple[str, ...],
+        horizon_minutes: int,
+    ) -> list[PredictiveMetricValue]:
+        query = text(
+            """
+            with candidate_target as (
+                select target_time
+                from ai.prediction_metrics
+                where namespace = :prediction_namespace
+                  and service_name = :service_name
+                  and metric_name in (
+                    'predicted_rps',
+                    'predicted_pods',
+                    'base_pods',
+                    'extra_demand',
+                    'allocation_score',
+                    'onprem_adjusted_pods'
+                  )
+                order by
+                  case
+                    when target_time >= localtimestamp
+                     and target_time <= localtimestamp + (:horizon_minutes * interval '1 minute')
+                    then 0
+                    when target_time >= localtimestamp then 1
+                    else 2
+                  end,
+                  abs(extract(epoch from (target_time - localtimestamp))),
+                  created_at desc
+                limit 1
+            )
+            select
+                pm.metric_name,
+                pm.namespace,
+                pm.service_name,
+                pm.predicted_value,
+                pm.target_time::text as target_time,
+                pm.model_version,
+                pm.created_at::text as created_at
+            from ai.prediction_metrics pm
+            join candidate_target ct on ct.target_time = pm.target_time
+            where pm.namespace = :prediction_namespace
+              and pm.service_name = :service_name
+              and pm.metric_name in (
+                'predicted_rps',
+                'predicted_pods',
+                'base_pods',
+                'extra_demand',
+                'allocation_score',
+                'onprem_adjusted_pods'
+              )
+            order by pm.metric_name, pm.created_at desc
+            """
+        )
+        with self._session_scope() as session:
+            rows = session.execute(
+                query,
+                {
+                    "prediction_namespace": prediction_namespace,
+                    "service_name": service_name,
+                    "horizon_minutes": horizon_minutes,
+                },
+            ).mappings().all()
+        metric_name_set = set(metric_names)
+        return [
+            build_predictive_metric_value(row)
+            for row in rows
+            if row["metric_name"] in metric_name_set
+        ]
+
     @contextmanager
     def _session_scope(self) -> Iterator[Session]:
         if self._session is not None:
@@ -377,6 +462,18 @@ def build_scaling_event(row) -> ScalingEventItem:
         desired_replicas=desired,
         reason=row["reason"] or "",
         related_prediction_run_id=row["related_prediction_run_id"],
+    )
+
+
+def build_predictive_metric_value(row) -> PredictiveMetricValue:
+    return PredictiveMetricValue(
+        metric_name=row["metric_name"],
+        namespace=row["namespace"],
+        service_name=row["service_name"],
+        predicted_value=float(row["predicted_value"]),
+        target_time=row["target_time"],
+        model_version=row["model_version"],
+        created_at=row["created_at"],
     )
 
 

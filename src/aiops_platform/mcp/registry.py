@@ -193,6 +193,7 @@ MCP_SERVERS: tuple[McpServerMetadata, ...] = (
                 ("get_prediction_error_metrics", READ),
                 ("get_scaling_events", READ),
                 ("get_scaling_summary", READ),
+                ("get_predictive_scaling_status", READ),
                 ("create_prediction_snapshot", READ),
                 ("create_scaling_analysis_snapshot", READ),
             ),

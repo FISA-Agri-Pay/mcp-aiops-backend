@@ -1354,6 +1354,37 @@ def create_mcp_server(
         )
 
     @mcp.tool(
+        name="get_predictive_scaling_status",
+        description=(
+            "Read GRU prediction, KEDA, HPA, and Deployment evidence to assess "
+            "predictive scaling status."
+        ),
+        tags={"prediction-scaling", "scaling", "keda", "hpa", "read"},
+        annotations={"readOnlyHint": True, "openWorldHint": False},
+    )
+    def get_predictive_scaling_status_tool(
+        namespace: str | None = "kkpp",
+        service: str | None = None,
+        horizon_minutes: int = 180,
+        include_keda: bool = True,
+        include_hpa: bool = True,
+    ) -> dict[str, Any]:
+        request_payload = {
+            "namespace": namespace,
+            "service": service,
+            "horizon_minutes": horizon_minutes,
+            "include_keda": include_keda,
+            "include_hpa": include_hpa,
+        }
+        return call_prediction_scaling_tool(
+            tool_name="get_predictive_scaling_status",
+            request_payload=request_payload,
+            operation=lambda: prediction_scaling.get_predictive_scaling_status(
+                **request_payload,
+            ),
+        )
+
+    @mcp.tool(
         name="create_prediction_snapshot",
         description="Create a read-only prediction evidence snapshot.",
         tags={"prediction-scaling", "prediction", "snapshot", "read"},
