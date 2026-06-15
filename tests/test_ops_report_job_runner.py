@@ -59,9 +59,11 @@ def test_ops_report_job_resolves_daily_and_weekly_report_dates() -> None:
     assert resolve_report_job_date("WEEKLY", now=now) == date(2026, 6, 8)
 
 
-def test_ops_report_job_creates_report_and_sends_email(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("OPS_REPORT_NAMESPACE", "aiops")
-    monkeypatch.setenv("OPS_REPORT_SERVICE_NAME", "mcp-aiops-backend")
+def test_ops_report_job_creates_unfiltered_report_and_sends_email(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("OPS_REPORT_NAMESPACE", raising=False)
+    monkeypatch.delenv("OPS_REPORT_SERVICE_NAME", raising=False)
     service = FakeOpsReportJobService()
 
     result = run_ops_report_job(
@@ -75,9 +77,27 @@ def test_ops_report_job_creates_report_and_sends_email(monkeypatch: pytest.Monke
     assert result.report_type == "DAILY"
     assert result.report_date == date(2026, 6, 14)
     assert result.email_status == "SENT"
-    assert service.create_requests[0].namespace == "aiops"
-    assert service.create_requests[0].service_name == "mcp-aiops-backend"
+    assert service.create_requests[0].namespace is None
+    assert service.create_requests[0].service_name is None
     assert service.email_requests[0].recipients == ["ops@example.com", "sre@example.com"]
+
+
+def test_ops_report_job_accepts_explicit_report_filters(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("OPS_REPORT_NAMESPACE", "kkpp")
+    monkeypatch.setenv("OPS_REPORT_SERVICE_NAME", "service-batch")
+    service = FakeOpsReportJobService()
+
+    run_ops_report_job(
+        "WEEKLY",
+        service=service,
+        settings=FakeSettings(),
+        now=datetime(2026, 6, 15, 9, 0, tzinfo=ZoneInfo("Asia/Seoul")),
+    )
+
+    assert service.create_requests[0].namespace == "kkpp"
+    assert service.create_requests[0].service_name == "service-batch"
 
 
 def test_ops_report_job_requires_recipients() -> None:

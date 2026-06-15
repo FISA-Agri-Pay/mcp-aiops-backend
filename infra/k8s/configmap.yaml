@@ -74,7 +74,6 @@ data:
   SMTP_FROM: "aiops@example.com"
   SMTP_USE_TLS: "true"
   OPS_REPORT_EMAIL_RECIPIENTS: ""
-  OPS_REPORT_SERVICE_NAME: "mcp-aiops-backend"
   RCA_EMAIL_RECIPIENTS: ""
   RCA_SLACK_CHANNEL: "#aiops-alerts"
   RCA_SLACK_TIMEOUT_SECONDS: "10"
