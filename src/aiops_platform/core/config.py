@@ -85,7 +85,11 @@ class Settings(BaseSettings):
         alias="PREDICTION_SCALING_STALE_AFTER_HOURS",
     )
     prediction_scaling_actual_rps_query_template: str = Field(
-        default='sum(rate(http_server_requests_seconds_count{application="$service"}[5m]))',
+        default=(
+            'sum(rate(hubble_http_requests_total{destination_namespace="kkpp",'
+            'destination_workload="$service",reporter="server",'
+            'traffic_direction="ingress"}[5m]))'
+        ),
         alias="PREDICTION_SCALING_ACTUAL_RPS_QUERY_TEMPLATE",
     )
     prediction_scaling_actual_rps_prometheus_source: str = Field(

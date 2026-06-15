@@ -421,7 +421,9 @@ def test_predictive_scaling_status_reads_actual_rps_from_prometheus_when_exporte
     assert item.actual_rps == 260.0
     assert item.prediction_match_status == "matched"
     assert prometheus_reader.queries == [
-        'sum(rate(http_server_requests_seconds_count{application="service-payment"}[5m]))'
+        'sum(rate(hubble_http_requests_total{destination_namespace="kkpp",'
+        'destination_workload="service-payment",reporter="server",'
+        'traffic_direction="ingress"}[5m]))'
     ]
     assert item.evidence["actual_rps"]["source"] == "onprem"
 
