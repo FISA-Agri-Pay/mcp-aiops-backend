@@ -72,6 +72,34 @@ class FakeTopologyKnowledgeService:
         return {"service": payload["service"], "dependencies": []}
 
 
+class CountingFarmerBnplService:
+    def __init__(self) -> None:
+        self.credit_limit_calls = 0
+        self.checkout_preview_calls = 0
+
+    def get_user_credit_limit(self, **payload):
+        self.credit_limit_calls += 1
+        return {
+            "user_id": payload["user_id"],
+            "total_limit": 3_000_000,
+            "used_amount": 450_000,
+            "available_limit": 2_550_000,
+            "currency": "KRW",
+            "status": "ACTIVE",
+            "call_count": self.credit_limit_calls,
+        }
+
+    def prepare_bnpl_checkout_payload(self, **payload):
+        self.checkout_preview_calls += 1
+        return {
+            "user_id": payload["user_id"],
+            "eligible": True,
+            "total_amount": 120_000,
+            "currency": "KRW",
+            "call_count": self.checkout_preview_calls,
+        }
+
+
 class FakeSreRcaPlanner:
     provider_name = "fake"
 
@@ -715,6 +743,59 @@ def test_dispatcher_executes_read_tool_and_masks_payload() -> None:
     assert result.response_payload["available_limit"] == 2550000
     assert "access_token" not in result.request_payload
     assert "access_token" not in result.masked_request_payload
+
+
+def test_dispatcher_reuses_ttl_cache_for_farmer_read_tool() -> None:
+    now = [1_000.0]
+    farmer_service = CountingFarmerBnplService()
+    dispatcher = McpToolDispatcher(
+        farmer_bnpl_service=farmer_service,
+        time_provider=lambda: now[0],
+    )
+    plan = AgentToolPlan(
+        server_name="farmer-bnpl-mcp",
+        tool_name="get_user_credit_limit",
+        request_payload={"user_id": FARMER_1_ID, "access_token": "secret-token"},
+        reason="Check credit limit.",
+    )
+
+    first = dispatcher.execute(plan)
+    assert first.call_status == McpToolCallStatus.SUCCESS
+    assert first.response_payload["call_count"] == 1
+
+    first.response_payload["available_limit"] = 0
+    second = dispatcher.execute(plan)
+    assert farmer_service.credit_limit_calls == 1
+    assert second.response_payload["available_limit"] == 2_550_000
+    assert second.response_payload["call_count"] == 1
+
+    now[0] += 16.0
+    third = dispatcher.execute(plan)
+    assert farmer_service.credit_limit_calls == 2
+    assert third.response_payload["call_count"] == 2
+
+
+def test_dispatcher_does_not_cache_farmer_checkout_preview_tool() -> None:
+    farmer_service = CountingFarmerBnplService()
+    dispatcher = McpToolDispatcher(farmer_bnpl_service=farmer_service)
+    plan = AgentToolPlan(
+        server_name="farmer-bnpl-mcp",
+        tool_name="prepare_bnpl_checkout_payload",
+        request_payload={
+            "user_id": FARMER_1_ID,
+            "items": [{"product_id": "10000000-0000-0000-0000-000000000002", "quantity": 2}],
+        },
+        reason="Prepare checkout payload.",
+    )
+
+    first = dispatcher.execute(plan)
+    second = dispatcher.execute(plan)
+
+    assert first.call_status == McpToolCallStatus.SUCCESS
+    assert second.call_status == McpToolCallStatus.SUCCESS
+    assert farmer_service.checkout_preview_calls == 2
+    assert first.response_payload["call_count"] == 1
+    assert second.response_payload["call_count"] == 2
 
 
 def test_dispatcher_executes_sre_infraops_read_tool() -> None:

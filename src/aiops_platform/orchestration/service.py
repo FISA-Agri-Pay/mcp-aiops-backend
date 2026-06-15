@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 from datetime import UTC, datetime
+from time import perf_counter
 from typing import Any, get_args
 from uuid import uuid4
 
@@ -12,6 +13,7 @@ from aiops_platform.agent.planner import (
     classify_sre_copilot_intent,
 )
 from aiops_platform.agent.schemas import AgentToolExecutionResult
+from aiops_platform.core.metrics import record_chat_response_metrics
 from aiops_platform.llmops.schemas import LlmRunResult
 from aiops_platform.llmops.service import LlmOpsService
 from aiops_platform.mcp.policy import resolve_tool_policy
@@ -278,6 +280,7 @@ class OrchestrationService:
         user_id: str,
         job_type: str,
     ) -> ChatAskResult:
+        response_started_at = perf_counter()
         user_message = self._append_message(
             session_id=session.session_id,
             role="USER",
@@ -330,55 +333,75 @@ class OrchestrationService:
                     )
                     for tool_result in agent_run.tool_results
                 ]
-                llm_run = self._record_llm_run(
-                    chat_type=session.chat_type,
-                    message=message,
-                    user_id=user_id,
-                    tool_results=tool_results,
-                    job_id=job.job_id,
-                    session_id=session.session_id,
-                    capability=agent_run.capability,
-                )
-                self._attach_llm_run_to_tool_calls(
-                    job_id=job.job_id,
-                    session_id=session.session_id,
-                    llm_run_id=llm_run.llm_run_id,
-                )
-                self._create_agent_snapshot(
-                    chat_type=session.chat_type,
-                    job_id=job.job_id,
-                    session_id=session.session_id,
-                    llm_run=llm_run,
-                    tool_results=tool_results,
-                )
                 self._create_approval_requests(
                     user_id=user_id,
                     tool_results=tool_results,
                 )
-                job = self._finish_job(job.job_id, tool_results)
-                assistant_content = resolve_assistant_content(
-                    llm_run.masked_output,
-                    agent_run.answer,
+                ui_cards = build_chat_ui_cards(session.chat_type, message, tool_results)
+                ui_actions = build_chat_ui_actions(ui_cards)
+                deterministic_answer = build_deterministic_farmer_bnpl_tool_answer(
                     chat_type=session.chat_type,
-                    llm_run_status=llm_run.run_status,
                     tool_results=tool_results,
                     capability=agent_run.capability,
                 )
-                ui_cards = build_chat_ui_cards(session.chat_type, message, tool_results)
-                ui_actions = build_chat_ui_actions(ui_cards)
-                assistant_metadata = {
-                    "intent": agent_run.intent,
-                    "capability": agent_run.capability,
-                    "planner_provider": agent_run.provider_name,
-                    "planner_error": agent_run.planner_error,
-                    "response_source": (
-                        "llm" if llm_run.run_status == "SUCCESS" else "fallback"
-                    ),
-                    "fallback_used": llm_run.run_status != "SUCCESS",
-                    "llm_run_id": llm_run.llm_run_id,
-                    "llm_run_status": llm_run.run_status,
-                    "llm_last_error": llm_run.last_error,
-                }
+                if deterministic_answer is not None:
+                    llm_run = None
+                    job = self._finish_job(job.job_id, tool_results)
+                    assistant_content = deterministic_answer
+                    assistant_metadata = {
+                        "intent": agent_run.intent,
+                        "capability": agent_run.capability,
+                        "planner_provider": agent_run.provider_name,
+                        "planner_error": agent_run.planner_error,
+                        "response_source": "deterministic",
+                        "fallback_used": False,
+                        "llm_run_status": None,
+                        "llm_last_error": None,
+                    }
+                else:
+                    llm_run = self._record_llm_run(
+                        chat_type=session.chat_type,
+                        message=message,
+                        user_id=user_id,
+                        tool_results=tool_results,
+                        job_id=job.job_id,
+                        session_id=session.session_id,
+                        capability=agent_run.capability,
+                    )
+                    self._attach_llm_run_to_tool_calls(
+                        job_id=job.job_id,
+                        session_id=session.session_id,
+                        llm_run_id=llm_run.llm_run_id,
+                    )
+                    self._create_agent_snapshot(
+                        chat_type=session.chat_type,
+                        job_id=job.job_id,
+                        session_id=session.session_id,
+                        llm_run=llm_run,
+                        tool_results=tool_results,
+                    )
+                    job = self._finish_job(job.job_id, tool_results)
+                    assistant_content = resolve_assistant_content(
+                        llm_run.masked_output,
+                        agent_run.answer,
+                        chat_type=session.chat_type,
+                        llm_run_status=llm_run.run_status,
+                        tool_results=tool_results,
+                        capability=agent_run.capability,
+                    )
+                    assistant_metadata = {
+                        "intent": agent_run.intent,
+                        "capability": agent_run.capability,
+                        "planner_provider": agent_run.provider_name,
+                        "planner_error": agent_run.planner_error,
+                        "response_source": (
+                            "llm" if llm_run.run_status == "SUCCESS" else "fallback"
+                        ),
+                        "fallback_used": llm_run.run_status != "SUCCESS",
+                        "llm_run_id": llm_run.llm_run_id,
+                        "llm_run_status": llm_run.run_status,
+                        "llm_last_error": llm_run.last_error,
+                    }
         except Exception as exc:
             logger.exception("Agent orchestration failed for job %s.", job.job_id)
             planned_tool_results = []
@@ -413,6 +436,15 @@ class OrchestrationService:
         )
         self._touch_session(session.session_id)
         updated_session = self.get_chat_session(session.session_id, chat_type=session.chat_type)
+        record_chat_response_metrics(
+            chat_type=session.chat_type,
+            response_source=str(assistant_metadata.get("response_source") or "unknown"),
+            status=job.status,
+            latency_ms=max(round((perf_counter() - response_started_at) * 1000), 0),
+            capability=assistant_metadata.get("capability")
+            if isinstance(assistant_metadata.get("capability"), str)
+            else None,
+        )
         return ChatAskResult(
             session=updated_session,
             user_message=user_message,
@@ -893,6 +925,42 @@ def has_card_type(cards: list[dict[str, Any]], card_type: str) -> bool:
     return any(card.get("type") == card_type for card in cards)
 
 
+def build_deterministic_farmer_bnpl_tool_answer(
+    *,
+    chat_type: ChatType,
+    tool_results: list[AgentToolExecutionResult],
+    capability: str | None = None,
+) -> str | None:
+    if chat_type != "farmer_bnpl":
+        return None
+    if capability == "credit_limit_status" and find_tool_payload(
+        tool_results,
+        "get_user_credit_limit",
+    ):
+        return build_farmer_bnpl_llm_failure_fallback(
+            tool_results,
+            capability=capability,
+        )
+    if capability == "repayment_guidance" and (
+        find_tool_payload(tool_results, "get_repayment_schedule")
+        or find_tool_payload(tool_results, "get_interest_due")
+        or find_tool_payload(tool_results, "get_overdue_status")
+    ):
+        return build_farmer_bnpl_llm_failure_fallback(
+            tool_results,
+            capability=capability,
+        )
+    if capability == "delivery_status" and find_tool_payload(
+        tool_results,
+        "get_latest_order_delivery_status",
+    ):
+        return build_farmer_bnpl_llm_failure_fallback(
+            tool_results,
+            capability=capability,
+        )
+    return None
+
+
 def resolve_assistant_content(
     masked_output: dict[str, object],
     fallback_answer: str,
@@ -964,10 +1032,14 @@ def build_direct_sre_copilot_response(message: str) -> dict[str, str] | None:
             "안녕하세요. 장애 원인 분석을 위해 로그, 메트릭, 트레이스, Kubernetes, "
             "AWS, GitOps 조회를 도와드릴 수 있습니다."
         ),
-        "thanks": "필요하면 장애 증상과 대상 서비스를 알려주세요. READ 기반으로 근거를 모아 분석하겠습니다.",
+        "thanks": (
+            "필요하면 장애 증상과 대상 서비스를 알려주세요. "
+            "READ 기반으로 근거를 모아 분석하겠습니다."
+        ),
         "help": (
             "checkout 500, SQS 발행/소비 실패, PIN 검증 이벤트 미반영, "
-            "CloudFront-ALB-EKS 라우팅 실패, CrashLoopBackOff, DB/HikariCP 문제를 분석할 수 있습니다."
+            "CloudFront-ALB-EKS 라우팅 실패, CrashLoopBackOff, "
+            "DB/HikariCP 문제를 분석할 수 있습니다."
         ),
         "unsupported": (
             "현재 SRE Copilot은 READ 기반 관측/분석만 지원합니다. "

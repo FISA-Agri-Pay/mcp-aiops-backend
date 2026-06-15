@@ -1,3 +1,5 @@
+import json
+
 from fastapi.testclient import TestClient
 
 from aiops_platform.agent.orchestrator import AgentOrchestrator
@@ -238,6 +240,110 @@ def test_failed_farmer_tool_result_hides_internal_error_from_llm_input() -> None
     assert "ProgrammingError" not in str(payload)
     assert "validation failed" not in str(payload)
     assert payload["failure_policy"] == "hide_internal_error_from_user"
+
+
+def test_successful_farmer_product_result_is_compacted_for_llm_input() -> None:
+    raw_items = [
+        {
+            "product_id": f"product-{index}",
+            "name": f"Fertilizer {index}",
+            "category": "fertilizer",
+            "unit_price": 20_000 + index,
+            "currency": "KRW",
+            "vendor": "very long vendor name that is not needed by the LLM",
+            "stock_status": "IN_STOCK",
+            "internal_note": "unnecessary catalog detail",
+        }
+        for index in range(5)
+    ]
+    raw_result = AgentToolExecutionResult(
+        server_name="farmer-bnpl-mcp",
+        tool_name="search_products",
+        tool_permission=McpToolPermission.READ,
+        confirmation_policy=McpConfirmationPolicy.NONE,
+        execution_policy=McpExecutionPolicy.ALLOWED,
+        call_status=McpToolCallStatus.SUCCESS,
+        will_execute=True,
+        requires_approval=False,
+        is_blocked=False,
+        request_payload={"query": "fertilizer", "limit": 20},
+        response_payload={
+            "query": "fertilizer",
+            "category": "fertilizer",
+            "limit": 20,
+            "items": raw_items,
+        },
+    )
+
+    compacted = serialize_tool_result_for_llm(raw_result, chat_type="farmer_bnpl")
+    raw_payload = raw_result.model_dump(mode="json", exclude={"masked_request_payload"})
+
+    assert "request_payload" not in compacted
+    assert compacted["input_optimized"] is True
+    assert compacted["response_payload"]["returned_count"] == 5
+    assert len(compacted["response_payload"]["items"]) == 3
+    assert compacted["response_payload"]["items"][0] == {
+        "product_id": "product-0",
+        "name": "Fertilizer 0",
+        "category": "fertilizer",
+        "unit_price": 20_000,
+        "currency": "KRW",
+        "stock_status": "IN_STOCK",
+    }
+    assert "vendor" not in str(compacted)
+    assert len(json.dumps(compacted, ensure_ascii=False)) < len(
+        json.dumps(raw_payload, ensure_ascii=False)
+    )
+
+
+def test_successful_farmer_repayment_result_keeps_next_due_only() -> None:
+    payload = serialize_tool_result_for_llm(
+        AgentToolExecutionResult(
+            server_name="farmer-bnpl-mcp",
+            tool_name="get_repayment_schedule",
+            tool_permission=McpToolPermission.READ,
+            confirmation_policy=McpConfirmationPolicy.NONE,
+            execution_policy=McpExecutionPolicy.ALLOWED,
+            call_status=McpToolCallStatus.SUCCESS,
+            will_execute=True,
+            requires_approval=False,
+            is_blocked=False,
+            request_payload={"user_id": FARMER_1_ID},
+            response_payload={
+                "user_id": FARMER_1_ID,
+                "currency": "KRW",
+                "schedule": [
+                    {
+                        "installment_no": 1,
+                        "due_date": "2026-06-01",
+                        "principal_due": 100_000,
+                        "interest_due": 1_000,
+                        "status": "PAID",
+                    },
+                    {
+                        "installment_no": 2,
+                        "due_date": "2026-07-01",
+                        "principal_due": 100_000,
+                        "interest_due": 900,
+                        "status": "UPCOMING",
+                    },
+                ],
+            },
+        ),
+        chat_type="farmer_bnpl",
+    )
+
+    assert payload["response_payload"] == {
+        "currency": "KRW",
+        "schedule_count": 2,
+        "next_due": {
+            "installment_no": 2,
+            "due_date": "2026-07-01",
+            "principal_due": 100_000,
+            "interest_due": 900,
+            "status": "UPCOMING",
+        },
+    }
 
 
 def test_farmer_approval_required_tool_result_keeps_approval_context() -> None:

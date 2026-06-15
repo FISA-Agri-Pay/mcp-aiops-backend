@@ -19,7 +19,11 @@ from aiops_platform.orchestration.repository import (
     OrchestrationRepository,
     SqlOrchestrationRepository,
 )
-from aiops_platform.orchestration.service import OrchestrationService, build_chat_ui_cards
+from aiops_platform.orchestration.service import (
+    OrchestrationService,
+    build_chat_ui_cards,
+    build_deterministic_farmer_bnpl_tool_answer,
+)
 from tests.seed_constants import CREDIT_APP_2_ID, FARMER_1_ID, FARMER_2_ID
 
 
@@ -278,6 +282,52 @@ def test_farmer_chat_ui_cards_include_checkout_confirmation_type() -> None:
 
     checkout_card = next(card for card in cards if card["type"] == "checkout-confirmation")
     assert checkout_card["checkout_intent_id"] == "checkout-123"
+
+
+def test_farmer_credit_limit_can_skip_llm_with_deterministic_answer() -> None:
+    answer = build_deterministic_farmer_bnpl_tool_answer(
+        chat_type="farmer_bnpl",
+        capability="credit_limit_status",
+        tool_results=[
+            build_successful_farmer_tool_result(
+                tool_name="get_user_credit_limit",
+                response_payload={
+                    "total_limit": 3_000_000,
+                    "used_amount": 450_000,
+                    "available_limit": 2_550_000,
+                    "currency": "KRW",
+                    "status": "ACTIVE",
+                },
+            )
+        ],
+    )
+
+    assert answer is not None
+    assert "2,550,000 KRW" in answer
+
+
+def test_farmer_recommendation_keeps_llm_path_for_natural_guidance() -> None:
+    answer = build_deterministic_farmer_bnpl_tool_answer(
+        chat_type="farmer_bnpl",
+        capability="fertilizer_recommendation",
+        tool_results=[
+            build_successful_farmer_tool_result(
+                tool_name="search_products",
+                response_payload={
+                    "items": [
+                        {
+                            "product_id": "product-1",
+                            "name": "NPK Fertilizer",
+                            "unit_price": 20_000,
+                            "currency": "KRW",
+                        }
+                    ]
+                },
+            )
+        ],
+    )
+
+    assert answer is None
 
 
 def test_farmer_latest_delivery_api_maps_invalid_user_id_to_bad_request() -> None:

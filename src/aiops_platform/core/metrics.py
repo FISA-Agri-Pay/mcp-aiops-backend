@@ -25,6 +25,14 @@ _HELP_TEXT = {
     "aiops_llm_request_timestamp_seconds": "Unix timestamp of the most recent LLM request.",
     "aiops_llm_requests_total": "Total LLM requests recorded by the AIOps backend.",
     "aiops_llm_failures_total": "Total failed LLM requests recorded by error type.",
+    "aiops_chat_response_latency_ms_last": (
+        "Most recent end-to-end chat response latency in milliseconds."
+    ),
+    "aiops_chat_response_latency_ms_sum": (
+        "Cumulative end-to-end chat response latency in milliseconds."
+    ),
+    "aiops_chat_response_timestamp_seconds": "Unix timestamp of the most recent chat response.",
+    "aiops_chat_requests_total": "Total chat responses recorded by chat type and response source.",
 }
 
 
@@ -75,6 +83,29 @@ def record_llm_request_metrics(
                 "aiops_llm_failures_total",
                 {**labels, "error_type": error_type},
             )
+
+
+def record_chat_response_metrics(
+    *,
+    chat_type: str,
+    response_source: str,
+    status: str,
+    latency_ms: int,
+    capability: str | None = None,
+) -> None:
+    labels = {
+        "chat_type": chat_type or "unknown",
+        "response_source": response_source or "unknown",
+        "capability": capability or "unknown",
+    }
+    with _LOCK:
+        _set_gauge("aiops_chat_response_latency_ms_last", labels, latency_ms)
+        _set_gauge("aiops_chat_response_timestamp_seconds", labels, time.time())
+        _inc_counter("aiops_chat_response_latency_ms_sum", labels, latency_ms)
+        _inc_counter(
+            "aiops_chat_requests_total",
+            {**labels, "status": status or "unknown"},
+        )
 
 
 def render_prometheus_metrics() -> str:

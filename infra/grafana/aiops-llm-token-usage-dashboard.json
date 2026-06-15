@@ -11,7 +11,7 @@
         "type": "prometheus",
         "uid": "$datasource"
       },
-      "description": "AIOps backend가 마지막 LLM 요청에서 provider로부터 받은 실제 입력 토큰 수입니다. provider가 usage를 주지 않으면 0으로 보일 수 있습니다.",
+      "description": "최근 LLM 요청에서 provider usage로 받은 실제 입력 토큰 수입니다.",
       "fieldConfig": {
         "defaults": {
           "mappings": [],
@@ -58,7 +58,7 @@
             "uid": "$datasource"
           },
           "expr": "max(aiops_llm_prompt_tokens_last{prompt_key=~\"$prompt_key\"})",
-          "legendFormat": "최근 실제 입력 토큰",
+          "legendFormat": "실제 입력 토큰",
           "refId": "A"
         }
       ],
@@ -70,7 +70,7 @@
         "type": "prometheus",
         "uid": "$datasource"
       },
-      "description": "provider usage가 없거나 실패한 요청에서도 확인 가능한 입력 토큰 추정치입니다. 문자 수를 약 4로 나눠 계산합니다.",
+      "description": "provider usage가 없을 때 prompt 문자 수를 기준으로 추정한 입력 토큰 수입니다.",
       "fieldConfig": {
         "defaults": {
           "mappings": [],
@@ -117,7 +117,7 @@
             "uid": "$datasource"
           },
           "expr": "max(aiops_llm_estimated_prompt_tokens_last{prompt_key=~\"$prompt_key\"})",
-          "legendFormat": "최근 추정 입력 토큰",
+          "legendFormat": "추정 입력 토큰",
           "refId": "A"
         }
       ],
@@ -129,7 +129,7 @@
         "type": "prometheus",
         "uid": "$datasource"
       },
-      "description": "마지막 LLM 요청의 출력 토큰 수입니다.",
+      "description": "최근 LLM 요청의 출력 토큰 수입니다.",
       "fieldConfig": {
         "defaults": {
           "mappings": [],
@@ -176,7 +176,7 @@
             "uid": "$datasource"
           },
           "expr": "max(aiops_llm_completion_tokens_last{prompt_key=~\"$prompt_key\"})",
-          "legendFormat": "최근 출력 토큰",
+          "legendFormat": "출력 토큰",
           "refId": "A"
         }
       ],
@@ -188,7 +188,7 @@
         "type": "prometheus",
         "uid": "$datasource"
       },
-      "description": "마지막 LLM 요청의 전체 토큰 수입니다.",
+      "description": "최근 LLM 요청의 전체 토큰 수입니다.",
       "fieldConfig": {
         "defaults": {
           "mappings": [],
@@ -235,7 +235,7 @@
             "uid": "$datasource"
           },
           "expr": "max(aiops_llm_total_tokens_last{prompt_key=~\"$prompt_key\"})",
-          "legendFormat": "최근 전체 토큰",
+          "legendFormat": "전체 토큰",
           "refId": "A"
         }
       ],
@@ -247,7 +247,377 @@
         "type": "prometheus",
         "uid": "$datasource"
       },
-      "description": "마지막 LLM 요청으로 직렬화된 prompt 문자열 크기입니다. 토큰 절감 전후 비교에 유용합니다.",
+      "description": "최근 LLM API 호출 1회의 응답시간입니다.",
+      "fieldConfig": {
+        "defaults": {
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "unit": "ms"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 6,
+        "x": 0,
+        "y": 4
+      },
+      "id": 5,
+      "options": {
+        "colorMode": "background",
+        "graphMode": "none",
+        "justifyMode": "center",
+        "orientation": "horizontal",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "showPercentChange": false,
+        "textMode": "value_and_name",
+        "wideLayout": true
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "$datasource"
+          },
+          "expr": "max(aiops_llm_latency_ms_last{prompt_key=~\"$prompt_key\"})",
+          "legendFormat": "최근 LLM 응답시간",
+          "refId": "A"
+        }
+      ],
+      "title": "최근 LLM 응답시간",
+      "type": "stat"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "$datasource"
+      },
+      "description": "최근 3분 동안의 LLM 호출 평균 응답시간입니다.",
+      "fieldConfig": {
+        "defaults": {
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "orange",
+                "value": 5000
+              },
+              {
+                "color": "red",
+                "value": 15000
+              }
+            ]
+          },
+          "unit": "ms"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 6,
+        "x": 6,
+        "y": 4
+      },
+      "id": 6,
+      "options": {
+        "colorMode": "background",
+        "graphMode": "area",
+        "justifyMode": "center",
+        "orientation": "horizontal",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "showPercentChange": false,
+        "textMode": "value_and_name",
+        "wideLayout": true
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "$datasource"
+          },
+          "expr": "sum(increase(aiops_llm_latency_ms_sum{prompt_key=~\"$prompt_key\"}[3m])) / clamp_min(sum(increase(aiops_llm_requests_total{prompt_key=~\"$prompt_key\"}[3m])), 1)",
+          "legendFormat": "LLM 평균 응답시간",
+          "refId": "A"
+        }
+      ],
+      "title": "최근 3분 평균 LLM 응답시간",
+      "type": "stat"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "$datasource"
+      },
+      "description": "LLM 호출 여부와 관계없이 /chat/ask 전체 처리 시간을 집계합니다.",
+      "fieldConfig": {
+        "defaults": {
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "orange",
+                "value": 1000
+              },
+              {
+                "color": "red",
+                "value": 3000
+              }
+            ]
+          },
+          "unit": "ms"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 6,
+        "x": 12,
+        "y": 4
+      },
+      "id": 7,
+      "options": {
+        "colorMode": "background",
+        "graphMode": "area",
+        "justifyMode": "center",
+        "orientation": "horizontal",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "showPercentChange": false,
+        "textMode": "value_and_name",
+        "wideLayout": true
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "$datasource"
+          },
+          "expr": "sum(increase(aiops_chat_response_latency_ms_sum{chat_type=~\"$chat_type\"}[3m])) / clamp_min(sum(increase(aiops_chat_requests_total{chat_type=~\"$chat_type\"}[3m])), 1)",
+          "legendFormat": "챗봇 전체 평균 응답시간",
+          "refId": "A"
+        }
+      ],
+      "title": "최근 3분 챗봇 평균 응답시간",
+      "type": "stat"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "$datasource"
+      },
+      "description": "전체 챗봇 응답 중 LLM 호출 없이 처리된 비율입니다.",
+      "fieldConfig": {
+        "defaults": {
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "unit": "percent"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 6,
+        "x": 18,
+        "y": 4
+      },
+      "id": 8,
+      "options": {
+        "colorMode": "background",
+        "graphMode": "none",
+        "justifyMode": "center",
+        "orientation": "horizontal",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "showPercentChange": false,
+        "textMode": "value_and_name",
+        "wideLayout": true
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "$datasource"
+          },
+          "expr": "100 * sum(increase(aiops_chat_requests_total{chat_type=~\"$chat_type\",response_source=~\"deterministic|direct|fallback\"}[3m])) / clamp_min(sum(increase(aiops_chat_requests_total{chat_type=~\"$chat_type\"}[3m])), 1)",
+          "legendFormat": "LLM 우회율",
+          "refId": "A"
+        }
+      ],
+      "title": "최근 3분 LLM 우회율",
+      "type": "stat"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "$datasource"
+      },
+      "description": "최근 3분 동안 LLM 없이 서버 템플릿으로 바로 응답한 요청 수입니다.",
+      "fieldConfig": {
+        "defaults": {
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 6,
+        "x": 0,
+        "y": 8
+      },
+      "id": 9,
+      "options": {
+        "colorMode": "background",
+        "graphMode": "none",
+        "justifyMode": "center",
+        "orientation": "horizontal",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "showPercentChange": false,
+        "textMode": "value_and_name",
+        "wideLayout": true
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "$datasource"
+          },
+          "expr": "sum(increase(aiops_chat_requests_total{chat_type=~\"$chat_type\",response_source=\"deterministic\"}[3m]))",
+          "legendFormat": "deterministic",
+          "refId": "A"
+        }
+      ],
+      "title": "최근 3분 deterministic 응답 수",
+      "type": "stat"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "$datasource"
+      },
+      "description": "최근 3분 동안 LLM이 실제로 성공 응답을 생성한 챗봇 요청 수입니다.",
+      "fieldConfig": {
+        "defaults": {
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 6,
+        "x": 6,
+        "y": 8
+      },
+      "id": 10,
+      "options": {
+        "colorMode": "background",
+        "graphMode": "none",
+        "justifyMode": "center",
+        "orientation": "horizontal",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "showPercentChange": false,
+        "textMode": "value_and_name",
+        "wideLayout": true
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "$datasource"
+          },
+          "expr": "sum(increase(aiops_chat_requests_total{chat_type=~\"$chat_type\",response_source=\"llm\"}[3m]))",
+          "legendFormat": "llm",
+          "refId": "A"
+        }
+      ],
+      "title": "최근 3분 LLM 응답 수",
+      "type": "stat"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "$datasource"
+      },
+      "description": "최근 LLM 요청으로 직렬화된 prompt 문자 수입니다.",
       "fieldConfig": {
         "defaults": {
           "mappings": [],
@@ -268,9 +638,9 @@
         "h": 7,
         "w": 12,
         "x": 0,
-        "y": 4
+        "y": 12
       },
-      "id": 5,
+      "id": 11,
       "targets": [
         {
           "datasource": {
@@ -290,7 +660,7 @@
         "type": "prometheus",
         "uid": "$datasource"
       },
-      "description": "LLM 응답 시간입니다. 토큰 절감 후 지연시간이 줄었는지 확인합니다.",
+      "description": "최근 3분 LLM 평균 응답시간 추이입니다.",
       "fieldConfig": {
         "defaults": {
           "mappings": [],
@@ -311,21 +681,21 @@
         "h": 7,
         "w": 12,
         "x": 12,
-        "y": 4
+        "y": 12
       },
-      "id": 6,
+      "id": 12,
       "targets": [
         {
           "datasource": {
             "type": "prometheus",
             "uid": "$datasource"
           },
-          "expr": "max by (prompt_key, model) (aiops_llm_latency_ms_last{prompt_key=~\"$prompt_key\"})",
+          "expr": "sum by (prompt_key, model) (increase(aiops_llm_latency_ms_sum{prompt_key=~\"$prompt_key\"}[3m])) / clamp_min(sum by (prompt_key, model) (increase(aiops_llm_requests_total{prompt_key=~\"$prompt_key\"}[3m])), 1)",
           "legendFormat": "{{prompt_key}} / {{model}}",
           "refId": "A"
         }
       ],
-      "title": "최근 LLM 응답 시간",
+      "title": "LLM 3분 평균 응답시간 추이",
       "type": "timeseries"
     },
     {
@@ -333,7 +703,93 @@
         "type": "prometheus",
         "uid": "$datasource"
       },
-      "description": "최근 1시간 동안의 LLM 요청 수입니다.",
+      "description": "response_source별 최근 3분 평균 챗봇 전체 응답시간입니다.",
+      "fieldConfig": {
+        "defaults": {
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "unit": "ms"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 7,
+        "w": 12,
+        "x": 0,
+        "y": 19
+      },
+      "id": 13,
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "$datasource"
+          },
+          "expr": "sum by (response_source) (increase(aiops_chat_response_latency_ms_sum{chat_type=~\"$chat_type\"}[3m])) / clamp_min(sum by (response_source) (increase(aiops_chat_requests_total{chat_type=~\"$chat_type\"}[3m])), 1)",
+          "legendFormat": "{{response_source}}",
+          "refId": "A"
+        }
+      ],
+      "title": "챗봇 응답시간 추이(response_source별)",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "$datasource"
+      },
+      "description": "response_source별 최근 3분 챗봇 요청 수입니다.",
+      "fieldConfig": {
+        "defaults": {
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 7,
+        "w": 12,
+        "x": 12,
+        "y": 19
+      },
+      "id": 14,
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "$datasource"
+          },
+          "expr": "sum by (response_source) (increase(aiops_chat_requests_total{chat_type=~\"$chat_type\"}[3m]))",
+          "legendFormat": "{{response_source}}",
+          "refId": "A"
+        }
+      ],
+      "title": "챗봇 요청 수(response_source별)",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "$datasource"
+      },
+      "description": "최근 1시간 LLM 요청 수입니다.",
       "fieldConfig": {
         "defaults": {
           "mappings": [],
@@ -354,9 +810,9 @@
         "h": 6,
         "w": 12,
         "x": 0,
-        "y": 11
+        "y": 26
       },
-      "id": 7,
+      "id": 15,
       "targets": [
         {
           "datasource": {
@@ -376,7 +832,7 @@
         "type": "prometheus",
         "uid": "$datasource"
       },
-      "description": "최근 1시간 동안의 LLM 실패 수입니다. context_length_exceeded가 나오면 입력 토큰 절감이 필요하다는 직접 신호입니다.",
+      "description": "최근 1시간 LLM 실패 수입니다.",
       "fieldConfig": {
         "defaults": {
           "mappings": [],
@@ -397,9 +853,9 @@
         "h": 6,
         "w": 12,
         "x": 12,
-        "y": 11
+        "y": 26
       },
-      "id": 8,
+      "id": 16,
       "targets": [
         {
           "datasource": {
@@ -421,7 +877,7 @@
     "aiops",
     "llm",
     "tokens",
-    "rca"
+    "chatbot"
   ],
   "templating": {
     "list": [
@@ -465,6 +921,31 @@
         "refresh": 2,
         "regex": "",
         "type": "query"
+      },
+      {
+        "current": {
+          "selected": true,
+          "text": "All",
+          "value": ".*"
+        },
+        "datasource": {
+          "type": "prometheus",
+          "uid": "$datasource"
+        },
+        "definition": "label_values(aiops_chat_requests_total, chat_type)",
+        "hide": 0,
+        "includeAll": true,
+        "label": "Chat Type",
+        "multi": false,
+        "name": "chat_type",
+        "options": [],
+        "query": {
+          "query": "label_values(aiops_chat_requests_total, chat_type)",
+          "refId": "StandardVariableQuery"
+        },
+        "refresh": 2,
+        "regex": "",
+        "type": "query"
       }
     ]
   },
@@ -473,7 +954,7 @@
     "to": "now"
   },
   "timezone": "browser",
-  "title": "AIOps LLM 토큰 사용량",
+  "title": "AIOps LLM/챗봇 응답 최적화",
   "uid": "aiops-llm-token-usage",
-  "version": 1
+  "version": 7
 }

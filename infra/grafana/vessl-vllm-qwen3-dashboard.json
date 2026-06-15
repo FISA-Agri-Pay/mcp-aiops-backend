@@ -12,242 +12,6 @@
         "type": "prometheus",
         "uid": "vessl-prometheus"
       },
-      "description": "VESSL vLLM 서버가 처리한 입력(prompt) 토큰 누적량입니다.",
-      "fieldConfig": {
-        "defaults": {
-          "mappings": [],
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "green",
-                "value": null
-              }
-            ]
-          },
-          "unit": "short"
-        },
-        "overrides": []
-      },
-      "gridPos": {
-        "h": 4,
-        "w": 6,
-        "x": 0,
-        "y": 4
-      },
-      "id": 19,
-      "options": {
-        "colorMode": "background",
-        "graphMode": "none",
-        "justifyMode": "center",
-        "orientation": "horizontal",
-        "reduceOptions": {
-          "calcs": [
-            "lastNotNull"
-          ],
-          "fields": "",
-          "values": false
-        },
-        "showPercentChange": false,
-        "textMode": "value_and_name",
-        "wideLayout": true
-      },
-      "targets": [
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "vessl-prometheus"
-          },
-          "expr": "sum(vllm:prompt_tokens_total{model_name=~\"$model\"})",
-          "legendFormat": "입력 토큰 누적",
-          "refId": "A"
-        }
-      ],
-      "title": "입력 토큰 누적",
-      "type": "stat"
-    },
-    {
-      "datasource": {
-        "type": "prometheus",
-        "uid": "vessl-prometheus"
-      },
-      "description": "최근 1분 기준 초당 입력(prompt) 토큰 처리량입니다.",
-      "fieldConfig": {
-        "defaults": {
-          "mappings": [],
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "green",
-                "value": null
-              }
-            ]
-          },
-          "unit": "short"
-        },
-        "overrides": []
-      },
-      "gridPos": {
-        "h": 4,
-        "w": 6,
-        "x": 6,
-        "y": 4
-      },
-      "id": 20,
-      "options": {
-        "colorMode": "background",
-        "graphMode": "none",
-        "justifyMode": "center",
-        "orientation": "horizontal",
-        "reduceOptions": {
-          "calcs": [
-            "lastNotNull"
-          ],
-          "fields": "",
-          "values": false
-        },
-        "showPercentChange": false,
-        "textMode": "value_and_name",
-        "wideLayout": true
-      },
-      "targets": [
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "vessl-prometheus"
-          },
-          "expr": "sum(rate(vllm:prompt_tokens_total{model_name=~\"$model\"}[1m]))",
-          "legendFormat": "입력 토큰/초",
-          "refId": "A"
-        }
-      ],
-      "title": "입력 토큰 처리량",
-      "type": "stat"
-    },
-    {
-      "datasource": {
-        "type": "prometheus",
-        "uid": "vessl-prometheus"
-      },
-      "description": "최근 5분 동안 처리한 입력(prompt) 토큰 수입니다.",
-      "fieldConfig": {
-        "defaults": {
-          "mappings": [],
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "green",
-                "value": null
-              }
-            ]
-          },
-          "unit": "short"
-        },
-        "overrides": []
-      },
-      "gridPos": {
-        "h": 4,
-        "w": 6,
-        "x": 12,
-        "y": 4
-      },
-      "id": 21,
-      "options": {
-        "colorMode": "background",
-        "graphMode": "none",
-        "justifyMode": "center",
-        "orientation": "horizontal",
-        "reduceOptions": {
-          "calcs": [
-            "lastNotNull"
-          ],
-          "fields": "",
-          "values": false
-        },
-        "showPercentChange": false,
-        "textMode": "value_and_name",
-        "wideLayout": true
-      },
-      "targets": [
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "vessl-prometheus"
-          },
-          "expr": "sum(increase(vllm:prompt_tokens_total{model_name=~\"$model\"}[5m]))",
-          "legendFormat": "최근 5분 입력 토큰",
-          "refId": "A"
-        }
-      ],
-      "title": "최근 5분 입력 토큰",
-      "type": "stat"
-    },
-    {
-      "datasource": {
-        "type": "prometheus",
-        "uid": "vessl-prometheus"
-      },
-      "description": "최근 5분 기준 완료 요청 1건당 평균 입력(prompt) 토큰 수입니다.",
-      "fieldConfig": {
-        "defaults": {
-          "mappings": [],
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "green",
-                "value": null
-              }
-            ]
-          },
-          "unit": "short"
-        },
-        "overrides": []
-      },
-      "gridPos": {
-        "h": 4,
-        "w": 6,
-        "x": 18,
-        "y": 4
-      },
-      "id": 22,
-      "options": {
-        "colorMode": "background",
-        "graphMode": "none",
-        "justifyMode": "center",
-        "orientation": "horizontal",
-        "reduceOptions": {
-          "calcs": [
-            "lastNotNull"
-          ],
-          "fields": "",
-          "values": false
-        },
-        "showPercentChange": false,
-        "textMode": "value_and_name",
-        "wideLayout": true
-      },
-      "targets": [
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "vessl-prometheus"
-          },
-          "expr": "sum(increase(vllm:prompt_tokens_total{model_name=~\"$model\"}[5m])) / clamp_min(sum(increase(vllm:request_success_total{model_name=~\"$model\"}[5m])), 1)",
-          "legendFormat": "요청당 평균 입력 토큰",
-          "refId": "A"
-        }
-      ],
-      "title": "요청당 평균 입력 토큰",
-      "type": "stat"
-    },
-    {
-      "datasource": {
-        "type": "prometheus",
-        "uid": "vessl-prometheus"
-      },
       "fieldConfig": {
         "defaults": {
           "mappings": [],
@@ -626,6 +390,242 @@
         "type": "prometheus",
         "uid": "vessl-prometheus"
       },
+      "description": "VESSL vLLM 서버가 처리한 입력(prompt) 토큰 누적량입니다.",
+      "fieldConfig": {
+        "defaults": {
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 6,
+        "x": 0,
+        "y": 4
+      },
+      "id": 19,
+      "options": {
+        "colorMode": "background",
+        "graphMode": "none",
+        "justifyMode": "center",
+        "orientation": "horizontal",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "showPercentChange": false,
+        "textMode": "value_and_name",
+        "wideLayout": true
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "vessl-prometheus"
+          },
+          "expr": "sum(vllm:prompt_tokens_total{model_name=~\"$model\"})",
+          "legendFormat": "입력 토큰 누적",
+          "refId": "A"
+        }
+      ],
+      "title": "입력 토큰 누적",
+      "type": "stat"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "vessl-prometheus"
+      },
+      "description": "최근 1분 기준 초당 입력(prompt) 토큰 처리량입니다.",
+      "fieldConfig": {
+        "defaults": {
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 6,
+        "x": 6,
+        "y": 4
+      },
+      "id": 20,
+      "options": {
+        "colorMode": "background",
+        "graphMode": "none",
+        "justifyMode": "center",
+        "orientation": "horizontal",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "showPercentChange": false,
+        "textMode": "value_and_name",
+        "wideLayout": true
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "vessl-prometheus"
+          },
+          "expr": "sum(rate(vllm:prompt_tokens_total{model_name=~\"$model\"}[1m]))",
+          "legendFormat": "입력 토큰/초",
+          "refId": "A"
+        }
+      ],
+      "title": "입력 토큰 처리량",
+      "type": "stat"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "vessl-prometheus"
+      },
+      "description": "최근 3분 동안 처리한 입력(prompt) 토큰 수입니다.",
+      "fieldConfig": {
+        "defaults": {
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 6,
+        "x": 12,
+        "y": 4
+      },
+      "id": 21,
+      "options": {
+        "colorMode": "background",
+        "graphMode": "none",
+        "justifyMode": "center",
+        "orientation": "horizontal",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "showPercentChange": false,
+        "textMode": "value_and_name",
+        "wideLayout": true
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "vessl-prometheus"
+          },
+          "expr": "sum(increase(vllm:prompt_tokens_total{model_name=~\"$model\"}[3m]))",
+          "legendFormat": "최근 3분 입력 토큰",
+          "refId": "A"
+        }
+      ],
+      "title": "최근 3분 입력 토큰",
+      "type": "stat"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "vessl-prometheus"
+      },
+      "description": "최근 3분 기준 완료 요청 1건당 평균 입력(prompt) 토큰 수입니다.",
+      "fieldConfig": {
+        "defaults": {
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 6,
+        "x": 18,
+        "y": 4
+      },
+      "id": 22,
+      "options": {
+        "colorMode": "background",
+        "graphMode": "none",
+        "justifyMode": "center",
+        "orientation": "horizontal",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "showPercentChange": false,
+        "textMode": "value_and_name",
+        "wideLayout": true
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "vessl-prometheus"
+          },
+          "expr": "sum(increase(vllm:prompt_tokens_total{model_name=~\"$model\"}[3m])) / clamp_min(sum(increase(vllm:request_success_total{model_name=~\"$model\"}[3m])), 1)",
+          "legendFormat": "요청당 평균 입력 토큰",
+          "refId": "A"
+        }
+      ],
+      "title": "요청당 평균 입력 토큰",
+      "type": "stat"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "vessl-prometheus"
+      },
       "fieldConfig": {
         "defaults": {
           "mappings": [],
@@ -650,7 +650,7 @@
         "h": 4,
         "w": 6,
         "x": 0,
-        "y": 8
+        "y": 12
       },
       "id": 1,
       "options": {
@@ -809,7 +809,7 @@
             "type": "prometheus",
             "uid": "vessl-prometheus"
           },
-          "expr": "sum(rate(vllm:request_success_total{model_name=~\"$model\"}[5m]))",
+          "expr": "sum(rate(vllm:request_success_total{model_name=~\"$model\"}[3m]))",
           "legendFormat": "success rps",
           "refId": "A"
         }
@@ -890,6 +890,242 @@
         "type": "prometheus",
         "uid": "vessl-prometheus"
       },
+      "description": "최근 3분 기준 vLLM 전체 요청의 평균 응답시간입니다. 토큰 절감 전후 비교용 대표 지표입니다.",
+      "fieldConfig": {
+        "defaults": {
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "unit": "ms"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 6,
+        "x": 0,
+        "y": 8
+      },
+      "id": 23,
+      "options": {
+        "colorMode": "background",
+        "graphMode": "none",
+        "justifyMode": "center",
+        "orientation": "horizontal",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "showPercentChange": false,
+        "textMode": "value_and_name",
+        "wideLayout": true
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "vessl-prometheus"
+          },
+          "expr": "(sum(rate(vllm:e2e_request_latency_seconds_sum{model_name=~\"$model\"}[3m])) / clamp_min(sum(rate(vllm:e2e_request_latency_seconds_count{model_name=~\"$model\"}[3m])), 0.000001)) * 1000",
+          "legendFormat": "3분 평균 응답시간",
+          "refId": "A"
+        }
+      ],
+      "title": "최근 3분 평균 응답시간",
+      "type": "stat"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "vessl-prometheus"
+      },
+      "description": "최근 3분 기준 vLLM 전체 요청 지연시간의 p95 값입니다. 평균 응답시간과 함께 꼬리 지연 참고용으로 사용합니다.",
+      "fieldConfig": {
+        "defaults": {
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "unit": "ms"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 6,
+        "x": 6,
+        "y": 12
+      },
+      "id": 24,
+      "options": {
+        "colorMode": "background",
+        "graphMode": "none",
+        "justifyMode": "center",
+        "orientation": "horizontal",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "showPercentChange": false,
+        "textMode": "value_and_name",
+        "wideLayout": true
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "vessl-prometheus"
+          },
+          "expr": "histogram_quantile(0.95, sum by (le) (rate(vllm:e2e_request_latency_seconds_bucket{model_name=~\"$model\"}[3m]))) * 1000",
+          "legendFormat": "p95 응답시간",
+          "refId": "A"
+        }
+      ],
+      "title": "최근 vLLM p95 응답시간",
+      "type": "stat"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "vessl-prometheus"
+      },
+      "description": "최근 3분 기준 첫 토큰 생성까지 걸린 시간(TTFT)의 p95 값입니다.",
+      "fieldConfig": {
+        "defaults": {
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "unit": "ms"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 6,
+        "x": 12,
+        "y": 12
+      },
+      "id": 25,
+      "options": {
+        "colorMode": "background",
+        "graphMode": "none",
+        "justifyMode": "center",
+        "orientation": "horizontal",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "showPercentChange": false,
+        "textMode": "value_and_name",
+        "wideLayout": true
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "vessl-prometheus"
+          },
+          "expr": "histogram_quantile(0.95, sum by (le) (rate(vllm:time_to_first_token_seconds_bucket{model_name=~\"$model\"}[3m]))) * 1000",
+          "legendFormat": "TTFT p95",
+          "refId": "A"
+        }
+      ],
+      "title": "최근 첫 토큰 시간 p95",
+      "type": "stat"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "vessl-prometheus"
+      },
+      "description": "최근 3분 기준 vLLM 요청 큐 대기시간의 p95 값입니다. GPU/서빙 병목 확인에 사용합니다.",
+      "fieldConfig": {
+        "defaults": {
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "unit": "ms"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 6,
+        "x": 18,
+        "y": 12
+      },
+      "id": 26,
+      "options": {
+        "colorMode": "background",
+        "graphMode": "none",
+        "justifyMode": "center",
+        "orientation": "horizontal",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "showPercentChange": false,
+        "textMode": "value_and_name",
+        "wideLayout": true
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "vessl-prometheus"
+          },
+          "expr": "histogram_quantile(0.95, sum by (le) (rate(vllm:request_queue_time_seconds_bucket{model_name=~\"$model\"}[3m]))) * 1000",
+          "legendFormat": "큐 대기 p95",
+          "refId": "A"
+        }
+      ],
+      "title": "최근 큐 대기시간 p95",
+      "type": "stat"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "vessl-prometheus"
+      },
       "fieldConfig": {
         "defaults": {
           "custom": {
@@ -906,7 +1142,7 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 12
+        "y": 16
       },
       "id": 5,
       "options": {
@@ -965,7 +1201,7 @@
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 12
+        "y": 16
       },
       "id": 6,
       "options": {
@@ -1024,7 +1260,7 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 20
+        "y": 24
       },
       "id": 7,
       "options": {
@@ -1044,7 +1280,7 @@
             "type": "prometheus",
             "uid": "vessl-prometheus"
           },
-          "expr": "histogram_quantile(0.50, sum by (le) (rate(vllm:e2e_request_latency_seconds_bucket{model_name=~\"$model\"}[5m])))",
+          "expr": "histogram_quantile(0.50, sum by (le) (rate(vllm:e2e_request_latency_seconds_bucket{model_name=~\"$model\"}[3m])))",
           "legendFormat": "p50",
           "refId": "A"
         },
@@ -1053,7 +1289,7 @@
             "type": "prometheus",
             "uid": "vessl-prometheus"
           },
-          "expr": "histogram_quantile(0.95, sum by (le) (rate(vllm:e2e_request_latency_seconds_bucket{model_name=~\"$model\"}[5m])))",
+          "expr": "histogram_quantile(0.95, sum by (le) (rate(vllm:e2e_request_latency_seconds_bucket{model_name=~\"$model\"}[3m])))",
           "legendFormat": "p95",
           "refId": "B"
         }
@@ -1083,7 +1319,7 @@
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 20
+        "y": 24
       },
       "id": 8,
       "options": {
@@ -1103,7 +1339,7 @@
             "type": "prometheus",
             "uid": "vessl-prometheus"
           },
-          "expr": "histogram_quantile(0.95, sum by (le) (rate(vllm:time_to_first_token_seconds_bucket{model_name=~\"$model\"}[5m])))",
+          "expr": "histogram_quantile(0.95, sum by (le) (rate(vllm:time_to_first_token_seconds_bucket{model_name=~\"$model\"}[3m])))",
           "legendFormat": "ttft p95",
           "refId": "A"
         },
@@ -1112,7 +1348,7 @@
             "type": "prometheus",
             "uid": "vessl-prometheus"
           },
-          "expr": "histogram_quantile(0.95, sum by (le) (rate(vllm:request_queue_time_seconds_bucket{model_name=~\"$model\"}[5m])))",
+          "expr": "histogram_quantile(0.95, sum by (le) (rate(vllm:request_queue_time_seconds_bucket{model_name=~\"$model\"}[3m])))",
           "legendFormat": "queue p95",
           "refId": "B"
         }
@@ -1142,7 +1378,7 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 28
+        "y": 32
       },
       "id": 9,
       "options": {
@@ -1162,7 +1398,7 @@
             "type": "prometheus",
             "uid": "vessl-prometheus"
           },
-          "expr": "sum(rate(vllm:prefix_cache_hits_total{model_name=~\"$model\"}[5m])) / clamp_min(sum(rate(vllm:prefix_cache_queries_total{model_name=~\"$model\"}[5m])), 1)",
+          "expr": "sum(rate(vllm:prefix_cache_hits_total{model_name=~\"$model\"}[3m])) / clamp_min(sum(rate(vllm:prefix_cache_queries_total{model_name=~\"$model\"}[3m])), 1)",
           "legendFormat": "prefix cache hit ratio",
           "refId": "A"
         },
@@ -1201,7 +1437,7 @@
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 28
+        "y": 32
       },
       "id": 10,
       "options": {
@@ -1260,7 +1496,7 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 36
+        "y": 40
       },
       "id": 11,
       "options": {
@@ -1319,7 +1555,7 @@
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 36
+        "y": 40
       },
       "id": 12,
       "options": {
@@ -1460,6 +1696,6 @@
   "timezone": "browser",
   "title": "VESSL vLLM Qwen3-32B 추론 대시보드",
   "uid": "vessl-vllm-qwen3",
-  "version": 5,
+  "version": 10,
   "weekStart": ""
 }
