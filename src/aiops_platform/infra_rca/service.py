@@ -1022,32 +1022,71 @@ def build_rca_slack_text(
             str(action.get("action") or action)
             for action in rca_report.recommended_actions[:3]
         ]
+        evidence = [
+            str(item.get("source") or item.get("finding") or item)
+            for item in rca_report.evidence[:5]
+        ]
+        confidence = (
+            f"{rca_report.confidence:.2f}"
+            if rca_report.confidence is not None
+            else "unknown"
+        )
         lines = [
             subject,
-            f"report={rca_report.rca_report_id}",
-            f"incident={rca_report.incident_id}",
-            f"status={rca_report.status}",
-            f"summary={rca_report.summary or 'none'}",
-            f"root_cause={rca_report.probable_root_cause or 'unknown'}",
-            f"impact={rca_report.impact or 'unknown'}",
-            "confidence="
-            f"{rca_report.confidence if rca_report.confidence is not None else 'unknown'}",
+            "",
+            ":vertical_traffic_light: 1. RCA 요약",
+            f"- report: {rca_report.rca_report_id}",
+            f"- incident: {rca_report.incident_id}",
+            f"- status: {rca_report.status}",
+            f"- confidence: {confidence}",
+            "",
+            ":mag_right: 2. 핵심 판단",
+            f"- summary: {rca_report.summary or 'none'}",
+            f"- probable_root_cause: {rca_report.probable_root_cause or 'unknown'}",
+            f"- impact: {rca_report.impact or 'unknown'}",
         ]
         if actions:
-            lines.append("actions=" + " | ".join(actions))
+            lines.extend(
+                [
+                    "",
+                    ":hammer_and_wrench: 3. 권장 확인/조치",
+                    *[f"- {action}" for action in actions],
+                ]
+            )
+        if evidence:
+            lines.extend(
+                [
+                    "",
+                    ":package: 4. 수집 근거",
+                    *[f"- {item}" for item in evidence],
+                ]
+            )
+        lines.extend(
+            [
+                "",
+                ":lock: note: destructive remediation was not executed.",
+            ]
+        )
         return "\n".join(lines)
     if incident is not None:
         return "\n".join(
             [
                 subject,
-                f"stage={stage}",
-                f"incident={incident.incident_id}",
-                f"alert={incident.alert_name or 'unknown'}",
-                f"severity={incident.severity}",
-                f"namespace={incident.namespace or 'unknown'}",
-                f"workload={incident.workload or 'unknown'}",
-                f"service={incident.service_name or 'unknown'}",
-                "RCA evidence collection and LLM analysis have started.",
+                "",
+                ":hourglass_flowing_sand: 1. 수집 시작",
+                f"- stage: {stage}",
+                f"- incident: {incident.incident_id}",
+                f"- alert: {incident.alert_name or 'unknown'}",
+                f"- severity: {incident.severity}",
+                "",
+                ":dart: 2. 대상",
+                f"- namespace: {incident.namespace or 'unknown'}",
+                f"- workload: {incident.workload or 'unknown'}",
+                f"- service: {incident.service_name or 'unknown'}",
+                "",
+                ":mag_right: 3. 다음 단계",
+                "- RCA evidence collection and LLM analysis have started.",
+                "- Final RCA report will be sent after the evidence window closes.",
             ]
         )
     return subject

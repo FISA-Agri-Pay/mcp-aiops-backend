@@ -255,8 +255,11 @@ def test_alertmanager_webhook_sends_preliminary_and_final_rca_slack() -> None:
         "#aiops-alerts",
     ]
     assert "RCA analysis started" in slack_sender.sent_messages[0]["text"]
+    assert ":hourglass_flowing_sand: 1. 수집 시작" in slack_sender.sent_messages[0]["text"]
     assert "Final RCA report" in slack_sender.sent_messages[1]["text"]
-    assert "root_cause=" in slack_sender.sent_messages[1]["text"]
+    assert ":vertical_traffic_light: 1. RCA 요약" in slack_sender.sent_messages[1]["text"]
+    assert "probable_root_cause:" in slack_sender.sent_messages[1]["text"]
+    assert ":hammer_and_wrench: 3. 권장 확인/조치" in slack_sender.sent_messages[1]["text"]
     assert [notification.channel for notification in llmops_service.notifications] == [
         "SLACK",
         "DASHBOARD",
