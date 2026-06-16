@@ -273,48 +273,138 @@ def build_predictive_scaling_slack_text(
     risk_label = max(
         (item.risk_level for item in notifiable_items),
         key=lambda risk: RISK_ORDER[risk],
-    ).upper()
+    )
     lines = [
-        f"[AIOps] Predictive scaling risk: {risk_label}",
-        status_result.summary,
-        (
-            f"namespace={status_result.namespace}, "
-            f"horizon_minutes={status_result.horizon_minutes}, "
-            f"min_risk={min_risk}"
-        ),
+        f"[AIOps] 예측형 스케일링 점검: {format_risk_label(risk_label)}",
         "",
+        ":vertical_traffic_light: 1. 요약",
+        f"- namespace: {status_result.namespace}",
+        f"- 예측 범위: 향후 {status_result.horizon_minutes}분",
+        f"- 알림 기준: {format_risk_label(min_risk)} 이상",
+        f"- 점검 결과: {status_result.summary}",
+        "",
+        ":mag_right: 2. 예측/스케일링 상세",
     ]
     lines.extend(format_slack_item(item) for item in notifiable_items)
+    lines.extend(
+        [
+            "",
+            ":lock: note: 예측값 확인만 수행했으며, 자동 scale 변경은 실행하지 않았습니다.",
+        ]
+    )
     return "\n".join(lines)
 
 
 def format_slack_item(item: PredictiveScalingStatusItem) -> str:
-    parts = [
-        f"- {item.service}",
-        f"risk={item.risk_level}",
-        f"prediction_match={item.prediction_match_status}",
-        f"predicted_rps={format_optional(item.predicted_rps)}",
-        f"actual_rps={format_optional(item.actual_rps)}",
-        f"rps_deviation_percent={format_optional(item.rps_deviation_percent)}",
-        f"scale_status={item.scaling_track_status}",
-        f"gap={format_optional(item.scale_gap)}",
-        f"current={format_optional(item.current_replicas)}",
-        f"desired={format_optional(item.desired_replicas)}",
-        f"adjusted={format_optional(item.onprem_adjusted_pods)}",
-        f"max={format_optional(item.max_replicas)}",
-        f"freshness={item.prediction_freshness}",
-        f"ScalingActive={format_optional(item.scaling_active)}",
-        f"ScalingLimited={format_optional(item.scaling_limited)}",
+    lines = [
+        "",
+        f"*{item.service}*",
+        f"- 위험도: {format_risk_label(item.risk_level)}",
+        f"- 예측 일치 상태: {format_prediction_match(item.prediction_match_status)}",
+        (
+            "- 트래픽: "
+            f"예측 RPS {format_number(item.predicted_rps)}, "
+            f"현재 RPS {format_number(item.actual_rps)}, "
+            f"편차 {format_percent(item.rps_deviation_percent)}"
+        ),
+        (
+            "- Pod 수: "
+            f"현재 {format_number(item.current_replicas)}, "
+            f"목표 {format_number(item.desired_replicas)}, "
+            f"KEDA 적용값 {format_number(item.onprem_adjusted_pods)}, "
+            f"차이 {format_signed_number(item.scale_gap)}, "
+            f"최대 {format_number(item.max_replicas)}"
+        ),
+        f"- 스케일링 추적 상태: {format_scaling_status(item.scaling_track_status)}",
+        f"- 예측 freshness: {format_freshness(item.prediction_freshness)}",
+        (
+            "- KEDA/HPA 상태: "
+            f"ScalingActive={format_bool(item.scaling_active)}, "
+            f"ScalingLimited={format_bool(item.scaling_limited)}"
+        ),
     ]
     if item.target_time is not None:
-        parts.append(f"target_time={item.target_time}")
+        lines.append(f"- 예측 대상 시각: {item.target_time}")
     if item.model_version is not None:
-        parts.append(f"model_version={item.model_version}")
-    return ", ".join(parts)
+        lines.append(f"- 모델 버전: {item.model_version}")
+    lines.append(f"- 판단: {item.summary}")
+    return "\n".join(lines)
 
 
 def format_optional(value: object) -> str:
     return "unknown" if value is None else str(value)
+
+
+def format_risk_label(value: str) -> str:
+    labels = {
+        "low": "낮음",
+        "medium": "중간",
+        "high": "높음",
+    }
+    return labels.get(value, value)
+
+
+def format_prediction_match(value: object) -> str:
+    labels = {
+        "matched": "예측과 실제가 대체로 일치",
+        "under_predicted": "실제 트래픽이 예측보다 큼",
+        "over_predicted": "예측이 실제보다 큼",
+        "missing_prediction": "예측값 없음",
+        "unknown": "확인 불가",
+    }
+    return labels.get(str(value), str(value))
+
+
+def format_scaling_status(value: object) -> str:
+    labels = {
+        "tracking": "예측값을 정상 추적 중",
+        "lagging": "예측 대비 Pod 반영 지연",
+        "limited": "maxReplica 또는 제한에 걸림",
+        "unknown": "확인 불가",
+    }
+    return labels.get(str(value), str(value))
+
+
+def format_freshness(value: object) -> str:
+    labels = {
+        "fresh": "최신",
+        "stale": "오래됨",
+        "missing": "없음",
+        "unknown": "확인 불가",
+    }
+    return labels.get(str(value), str(value))
+
+
+def format_bool(value: object) -> str:
+    if value is True:
+        return "정상"
+    if value is False:
+        return "아니오"
+    return "확인 불가"
+
+
+def format_number(value: object) -> str:
+    if value is None:
+        return "확인 불가"
+    if isinstance(value, float):
+        return f"{value:.2f}".rstrip("0").rstrip(".")
+    return str(value)
+
+
+def format_signed_number(value: object) -> str:
+    if value is None:
+        return "확인 불가"
+    if isinstance(value, (float, int)):
+        return f"{value:+.2f}".rstrip("0").rstrip(".")
+    return str(value)
+
+
+def format_percent(value: object) -> str:
+    if value is None:
+        return "확인 불가"
+    if isinstance(value, (float, int)):
+        return f"{value:.1f}%"
+    return str(value)
 
 
 def build_notification_key(item: PredictiveScalingStatusItem) -> str:

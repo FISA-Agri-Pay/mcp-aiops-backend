@@ -146,9 +146,12 @@ def test_predictive_scaling_slack_agent_sends_high_risk_notification() -> None:
     assert result.notification_sent is True
     assert result.notifiable_services == ["service-payment"]
     assert slack_sender.sent_messages[0]["channel"] == "#aiops-alerts"
-    assert "Predictive scaling risk: HIGH" in slack_sender.sent_messages[0]["text"]
+    assert "예측형 스케일링 점검: 높음" in slack_sender.sent_messages[0]["text"]
+    assert ":vertical_traffic_light: 1. 요약" in slack_sender.sent_messages[0]["text"]
+    assert ":mag_right: 2. 예측/스케일링 상세" in slack_sender.sent_messages[0]["text"]
     assert "service-payment" in slack_sender.sent_messages[0]["text"]
-    assert "prediction_match=under_predicted" in slack_sender.sent_messages[0]["text"]
+    assert "실제 트래픽이 예측보다 큼" in slack_sender.sent_messages[0]["text"]
+    assert "KEDA 적용값" in slack_sender.sent_messages[0]["text"]
     assert "hooks.slack.com" not in result.model_dump_json()
 
 
@@ -217,7 +220,7 @@ def test_predictive_scaling_slack_agent_dry_run_builds_message_without_sending()
     assert result.status == "DRY_RUN"
     assert result.notification_sent is False
     assert result.message is not None
-    assert "scale" in result.message.lower()
+    assert "예측형 스케일링 점검" in result.message
     assert slack_sender.sent_messages == []
 
 
