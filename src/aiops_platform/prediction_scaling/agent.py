@@ -265,14 +265,16 @@ def build_predictive_scaling_slack_text(
         (item.risk_level for item in notifiable_items),
         key=lambda risk: RISK_ORDER[risk],
     )
+    status_label = format_overall_status_label(notifiable_items, risk_label)
+    summary_text = format_overall_summary(status_result.summary, notifiable_items)
     lines = [
-        f"[AIOps] 예측형 스케일링 점검: {format_risk_label(risk_label)}",
+        f"[AIOps] 예측형 스케일링 점검: {status_label}",
         "",
         ":vertical_traffic_light: 1. 요약",
         f"- namespace: {status_result.namespace}",
         f"- 예측 범위: 향후 {status_result.horizon_minutes}분",
         f"- 알림 기준: {format_risk_label(min_risk)} 이상",
-        f"- 점검 결과: {status_result.summary}",
+        f"- 점검 결과: {summary_text}",
         "",
         ":mag_right: 2. 예측/스케일링 상세",
     ]
@@ -290,7 +292,7 @@ def format_slack_item(item: PredictiveScalingStatusItem) -> str:
     lines = [
         "",
         f"*{item.service}*",
-        f"- 위험도: {format_risk_label(item.risk_level)}",
+        f"- 점검 등급: {format_risk_label(item.risk_level)}",
         f"- 예측 일치 상태: {format_prediction_match(item.prediction_match_status)}",
         (
             "- 트래픽: "
@@ -320,6 +322,43 @@ def format_slack_item(item: PredictiveScalingStatusItem) -> str:
         lines.append(f"- 모델 버전: {item.model_version}")
     lines.append(f"- 판단: {item.summary}")
     return "\n".join(lines)
+
+
+def format_overall_status_label(
+    items: list[PredictiveScalingStatusItem],
+    risk_label: str,
+) -> str:
+    if items and all(is_prediction_safety_margin(item) for item in items):
+        return "예측 여유"
+    return format_risk_label(risk_label)
+
+
+def format_overall_summary(
+    summary: str,
+    items: list[PredictiveScalingStatusItem],
+) -> str:
+    safety_margin = sum(is_prediction_safety_margin(item) for item in items)
+    if items and safety_margin == len(items):
+        return (
+            f"{len(items)}개 서비스가 예측 기반 사전 여유 범위 안에서 "
+            "동작 중입니다."
+        )
+    if safety_margin:
+        return (
+            f"{summary} 이 중 {safety_margin}개 서비스는 예측 기반 사전 여유 "
+            "범위 안에서 동작 중입니다."
+        )
+    return summary
+
+
+def is_prediction_safety_margin(item: PredictiveScalingStatusItem) -> bool:
+    return (
+        item.prediction_match_status == "over_predicted"
+        and item.scaling_track_status == "tracking"
+        and (item.scale_gap is None or item.scale_gap <= 0)
+        and item.scaling_active is not False
+        and item.scaling_limited is not True
+    )
 
 
 def format_optional(value: object) -> str:

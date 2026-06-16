@@ -218,6 +218,9 @@ def test_predictive_scaling_slack_text_treats_over_prediction_as_safety_margin()
         min_risk="medium",
     )
 
+    assert "예측형 스케일링 점검: 예측 여유" in text
+    assert "예측 기반 사전 여유 범위 안에서 동작 중입니다" in text
+    assert "중간 예측 스케일링 위험이 감지되었습니다" not in text
     assert "예측 여유 범위 - 실제 트래픽이 예측보다 낮음" in text
     assert "현재는 예측 기반 사전 여유 범위 안에서 동작 중입니다." in text
     assert "과다 스케일링 가능성" not in text
