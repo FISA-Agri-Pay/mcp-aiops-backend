@@ -6,6 +6,7 @@ from typing import Any
 import pytest
 from fastapi.testclient import TestClient
 
+from aiops_platform.core.config import Settings
 from aiops_platform.infra_rca.job_runner import build_rca_job_manifest
 from aiops_platform.infra_rca.repository import ScheduledRcaJobRecord
 from aiops_platform.infra_rca.schemas import (
@@ -221,6 +222,45 @@ def test_alertmanager_webhook_sends_preliminary_and_final_rca_email() -> None:
     assert [message["recipient"] for message in email_sender.sent_messages] == [
         "ops@example.com",
         "ops@example.com",
+    ]
+
+
+def test_alertmanager_webhook_sends_preliminary_and_final_rca_slack() -> None:
+    repository = FakeInfraRcaRepository()
+    llmops_service = FakeLlmOpsService()
+    slack_sender = FakeSlackSender()
+    service = InfraRcaService(
+        repository=repository,
+        orchestration_repository=FakeOrchestrationRepository(repository),
+        llmops_service=llmops_service,
+        infraops_service=FakeInfraOpsService(),
+        prediction_scaling_service=FakePredictionScalingService(),
+        email_recipients=[],
+        slack_sender=slack_sender,
+        app_settings=Settings(
+            RCA_SLACK_WEBHOOK_URL="https://hooks.slack.com/services/test",
+            RCA_SLACK_CHANNEL="#aiops-alerts",
+        ),
+    )
+
+    webhook_result = service.handle_alertmanager_webhook(
+        AlertmanagerWebhookRequest.model_validate(ALERT_PAYLOAD)
+    )
+    result = service.run_due_rca_jobs().items[0]
+
+    assert webhook_result.preliminary_notification_ids == ["notification-1"]
+    assert result.final_notification_ids == ["notification-3"]
+    assert [message["channel"] for message in slack_sender.sent_messages] == [
+        "#aiops-alerts",
+        "#aiops-alerts",
+    ]
+    assert "RCA analysis started" in slack_sender.sent_messages[0]["text"]
+    assert "Final RCA report" in slack_sender.sent_messages[1]["text"]
+    assert "root_cause=" in slack_sender.sent_messages[1]["text"]
+    assert [notification.channel for notification in llmops_service.notifications] == [
+        "SLACK",
+        "DASHBOARD",
+        "SLACK",
     ]
 
 
@@ -804,6 +844,26 @@ class FakeEmailSender:
                 "recipient": recipient,
                 "subject": subject,
                 "html_body": html_body,
+            }
+        )
+
+
+class FakeSlackSender:
+    def __init__(self) -> None:
+        self.sent_messages: list[dict[str, str | None]] = []
+
+    def send_text(
+        self,
+        *,
+        webhook_url: str,
+        text: str,
+        channel: str | None = None,
+    ) -> None:
+        self.sent_messages.append(
+            {
+                "webhook_url": webhook_url,
+                "text": text,
+                "channel": channel,
             }
         )
 

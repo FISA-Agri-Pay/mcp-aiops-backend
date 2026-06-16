@@ -6,7 +6,11 @@ import logging
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
-from aiops_platform.core.config import settings
+from aiops_platform.alertmanager_agent.slack_delivery import (
+    SlackSender,
+    SlackWebhookSender,
+)
+from aiops_platform.core.config import Settings, settings
 from aiops_platform.infra_rca.job_runner import RcaJobRunner, create_rca_job_runner
 from aiops_platform.infra_rca.repository import (
     InfraRcaRepository,
@@ -61,7 +65,9 @@ class InfraRcaService:
         prediction_scaling_service: PredictionScalingService | None = None,
         email_sender: EmailSender | None = None,
         email_recipients: list[str] | None = None,
+        slack_sender: SlackSender | None = None,
         rca_job_runner: RcaJobRunner | None = None,
+        app_settings: Settings = settings,
     ) -> None:
         self._repository = repository or SqlInfraRcaRepository()
         self._orchestration_repository = (
@@ -74,7 +80,9 @@ class InfraRcaService:
         )
         self._email_sender = email_sender or SmtpEmailSender()
         self._email_recipients = email_recipients
+        self._slack_sender = slack_sender
         self._rca_job_runner = rca_job_runner or create_rca_job_runner()
+        self._settings = app_settings
 
     def handle_alertmanager_webhook(
         self,
@@ -416,7 +424,99 @@ class InfraRcaService:
                     last_error=f"{exc.__class__.__name__}: {exc}",
                 )
                 delivery_statuses.append("FAILED")
+        slack_notification_id, slack_status = self._send_rca_slack_notification(
+            stage=stage,
+            incident=incident,
+            rca_report=rca_report,
+            subject=subject,
+        )
+        if slack_notification_id is not None:
+            notification_ids.append(slack_notification_id)
+        if slack_status is not None:
+            delivery_statuses.append(slack_status)
         return notification_ids, delivery_statuses
+
+    def _send_rca_slack_notification(
+        self,
+        *,
+        stage: str,
+        incident: IncidentResult | None,
+        rca_report: RcaReportResult | None,
+        subject: str,
+    ) -> tuple[str | None, str | None]:
+        webhook_url = self._settings.rca_slack_webhook_url.strip()
+        if not webhook_url:
+            return None, None
+        if rca_report is None and incident is None:
+            logger.warning("RCA Slack notification skipped because target entity is missing.")
+            return None, "FAILED"
+        related_table = "rca_reports" if rca_report is not None else "incidents"
+        related_public_id = (
+            rca_report.rca_report_id if rca_report is not None else incident.incident_id
+        )
+        recipient = self._resolve_slack_recipient()
+        text = build_rca_slack_text(
+            stage=stage,
+            subject=subject,
+            incident=incident,
+            rca_report=rca_report,
+        )
+        idempotency_key = f"rca:{related_public_id}:{stage}:slack:{recipient}"
+        try:
+            notification = self._llmops_service.create_notification(
+                channel="slack",
+                title=subject,
+                content=text,
+                payload={
+                    "notification_stage": stage,
+                    "incident_id": incident.incident_id if incident is not None else None,
+                    "rca_report_id": (
+                        rca_report.rca_report_id if rca_report is not None else None
+                    ),
+                    "subject": subject,
+                    "text": text,
+                },
+                recipient=recipient,
+                related_table=related_table,
+                related_public_id=related_public_id,
+                idempotency_key=idempotency_key,
+            )
+        except Exception as exc:
+            logger.warning(
+                "RCA %s Slack notification creation failed for %s: %s",
+                stage,
+                recipient,
+                exc,
+                exc_info=True,
+            )
+            return None, "FAILED"
+        if notification.notification_status == "SENT":
+            return notification.notification_id, "SENT"
+        try:
+            self._get_slack_sender().send_text(
+                webhook_url=webhook_url,
+                text=text,
+                channel=self._settings.rca_slack_channel,
+            )
+            self._safe_update_notification_status(
+                notification.notification_id,
+                status="SENT",
+                last_error=None,
+            )
+            return notification.notification_id, "SENT"
+        except Exception as exc:
+            logger.warning(
+                "RCA %s Slack delivery failed: %s",
+                stage,
+                exc.__class__.__name__,
+                exc_info=True,
+            )
+            self._safe_update_notification_status(
+                notification.notification_id,
+                status="FAILED",
+                last_error=f"{exc.__class__.__name__}: {mask_secret(str(exc), webhook_url)}",
+            )
+            return notification.notification_id, "FAILED"
 
     def _safe_update_notification_status(
         self,
@@ -438,10 +538,18 @@ class InfraRcaService:
         if self._email_recipients is not None:
             return self._email_recipients
         configured = (
-            settings.rca_email_recipients.strip()
-            or settings.ops_report_email_recipients.strip()
+            self._settings.rca_email_recipients.strip()
+            or self._settings.ops_report_email_recipients.strip()
         )
         return parse_recipients(configured)
+
+    def _resolve_slack_recipient(self) -> str:
+        return self._settings.rca_slack_channel.strip() or "slack-webhook"
+
+    def _get_slack_sender(self) -> SlackSender:
+        if self._slack_sender is None:
+            self._slack_sender = SlackWebhookSender(self._settings)
+        return self._slack_sender
 
     def _create_rca_snapshot(
         self,
@@ -902,6 +1010,49 @@ def build_final_email_html(rca_report: RcaReportResult) -> str:
     )
 
 
+def build_rca_slack_text(
+    *,
+    stage: str,
+    subject: str,
+    incident: IncidentResult | None,
+    rca_report: RcaReportResult | None,
+) -> str:
+    if rca_report is not None:
+        actions = [
+            str(action.get("action") or action)
+            for action in rca_report.recommended_actions[:3]
+        ]
+        lines = [
+            subject,
+            f"report={rca_report.rca_report_id}",
+            f"incident={rca_report.incident_id}",
+            f"status={rca_report.status}",
+            f"summary={rca_report.summary or 'none'}",
+            f"root_cause={rca_report.probable_root_cause or 'unknown'}",
+            f"impact={rca_report.impact or 'unknown'}",
+            "confidence="
+            f"{rca_report.confidence if rca_report.confidence is not None else 'unknown'}",
+        ]
+        if actions:
+            lines.append("actions=" + " | ".join(actions))
+        return "\n".join(lines)
+    if incident is not None:
+        return "\n".join(
+            [
+                subject,
+                f"stage={stage}",
+                f"incident={incident.incident_id}",
+                f"alert={incident.alert_name or 'unknown'}",
+                f"severity={incident.severity}",
+                f"namespace={incident.namespace or 'unknown'}",
+                f"workload={incident.workload or 'unknown'}",
+                f"service={incident.service_name or 'unknown'}",
+                "RCA evidence collection and LLM analysis have started.",
+            ]
+        )
+    return subject
+
+
 def render_table(rows: list[tuple[str, str]]) -> str:
     rendered_rows = "".join(
         "<tr>"
@@ -939,6 +1090,10 @@ def extract_labeled_section(answer: str, label: str, *, fallback: str) -> str:
             value_end = min(value_end, index)
     extracted = answer[value_start:value_end].strip()
     return extracted or fallback
+
+
+def mask_secret(value: str, secret: str) -> str:
+    return value.replace(secret, "***") if secret else value
 
 
 def first_sentence(value: str) -> str:
