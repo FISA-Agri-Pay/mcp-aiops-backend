@@ -16,6 +16,7 @@ class Settings(BaseSettings):
     app_name: str = Field(default="aiops-platform", alias="APP_NAME")
     app_version: str = Field(default="0.1.0", alias="APP_VERSION")
     app_timezone: str = Field(default="Asia/Seoul", alias="APP_TIMEZONE")
+    cors_allow_origins: str = Field(default="", alias="CORS_ALLOW_ORIGINS")
 
     database_url: str = Field(
         default="postgresql+psycopg://kkpp:kkpp@localhost:5432/kkpp",

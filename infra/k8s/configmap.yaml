@@ -11,6 +11,7 @@ data:
   APP_NAME: "aiops-platform"
   APP_VERSION: "0.1.0"
   APP_TIMEZONE: "Asia/Seoul"
+  CORS_ALLOW_ORIGINS: "https://kongkongpatpat.shop"
 
   FARMER_BNPL_REQUIRED_DOCUMENTS: "identity_verification,farmer_registration,farmland_document,crop_plan,insurance_certificate"
   FARM_ADVISORY_DEFAULT_BNPL_BUDGET: "3000000"

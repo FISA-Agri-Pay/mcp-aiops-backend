@@ -1,6 +1,7 @@
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
 
 from aiops_platform.admin_riskops.service import AdminRiskOpsService
 from aiops_platform.alertmanager_agent.service import AlertmanagerSreAgentService
@@ -12,8 +13,8 @@ from aiops_platform.api.farmer_bnpl import router as farmer_bnpl_router
 from aiops_platform.api.health import router as health_router
 from aiops_platform.api.jobs import router as jobs_router
 from aiops_platform.api.llmops import router as llmops_router
-from aiops_platform.api.metrics import router as metrics_router
 from aiops_platform.api.mcp import router as mcp_router
+from aiops_platform.api.metrics import router as metrics_router
 from aiops_platform.api.prediction_scaling import router as prediction_scaling_router
 from aiops_platform.api.rca import router as rca_router
 from aiops_platform.api.reports import router as reports_router
@@ -33,6 +34,10 @@ from aiops_platform.prediction_scaling.agent import PredictiveScalingSlackAgentS
 from aiops_platform.prediction_scaling.watcher import build_predictive_scaling_slack_watcher
 
 EXTERNAL_API_PREFIX = "/api/v1"
+
+
+def parse_cors_allow_origins(value: str) -> list[str]:
+    return [origin.strip() for origin in value.split(",") if origin.strip()]
 
 
 def create_app() -> FastAPI:
@@ -57,6 +62,15 @@ def create_app() -> FastAPI:
         redoc_url="/redoc",
         lifespan=lifespan,
     )
+    cors_allow_origins = parse_cors_allow_origins(settings.cors_allow_origins)
+    if cors_allow_origins:
+        app.add_middleware(
+            CORSMiddleware,
+            allow_origins=cors_allow_origins,
+            allow_credentials=True,
+            allow_methods=["*"],
+            allow_headers=["*"],
+        )
     llmops_service = LlmOpsService()
     app.state.llmops_service = llmops_service
     app.state.orchestration_service = OrchestrationService(
