@@ -31,9 +31,9 @@ class FakeStatusReader:
             horizon_minutes=kwargs.get("horizon_minutes") or 180,
             generated_at="2026-06-15T00:00:00+00:00",
             items=[item],
-            summary="1 service(s) show high predictive scaling risk."
+            summary="1개 서비스에서 높은 예측 스케일링 위험이 감지되었습니다."
             if item.risk_level == "high"
-            else "All evaluated services show low predictive scaling risk.",
+            else "평가된 모든 서비스의 예측 스케일링 위험도는 낮습니다.",
         )
 
 
@@ -69,7 +69,7 @@ class FakeEndpointAgent:
             horizon_minutes=kwargs.get("horizon_minutes") or 180,
             generated_at="2026-06-15T00:00:00+00:00",
             items=[build_status_item()],
-            summary="1 service(s) show high predictive scaling risk.",
+            summary="1개 서비스에서 높은 예측 스케일링 위험이 감지되었습니다.",
         )
         return PredictiveScalingSlackAgentResult(
             status="DRY_RUN",
@@ -121,7 +121,7 @@ def build_status_item(
         prediction_match_status="under_predicted" if risk_level == "high" else "matched",
         scaling_track_status="lagging" if risk_level == "high" else "tracking",
         risk_level=risk_level,
-        summary="service-payment: predictive scale gap is high.",
+        summary="service-payment: 예측 스케일 차이가 큽니다.",
     )
 
 

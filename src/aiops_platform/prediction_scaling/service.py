@@ -1072,69 +1072,69 @@ def build_predictive_item_summary(
     if risk_level == "high":
         if prediction_match_status == "under_predicted":
             return (
-                f"{service}: actual RPS is above prediction "
+                f"{service}: 실제 RPS가 예측값보다 높습니다 "
                 f"({format_number(actual_rps)} vs {format_number(predicted_rps)}, "
-                f"deviation={format_number(rps_deviation_percent)}%); "
-                "pre-scale investigation is recommended."
+                f"편차={format_number(rps_deviation_percent)}%). "
+                "사전 스케일링 상태를 우선 확인해야 합니다."
             )
         if freshness == "missing":
             return (
-                f"{service}: prediction evidence is missing; "
-                "verify GRU exporter and DB ingestion."
+                f"{service}: 예측 근거 데이터가 없습니다. "
+                "GRU exporter와 DB 적재 상태를 확인하세요."
             )
         if scaling_limited is True:
             return (
-                f"{service}: HPA is scaling-limited; "
-                "max replica capacity may be blocking demand."
+                f"{service}: HPA가 스케일링 제한 상태입니다. "
+                "max replica 설정이 예측 수요 반영을 막고 있을 수 있습니다."
             )
         if scaling_active is False:
-            return f"{service}: HPA scaling is inactive; KEDA/HPA signal is not being applied."
+            return f"{service}: HPA 스케일링이 비활성 상태라 KEDA/HPA 신호가 적용되지 않고 있습니다."
         if max_replicas is not None and onprem_adjusted_pods is not None:
             if onprem_adjusted_pods > max_replicas:
-                return f"{service}: predicted demand exceeds max replicas ({max_replicas})."
-        return f"{service}: predictive scale gap is high; pre-scale investigation is recommended."
+                return f"{service}: 예측 수요가 max replicas({max_replicas})를 초과합니다."
+        return f"{service}: 예측 스케일 차이가 큽니다. 사전 스케일링 상태를 확인하세요."
     if risk_level == "medium":
         if prediction_match_status == "under_predicted":
             return (
-                f"{service}: actual RPS is trending above prediction "
-                f"(deviation={format_number(rps_deviation_percent)}%)."
+                f"{service}: 실제 RPS가 예측보다 높아지는 흐름입니다 "
+                f"(편차={format_number(rps_deviation_percent)}%)."
             )
         if prediction_match_status == "over_predicted":
             return (
-                f"{service}: actual RPS is below prediction "
-                f"(deviation={format_number(rps_deviation_percent)}%); "
-                "watch for overprovisioning."
+                f"{service}: 실제 RPS가 예측보다 낮습니다 "
+                f"(편차={format_number(rps_deviation_percent)}%). "
+                "과다 스케일링 가능성을 확인하세요."
             )
         if freshness != "fresh":
             return (
-                f"{service}: prediction is {freshness}; "
-                "refresh model output before relying on it."
+                f"{service}: 예측값 freshness가 {freshness} 상태입니다. "
+                "예측 결과를 신뢰하기 전에 모델 출력 갱신 여부를 확인하세요."
             )
-        return f"{service}: predictive demand is slightly ahead of current replicas."
+        return f"{service}: 예측 수요가 현재 replica보다 약간 앞서 있습니다."
     if scale_gap is not None:
         if scaling_track_status == "overprovisioned":
             return (
-                f"{service}: current replicas are above adjusted predictive demand "
-                f"(current={current_replicas}, adjusted={onprem_adjusted_pods})."
+                f"{service}: 현재 replica가 조정된 예측 수요보다 많습니다 "
+                f"(현재={current_replicas}, 조정값={onprem_adjusted_pods})."
             )
         return (
-            f"{service}: predictive scaling is tracking demand "
-            f"(scale_status={scaling_track_status}, current={current_replicas}, "
-            f"adjusted={onprem_adjusted_pods}, gap={scale_gap})."
+            f"{service}: 예측 기반 스케일링이 수요를 추적 중입니다 "
+            f"(상태={scaling_track_status}, 현재={current_replicas}, "
+            f"조정값={onprem_adjusted_pods}, 차이={scale_gap})."
         )
-    return f"{service}: predictive scaling evidence is available with low risk."
+    return f"{service}: 예측 스케일링 근거가 있으며 위험도는 낮습니다."
 
 
 def build_predictive_status_summary(items: list[PredictiveScalingStatusItem]) -> str:
     if not items:
-        return "No predictive scaling services were evaluated."
+        return "평가된 예측 스케일링 서비스가 없습니다."
     high = sum(item.risk_level == "high" for item in items)
     medium = sum(item.risk_level == "medium" for item in items)
     if high:
-        return f"{high} service(s) show high predictive scaling risk."
+        return f"{high}개 서비스에서 높은 예측 스케일링 위험이 감지되었습니다."
     if medium:
-        return f"{medium} service(s) show medium predictive scaling risk."
-    return "All evaluated services show low predictive scaling risk."
+        return f"{medium}개 서비스에서 중간 예측 스케일링 위험이 감지되었습니다."
+    return "평가된 모든 서비스의 예측 스케일링 위험도는 낮습니다."
 
 
 def format_number(value: float | int | None) -> str:
