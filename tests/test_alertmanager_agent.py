@@ -809,7 +809,7 @@ def test_analysis_notification_prepends_boundary_guardrail_verdict() -> None:
     text = build_analysis_notification_text(result)
 
     assert "자동 판정" in text
-    assert "synthetic current-state inspection" in text
+    assert "synthetic 검증 알림" in text
     assert "dns, onprem_metallb, onprem_ingress, k8s_service" in text
     assert "healthy 경계는 원인 후보에서 제외" in text
     assert "2. 자동 판정" in text

@@ -96,14 +96,14 @@ APPLICATION_SIGNAL_TOOLS = {
     "aws": {"get_sqs_queue_attributes", "get_sqs_dlq_attributes"},
 }
 APPLICATION_CANDIDATE_LABELS = {
-    "postgres_connection_saturation": "PostgreSQL connection saturation",
-    "pod_waiting_state": "Kubernetes pod waiting/pending state",
-    "db_hikaricp": "DB/HikariCP connection pool issue",
-    "sqs_publish": "SQS publish failure",
-    "sqs_consume": "SQS consume/DLQ backlog issue",
+    "postgres_connection_saturation": "PostgreSQL connection 포화",
+    "pod_waiting_state": "Pod Pending/Waiting 상태",
+    "db_hikaricp": "DB/HikariCP connection pool 압박",
+    "sqs_publish": "SQS publish 실패",
+    "sqs_consume": "SQS consume/DLQ backlog",
     "application_error": "Application runtime error or HTTP 5xx",
-    "trace_latency": "Downstream latency or trace error",
-    "deployment_regression": "Recent deployment regression",
+    "trace_latency": "다운스트림 지연/트레이스 오류",
+    "deployment_regression": "최근 배포 회귀",
 }
 
 SRE_INTENT_BY_ALERT_NAME: dict[str, str] = {
@@ -870,8 +870,8 @@ def build_rca_analysis_contract(
             "exist, use those candidates as the primary cause section"
         ),
         (
-            "for synthetic alerts, state that this is a current-state "
-            "inspection, not a confirmed outage"
+            "for synthetic alerts, state that this is a synthetic validation "
+            "alert, not a confirmed outage"
         ),
         (
             "if all checked routing boundaries are healthy, conclude that "
@@ -1052,7 +1052,7 @@ def detect_application_findings(
                 "db_hikaricp",
                 section=section,
                 tool_name=tool_name,
-                evidence="matched HikariCP/JDBC/PostgreSQL connection error signal",
+                evidence="HikariCP/JDBC/PostgreSQL connection 오류 신호가 감지됨",
             )
         )
 
@@ -1074,7 +1074,7 @@ def detect_application_findings(
                 "postgres_connection_saturation",
                 section=section,
                 tool_name=tool_name,
-                evidence="matched PostgreSQL connection usage/max_connections metric signal",
+                evidence="PostgreSQL connection 사용률/max_connections 메트릭 신호가 감지됨",
             )
         )
 
@@ -1091,7 +1091,7 @@ def detect_application_findings(
                 "sqs_publish",
                 section=section,
                 tool_name=tool_name,
-                evidence="matched SQS send/publish failure signal",
+                evidence="SQS send/publish 실패 신호가 감지됨",
             )
         )
 
@@ -1109,7 +1109,7 @@ def detect_application_findings(
                 "sqs_consume",
                 section=section,
                 tool_name=tool_name,
-                evidence="matched SQS consume/DLQ lag or backlog signal",
+                evidence="SQS consume/DLQ 지연 또는 backlog 신호가 감지됨",
             )
         )
 
@@ -1121,7 +1121,7 @@ def detect_application_findings(
                 "application_error",
                 section=section,
                 tool_name=tool_name,
-                evidence="matched HTTP 5xx application error signal",
+                evidence="HTTP 5xx 애플리케이션 오류 신호가 감지됨",
             )
         )
 
@@ -1131,7 +1131,7 @@ def detect_application_findings(
                 "application_error",
                 section=section,
                 tool_name=tool_name,
-                evidence="matched application exception signal",
+                evidence="애플리케이션 exception 신호가 감지됨",
             )
         )
 
@@ -1144,7 +1144,7 @@ def detect_application_findings(
                 "trace_latency",
                 section=section,
                 tool_name=tool_name,
-                evidence="matched trace latency/error span signal",
+                evidence="트레이스 지연 또는 오류 span 신호가 감지됨",
             )
         )
 
@@ -1165,7 +1165,7 @@ def detect_application_findings(
                 "deployment_regression",
                 section=section,
                 tool_name=tool_name,
-                evidence="matched recent deployment or rollout change signal",
+                evidence="최근 deployment 또는 rollout 변경 신호가 감지됨",
             )
         )
 
@@ -1292,8 +1292,8 @@ def build_alert_root_cause_findings(
                 section="alertmanager",
                 tool_name="alert_labels",
                 evidence=(
-                    "Kubernetes pod health alert fired; investigate pod phase, "
-                    "waiting reason, image pull, scheduling, node, and events"
+                    "Kubernetes Pod 상태 알림이 발생함. pod phase, waiting reason, "
+                    "image pull, scheduling, node, events를 확인해야 함"
                 ),
             )
         ]
@@ -1304,8 +1304,8 @@ def build_alert_root_cause_findings(
                 section="alertmanager",
                 tool_name="alert_labels",
                 evidence=(
-                    "PostgreSQL connection saturation alert fired; "
-                    "connection usage exceeded the configured threshold"
+                    "PostgreSQL connection 포화 알림이 발생함. "
+                    "connection 사용률이 설정된 임계치를 초과함"
                 ),
             )
         ]
@@ -1316,8 +1316,8 @@ def build_alert_root_cause_findings(
                 section="alertmanager",
                 tool_name="alert_labels",
                 evidence=(
-                    "PostgreSQL database alert fired; investigate DB health "
-                    "and application connection pool pressure"
+                    "PostgreSQL DB 알림이 발생함. DB health와 "
+                    "애플리케이션 connection pool 압박을 확인해야 함"
                 ),
             )
         ]
@@ -1571,7 +1571,7 @@ def build_current_state_verdict(
     degraded_boundaries: list[str],
     unknown_boundaries: list[str],
 ) -> str:
-    prefix = "synthetic current-state inspection" if synthetic_alert else "alert-triggered RCA"
+    prefix = "synthetic validation alert" if synthetic_alert else "alert-triggered RCA"
     if degraded_boundaries:
         return (
             f"{prefix}: degraded live evidence exists for "
@@ -1698,8 +1698,7 @@ def build_rca_guardrail_prefix(result: AlertmanagerSrePlanResult) -> str:
     lines = ["자동 판정"]
     if contract["is_synthetic_alert"]:
         lines.append(
-            "- 이 알림은 synthetic current-state inspection이며, "
-            "실제 장애를 유발한 검증이 아닙니다."
+            "- 이 알림은 실제 장애를 유발하지 않고 주입한 synthetic 검증 알림입니다."
         )
     if healthy_boundaries:
         lines.append(
@@ -1724,8 +1723,8 @@ def build_rca_guardrail_prefix(result: AlertmanagerSrePlanResult) -> str:
         )
     if healthy_boundaries and not degraded_boundaries:
         lines.append(
-            "- 실제 사용자 오류가 있다면 application logs, distributed traces, recent deployments, "
-            "DB/HikariCP, downstream dependencies를 우선 확인합니다."
+            "- 실제 사용자 오류가 있다면 애플리케이션 로그, 분산 트레이스, 최근 배포, "
+            "DB/HikariCP, 다운스트림 의존성을 우선 확인합니다."
         )
     if healthy_boundaries and not degraded_boundaries and root_cause_candidates:
         candidate_summary = ", ".join(
@@ -1733,7 +1732,7 @@ def build_rca_guardrail_prefix(result: AlertmanagerSrePlanResult) -> str:
             for candidate in root_cause_candidates[:3]
         )
         lines.append(
-            "- 라우팅 경계보다 application root_cause_candidates를 우선 확인합니다: "
+            "- 라우팅 경계보다 애플리케이션 원인 후보를 우선 확인합니다: "
             f"{candidate_summary}"
         )
     return "\n".join(lines)
@@ -1777,7 +1776,7 @@ def build_kubernetes_pod_guardrail_prefix(
             for candidate in root_cause_candidates[:3]
         )
         lines.append(
-            "- 우선 확인할 Kubernetes/application root_cause_candidates: "
+            "- 우선 확인할 Kubernetes/application 원인 후보: "
             f"{candidate_summary}"
         )
     else:
@@ -1826,7 +1825,7 @@ def build_database_guardrail_prefix(
             for candidate in root_cause_candidates[:3]
         )
         lines.append(
-            "- 우선 확인할 DB/application root_cause_candidates: "
+            "- 우선 확인할 DB/application 원인 후보: "
             f"{candidate_summary}"
         )
     else:
@@ -2176,7 +2175,7 @@ def build_deterministic_verdict_lines(
         )
 
     if is_synthetic_sre_alert(alert):
-        lines.append("synthetic current-state inspection이며 실제 장애 유발 검증은 아닙니다.")
+        lines.append("실제 장애를 유발하지 않고 주입한 synthetic 검증 알림입니다.")
 
     healthy = boundary_names_by_status(boundaries, "healthy")
     degraded = boundary_names_by_status(boundaries, "degraded")
@@ -2265,7 +2264,7 @@ def format_candidate_name(candidate: dict[str, Any]) -> str:
         "sqs_publish": "SQS publish 실패",
         "sqs_consume": "SQS consume/DLQ backlog",
         "application_error": "Application runtime error/HTTP 5xx",
-        "trace_latency": "Downstream latency/trace error",
+        "trace_latency": "다운스트림 지연/트레이스 오류",
         "deployment_regression": "최근 배포 회귀",
     }
     return names.get(candidate_type, fallback)
@@ -2328,6 +2327,24 @@ def format_next_check(value: str) -> str:
         ),
         "review recent scale-out or deployment changes that increased DB sessions": (
             "DB session 증가를 유발한 최근 scale-out 또는 deployment 변경을 확인합니다."
+        ),
+        "inspect slow/error spans by downstream service": (
+            "다운스트림 서비스별 느린 span과 오류 span을 확인합니다."
+        ),
+        "check p95/p99 latency around the alert window": (
+            "알림 시간대의 p95/p99 지연 시간을 확인합니다."
+        ),
+        "compare trace errors with application logs": (
+            "트레이스 오류와 애플리케이션 로그의 예외 패턴을 비교합니다."
+        ),
+        "inspect top exception patterns in application logs": (
+            "애플리케이션 로그에서 주요 예외 패턴을 확인합니다."
+        ),
+        "check HTTP 5xx rate by endpoint": (
+            "엔드포인트별 HTTP 5xx 비율을 확인합니다."
+        ),
+        "correlate errors with recent deployments": (
+            "오류 발생 시점과 최근 배포 변경의 상관관계를 확인합니다."
         ),
     }
     return translations.get(normalized, normalized)
