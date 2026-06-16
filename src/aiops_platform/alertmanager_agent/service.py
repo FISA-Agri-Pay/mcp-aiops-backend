@@ -19,6 +19,7 @@ from aiops_platform.agent.schemas import AgentToolExecutionResult, AgentToolPlan
 from aiops_platform.alertmanager_agent.schemas import (
     AlertmanagerIncidentWindow,
     AlertmanagerSreAlertContext,
+    AlertmanagerSreInspectionRequest,
     AlertmanagerSreNotificationResult,
     AlertmanagerSrePlanResult,
 )
@@ -246,6 +247,26 @@ class AlertmanagerSreAgentService:
             actor=actor,
             notify=notify,
         )
+
+    def handle_manual_inspection(
+        self,
+        request: AlertmanagerSreInspectionRequest,
+        *,
+        actor: str = "manual-inspection",
+        execute: bool = True,
+        notify: bool = True,
+    ) -> AlertmanagerSrePlanResult:
+        webhook_request = build_manual_inspection_webhook_request(
+            request,
+            now=normalize_datetime(self._now_provider()),
+        )
+        result = self.handle_webhook(
+            webhook_request,
+            actor=actor,
+            execute=execute,
+            notify=notify,
+        )
+        return result.model_copy(update={"trigger_type": "MANUAL_INSPECTION"})
 
     def _plan_firing_alert(
         self,
@@ -3018,6 +3039,102 @@ def format_delivery_error(exc: Exception, *, secret: str | None = None) -> str:
 
 def enum_value(value: object) -> object:
     return getattr(value, "value", value)
+
+
+MANUAL_INSPECTION_ALERT_NAMES = {
+    "current_state": "SyntheticCurrentStateInspection",
+    "routing": "SyntheticRoutingInspection",
+    "kubernetes_pod": "SyntheticKubernetesPodInspection",
+    "postgresql": "SyntheticPostgreSQLInspection",
+    "sqs_publish": "SyntheticSqsPublishInspection",
+    "sqs_consume": "SyntheticSqsConsumeInspection",
+    "application": "SyntheticApplicationInspection",
+}
+MANUAL_INSPECTION_SUMMARIES = {
+    "current_state": "Manual current-state inspection for AIOps SRE Agent",
+    "routing": "Manual routing, ingress, and MetalLB inspection for AIOps SRE Agent",
+    "kubernetes_pod": "Manual Kubernetes pod lifecycle inspection for AIOps SRE Agent",
+    "postgresql": "Manual PostgreSQL connection and database inspection for AIOps SRE Agent",
+    "sqs_publish": "Manual SQS publish failure inspection for AIOps SRE Agent",
+    "sqs_consume": "Manual SQS consume, lag, and DLQ inspection for AIOps SRE Agent",
+    "application": "Manual application error, latency, logs, and traces inspection",
+}
+
+
+def build_manual_inspection_webhook_request(
+    request: AlertmanagerSreInspectionRequest,
+    *,
+    now: datetime,
+) -> AlertmanagerWebhookRequest:
+    inspection_type = request.inspection_type
+    alert_name = (
+        normalized_optional(request.alert_name)
+        or MANUAL_INSPECTION_ALERT_NAMES[inspection_type]
+    )
+    summary = (
+        normalized_optional(request.summary)
+        or MANUAL_INSPECTION_SUMMARIES[inspection_type]
+    )
+    labels = {
+        "alertname": alert_name,
+        "cluster": request.cluster,
+        "namespace": request.namespace,
+        "severity": request.severity,
+        "manual_inspection": "true",
+        "inspection_type": inspection_type,
+    }
+    if request.service:
+        labels["service"] = request.service
+        labels["app"] = request.service
+    if request.workload:
+        labels["workload"] = request.workload
+        labels["deployment"] = request.workload
+    elif request.service:
+        labels["workload"] = request.service
+        labels["deployment"] = request.service
+    if request.pod:
+        labels["pod"] = request.pod
+    labels.update({str(key): str(value) for key, value in request.labels.items()})
+
+    annotations = {"summary": summary}
+    if request.description:
+        annotations["description"] = request.description
+    annotations.update(
+        {str(key): str(value) for key, value in request.annotations.items()}
+    )
+
+    fingerprint_seed = "|".join(
+        [
+            format_datetime(now),
+            alert_name,
+            request.cluster,
+            request.namespace,
+            request.service or "",
+            request.workload or "",
+            request.pod or "",
+        ]
+    )
+    alert = AlertmanagerAlert(
+        status="firing",
+        labels=labels,
+        annotations=annotations,
+        startsAt=format_datetime(now),
+        fingerprint=(
+            "manual-inspection-"
+            f"{slugify(alert_name)}-"
+            f"{hashlib.sha256(fingerprint_seed.encode('utf-8')).hexdigest()[:12]}"
+        ),
+    )
+    return AlertmanagerWebhookRequest(
+        receiver="aiops-sre-manual-inspection",
+        status="firing",
+        alerts=[alert],
+        commonLabels={
+            "manual_inspection": "true",
+            "inspection_type": inspection_type,
+        },
+        commonAnnotations={"summary": summary},
+    )
 
 
 def select_firing_alert(request: AlertmanagerWebhookRequest) -> AlertmanagerAlert | None:

@@ -7,6 +7,9 @@ from aiops_platform.admin_riskops.service import AdminRiskOpsService
 from aiops_platform.alertmanager_agent.service import AlertmanagerSreAgentService
 from aiops_platform.api.admin import router as admin_router
 from aiops_platform.api.admin_risk import router as admin_risk_router
+from aiops_platform.api.alertmanager import (
+    inspection_router as alertmanager_inspection_router,
+)
 from aiops_platform.api.alertmanager import router as alertmanager_router
 from aiops_platform.api.farmer import router as farmer_router
 from aiops_platform.api.farmer_bnpl import router as farmer_bnpl_router
@@ -111,6 +114,8 @@ def create_app() -> FastAPI:
     app.include_router(sre_router, prefix=f"{EXTERNAL_API_PREFIX}/aiops")
     app.include_router(alertmanager_router)
     app.include_router(alertmanager_router, prefix=EXTERNAL_API_PREFIX)
+    app.include_router(alertmanager_inspection_router)
+    app.include_router(alertmanager_inspection_router, prefix=EXTERNAL_API_PREFIX)
     app.mount(MCP_TRANSPORT_MOUNT_PATH, mcp_asgi_app)
     app.mount(f"{EXTERNAL_API_PREFIX}{MCP_TRANSPORT_MOUNT_PATH}", mcp_asgi_app)
     return app

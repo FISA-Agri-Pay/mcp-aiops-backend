@@ -7,6 +7,7 @@ from aiops_platform.agent.dispatcher import build_tool_result, resolve_registere
 from aiops_platform.agent.schemas import AgentToolExecutionResult, AgentToolPlan
 from aiops_platform.alertmanager_agent.schemas import (
     AlertmanagerSreAlertContext,
+    AlertmanagerSreInspectionRequest,
     AlertmanagerSrePlanResult,
 )
 from aiops_platform.alertmanager_agent.service import (
@@ -474,6 +475,62 @@ def test_alertmanager_sre_webhook_api_returns_dry_run_plan() -> None:
         "get_k8s_pods",
         "get_k8s_events",
     }
+
+
+def test_manual_inspection_builds_synthetic_routing_plan() -> None:
+    service = AlertmanagerSreAgentService(
+        now_provider=lambda: datetime(2026, 6, 16, 6, 30, tzinfo=UTC),
+    )
+
+    result = service.handle_manual_inspection(
+        AlertmanagerSreInspectionRequest(
+            inspection_type="routing",
+            cluster="onprem",
+            namespace="kkpp",
+            service="service-payment",
+        ),
+        execute=False,
+        notify=False,
+    )
+
+    assert result.trigger_type == "MANUAL_INSPECTION"
+    assert result.dry_run is True
+    assert result.status == "PLANNED"
+    assert result.receiver == "aiops-sre-manual-inspection"
+    assert result.actor == "manual-inspection"
+    assert result.alert is not None
+    assert result.alert.alert_name == "SyntheticRoutingInspection"
+    assert result.alert.starts_at == "2026-06-16T06:30:00Z"
+    assert result.incident_key == (
+        "alertmanager:syntheticroutinginspection:onprem:kkpp:service-payment:info"
+    )
+    assert result.intent == "routing_failure"
+    assert result.capability == "edge_routing_analysis"
+
+
+def test_manual_inspection_api_is_exposed_under_external_prefix() -> None:
+    client = TestClient(create_app())
+
+    response = client.post(
+        "/api/v1/infra-rca/inspection/run?execute=false&notify=false",
+        json={
+            "inspection_type": "kubernetes_pod",
+            "cluster": "onprem",
+            "namespace": "kkpp",
+            "service": "service-admin",
+            "pod": "service-admin-7fd97fc67d-m2mpf",
+        },
+    )
+
+    assert response.status_code == 200
+    result = response.json()
+    assert result["trigger_type"] == "MANUAL_INSPECTION"
+    assert result["dry_run"] is True
+    assert result["status"] == "PLANNED"
+    assert result["alert"]["alert_name"] == "SyntheticKubernetesPodInspection"
+    assert result["alert"]["service_name"] == "service-admin"
+    assert result["alert"]["pod"] == "service-admin-7fd97fc67d-m2mpf"
+    assert result["intent"] == "pod_crashloop"
 
 
 def test_external_alertmanager_sre_webhook_api_is_exposed() -> None:
