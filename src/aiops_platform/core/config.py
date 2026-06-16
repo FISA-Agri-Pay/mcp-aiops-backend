@@ -146,6 +146,39 @@ class Settings(BaseSettings):
         le=1440,
         alias="PREDICTION_SCALING_WATCHER_HORIZON_MINUTES",
     )
+    sre_inspection_watcher_enabled: bool = Field(
+        default=False,
+        alias="SRE_INSPECTION_WATCHER_ENABLED",
+    )
+    sre_inspection_watcher_interval_seconds: int = Field(
+        default=300,
+        ge=30,
+        alias="SRE_INSPECTION_WATCHER_INTERVAL_SECONDS",
+    )
+    sre_inspection_watcher_cluster: str = Field(
+        default="onprem",
+        alias="SRE_INSPECTION_WATCHER_CLUSTER",
+    )
+    sre_inspection_watcher_namespace: str = Field(
+        default="kkpp",
+        alias="SRE_INSPECTION_WATCHER_NAMESPACE",
+    )
+    sre_inspection_watcher_service: str = Field(
+        default="service-payment",
+        alias="SRE_INSPECTION_WATCHER_SERVICE",
+    )
+    sre_inspection_watcher_type: str = Field(
+        default="current_state",
+        alias="SRE_INSPECTION_WATCHER_TYPE",
+    )
+    sre_inspection_watcher_notify_healthy: bool = Field(
+        default=True,
+        alias="SRE_INSPECTION_WATCHER_NOTIFY_HEALTHY",
+    )
+    sre_inspection_watcher_llm_min_status: str = Field(
+        default="degraded",
+        alias="SRE_INSPECTION_WATCHER_LLM_MIN_STATUS",
+    )
     llm_provider: str = Field(default="fake", alias="LLM_PROVIDER")
     llm_model: str = Field(default="fake-agentic-planner", alias="LLM_MODEL")
     llm_api_key: str = Field(default="", alias="LLM_API_KEY")

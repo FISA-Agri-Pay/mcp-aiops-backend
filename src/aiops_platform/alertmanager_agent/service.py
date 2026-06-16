@@ -373,17 +373,30 @@ class AlertmanagerSreAgentService:
         if not notify:
             return collected_result
         notification_results = self._send_collection_notifications(collected_result)
-        rca_analysis = self._run_rca_analysis(collected_result)
-        analyzed_result = collected_result.model_copy(
+        return self.analyze_collected_result(
+            collected_result,
+            notify=True,
+            notification_results=notification_results,
+        )
+
+    def analyze_collected_result(
+        self,
+        result: AlertmanagerSrePlanResult,
+        *,
+        notify: bool = True,
+        notification_results: list[AlertmanagerSreNotificationResult] | None = None,
+    ) -> AlertmanagerSrePlanResult:
+        rca_analysis = self._run_rca_analysis(result)
+        analyzed_result = result.model_copy(
             update={
                 "status": "ANALYZED",
                 "rca_analysis": rca_analysis,
             }
         )
-        notification_results.extend(self._send_analysis_notifications(analyzed_result))
-        return analyzed_result.model_copy(
-            update={"notification_results": notification_results}
-        )
+        notifications = list(notification_results or [])
+        if notify:
+            notifications.extend(self._send_analysis_notifications(analyzed_result))
+        return analyzed_result.model_copy(update={"notification_results": notifications})
 
     def _run_rca_analysis(self, result: AlertmanagerSrePlanResult) -> dict[str, Any]:
         try:

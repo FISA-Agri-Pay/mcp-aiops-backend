@@ -17,6 +17,10 @@ from aiops_platform.alertmanager_agent.service import (
     build_notification_idempotency_key,
     build_rca_llm_snapshot_payload,
 )
+from aiops_platform.alertmanager_agent.watcher import (
+    SreInspectionWatcher,
+    build_sre_inspection_watcher,
+)
 from aiops_platform.core.config import Settings
 from aiops_platform.infra_rca.schemas import AlertmanagerWebhookRequest
 from aiops_platform.llmops.schemas import LlmRunResult, NotificationOutboxResult
@@ -669,6 +673,136 @@ class FakeSlackSender:
                 "channel": channel,
             }
         )
+
+
+class FakeInspectionAgentService:
+    def __init__(self, result: AlertmanagerSrePlanResult) -> None:
+        self.result = result
+        self.inspection_calls: list[dict[str, object]] = []
+        self.analysis_calls: list[AlertmanagerSrePlanResult] = []
+
+    def handle_manual_inspection(self, request, **kwargs):
+        self.inspection_calls.append({"request": request, **kwargs})
+        return self.result
+
+    def analyze_collected_result(self, result, **kwargs):
+        self.analysis_calls.append(result)
+        return result.model_copy(update={"status": "ANALYZED"})
+
+
+def build_inspection_result(*, boundary_status: str) -> AlertmanagerSrePlanResult:
+    return AlertmanagerSrePlanResult(
+        trigger_type="MANUAL_INSPECTION",
+        dry_run=False,
+        status="COLLECTED",
+        incident_key=(
+            "alertmanager:syntheticcurrentstateinspection:onprem:"
+            "kkpp:service-payment:info"
+        ),
+        alert=AlertmanagerSreAlertContext(
+            alert_name="SyntheticCurrentStateInspection",
+            status="firing",
+            severity="info",
+            cluster="onprem",
+            namespace="kkpp",
+            service_name="service-payment",
+            workload="service-payment",
+            summary="Manual current-state inspection for AIOps SRE Agent",
+        ),
+        context_bundle={
+            "failure_boundary_candidates": [
+                {
+                    "boundary": "dns",
+                    "status": "healthy",
+                    "confidence": "medium",
+                },
+                {
+                    "boundary": "k8s_service",
+                    "status": boundary_status,
+                    "confidence": "medium",
+                },
+            ],
+        },
+    )
+
+
+def test_sre_inspection_watcher_sends_short_summary_for_healthy_status() -> None:
+    slack_sender = FakeSlackSender()
+    agent_service = FakeInspectionAgentService(
+        build_inspection_result(boundary_status="healthy")
+    )
+    watcher = SreInspectionWatcher(
+        agent_service=agent_service,
+        interval_seconds=30,
+        inspection_request=AlertmanagerSreInspectionRequest(
+            inspection_type="current_state",
+            cluster="onprem",
+            namespace="kkpp",
+            service="service-payment",
+        ),
+        slack_sender=slack_sender,
+        app_settings=Settings(
+            RCA_SLACK_WEBHOOK_URL="https://hooks.slack.example/test",
+            RCA_SLACK_CHANNEL="#aiops-alerts",
+        ),
+    )
+
+    result = watcher.run_once()
+
+    assert result.status == "COLLECTED"
+    assert agent_service.analysis_calls == []
+    assert len(slack_sender.sent_messages) == 1
+    assert "정기 상태 점검: 정상" in slack_sender.sent_messages[0]["text"]
+    assert "즉시 조치 필요 항목은 없습니다" in slack_sender.sent_messages[0]["text"]
+
+
+def test_sre_inspection_watcher_runs_llm_for_degraded_status() -> None:
+    slack_sender = FakeSlackSender()
+    agent_service = FakeInspectionAgentService(
+        build_inspection_result(boundary_status="degraded")
+    )
+    watcher = SreInspectionWatcher(
+        agent_service=agent_service,
+        interval_seconds=30,
+        inspection_request=AlertmanagerSreInspectionRequest(
+            inspection_type="current_state",
+            cluster="onprem",
+            namespace="kkpp",
+            service="service-payment",
+        ),
+        slack_sender=slack_sender,
+        app_settings=Settings(
+            RCA_SLACK_WEBHOOK_URL="https://hooks.slack.example/test",
+            RCA_SLACK_CHANNEL="#aiops-alerts",
+        ),
+    )
+
+    result = watcher.run_once()
+
+    assert result.status == "ANALYZED"
+    assert len(agent_service.analysis_calls) == 1
+    assert len(slack_sender.sent_messages) == 1
+    assert "정기 상태 점검: 위험" in slack_sender.sent_messages[0]["text"]
+    assert "LLM RCA 분석을 자동 실행" in slack_sender.sent_messages[0]["text"]
+
+
+def test_sre_inspection_watcher_factory_respects_enabled_flag() -> None:
+    service = AlertmanagerSreAgentService()
+
+    disabled = build_sre_inspection_watcher(
+        agent_service=service,
+        app_settings=Settings(SRE_INSPECTION_WATCHER_ENABLED=False),
+    )
+    enabled = build_sre_inspection_watcher(
+        agent_service=service,
+        app_settings=Settings(
+            SRE_INSPECTION_WATCHER_ENABLED=True,
+            SRE_INSPECTION_WATCHER_INTERVAL_SECONDS=30,
+        ),
+    )
+
+    assert disabled is None
+    assert enabled is not None
 
 
 def test_analysis_notification_idempotency_key_includes_llm_run_id() -> None:
