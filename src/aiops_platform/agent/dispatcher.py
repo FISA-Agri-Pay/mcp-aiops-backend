@@ -335,6 +335,9 @@ class McpToolDispatcher:
             ("prediction-scaling-mcp", "get_scaling_summary"): (
                 lambda payload: self._prediction_scaling.get_scaling_summary(**payload)
             ),
+            ("prediction-scaling-mcp", "get_predictive_scaling_status"): (
+                lambda payload: self._prediction_scaling.get_predictive_scaling_status(**payload)
+            ),
         }
         return operations.get((server_name, tool_name))
 

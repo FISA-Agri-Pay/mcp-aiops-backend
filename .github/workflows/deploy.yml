@@ -121,6 +121,7 @@ jobs:
           SMTP_FROM: ${{ secrets.SMTP_FROM }}
           OPS_REPORT_EMAIL_RECIPIENTS: ${{ secrets.OPS_REPORT_EMAIL_RECIPIENTS }}
           RCA_SLACK_WEBHOOK_URL: ${{ secrets.RCA_SLACK_WEBHOOK_URL }}
+          PREDICTION_SCALING_SLACK_WEBHOOK_URL: ${{ secrets.PREDICTION_SCALING_SLACK_WEBHOOK_URL }}
         run: |
           test -n "${AWS_ROLE_ARN}" || { echo "AWS_ROLE_ARN variable/secret or AWS_ROLE_TO_ASSUME secret is required."; exit 1; }
           case "${AWS_ROLE_ARN}" in
@@ -191,6 +192,7 @@ jobs:
             --from-literal=OPS_REPORT_EMAIL_RECIPIENTS="${OPS_REPORT_EMAIL_RECIPIENTS}" \
             --from-literal=RCA_EMAIL_RECIPIENTS="${RCA_EMAIL_RECIPIENTS}" \
             --from-literal=RCA_SLACK_WEBHOOK_URL="${RCA_SLACK_WEBHOOK_URL}" \
+            --from-literal=PREDICTION_SCALING_SLACK_WEBHOOK_URL="${PREDICTION_SCALING_SLACK_WEBHOOK_URL}" \
             --dry-run=client -o yaml | kubectl apply -f -
         env:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
@@ -206,6 +208,7 @@ jobs:
           OPS_REPORT_EMAIL_RECIPIENTS: ${{ secrets.OPS_REPORT_EMAIL_RECIPIENTS }}
           RCA_EMAIL_RECIPIENTS: ${{ secrets.RCA_EMAIL_RECIPIENTS }}
           RCA_SLACK_WEBHOOK_URL: ${{ secrets.RCA_SLACK_WEBHOOK_URL }}
+          PREDICTION_SCALING_SLACK_WEBHOOK_URL: ${{ secrets.PREDICTION_SCALING_SLACK_WEBHOOK_URL }}
 
       - name: Deploy image
         run: |

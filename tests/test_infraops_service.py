@@ -163,6 +163,7 @@ def test_kubernetes_client_calls_namespaced_read_apis() -> None:
     assert client.pods("default") == {"items": []}
     assert client.deployments("default") == {"items": []}
     assert client.hpa("default") == {"items": []}
+    assert client.scaled_objects("default") == {"items": []}
     assert http_client.calls[0]["url"] == (
         "http://kubernetes:8001/api/v1/namespaces/default/pods"
     )
@@ -172,6 +173,9 @@ def test_kubernetes_client_calls_namespaced_read_apis() -> None:
     assert http_client.calls[2]["url"] == (
         "http://kubernetes:8001/apis/autoscaling/v2/namespaces/default/"
         "horizontalpodautoscalers"
+    )
+    assert http_client.calls[3]["url"] == (
+        "http://kubernetes:8001/apis/keda.sh/v1alpha1/namespaces/default/scaledobjects"
     )
     assert http_client.calls[0]["headers"]["Authorization"] == "Bearer token"
 

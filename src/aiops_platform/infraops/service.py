@@ -397,6 +397,17 @@ class InfraOpsService:
     ) -> KubernetesResourceResult:
         return self._get_kubernetes_resource("hpa", namespace=namespace, source=source)
 
+    def get_k8s_scaled_objects(
+        self,
+        namespace: str | None = None,
+        source: str | None = None,
+    ) -> KubernetesResourceResult:
+        return self._get_kubernetes_resource(
+            "scaled_objects",
+            namespace=namespace,
+            source=source,
+        )
+
     def check_onprem_metallb_endpoint(
         self,
         address: str = DEFAULT_ONPREM_METALLB_ADDRESS,
@@ -1296,6 +1307,7 @@ class InfraOpsService:
             "events": client.events,
             "deployments": client.deployments,
             "hpa": client.hpa,
+            "scaled_objects": client.scaled_objects,
         }[resource](resolved_namespace)
         return KubernetesResourceResult(
             source=source_name,

@@ -140,6 +140,85 @@ class ScalingSummaryResult(BaseModel):
     recommendation: str
 
 
+class PredictiveMetricValue(BaseModel):
+    metric_name: str
+    namespace: str
+    service_name: str
+    predicted_value: float
+    target_time: str
+    model_version: str
+    created_at: str
+
+
+class PredictiveScalingStatusItem(BaseModel):
+    namespace: str
+    service: str
+    short_service: str
+    deployment: str
+    scaled_object: str | None = None
+    hpa: str | None = None
+    model_version: str | None = None
+    target_time: str | None = None
+    created_at: str | None = None
+    predicted_rps: float | None = None
+    actual_rps: float | None = None
+    rps_deviation: float | None = None
+    rps_deviation_percent: float | None = None
+    prediction_match_status: Literal[
+        "matched",
+        "under_predicted",
+        "over_predicted",
+        "unknown",
+    ] = "unknown"
+    predicted_pods: float | None = None
+    base_pods: float | None = None
+    extra_demand: float | None = None
+    allocation_score: float | None = None
+    onprem_adjusted_pods: float | None = None
+    current_replicas: int | None = None
+    desired_replicas: int | None = None
+    max_replicas: int | None = None
+    scale_gap: float | None = None
+    scaling_track_status: Literal[
+        "tracking",
+        "lagging",
+        "overprovisioned",
+        "unknown",
+    ] = "unknown"
+    scaling_active: bool | None = None
+    scaling_limited: bool | None = None
+    prediction_freshness: Literal["fresh", "stale", "missing", "unknown"]
+    risk_level: Literal["low", "medium", "high"]
+    summary: str
+    evidence: dict[str, Any] = Field(default_factory=dict)
+
+
+class PredictiveScalingStatusResult(BaseModel):
+    namespace: str
+    service: str | None = None
+    horizon_minutes: int
+    generated_at: str
+    items: list[PredictiveScalingStatusItem]
+    summary: str
+
+
+class PredictiveScalingSlackAgentResult(BaseModel):
+    status: Literal["NOTIFIED", "SKIPPED", "DRY_RUN", "FAILED"]
+    namespace: str
+    service: str | None = None
+    horizon_minutes: int
+    generated_at: str
+    min_risk: Literal["low", "medium", "high"]
+    evaluated_services: list[str]
+    notifiable_services: list[str]
+    notification_sent: bool
+    channel: str | None = None
+    message: str | None = None
+    skipped_reason: str | None = None
+    error_message: str | None = None
+    predictive_status: PredictiveScalingStatusResult
+
+
 class PredictionSnapshotResult(BaseModel):
     snapshot_id: str
     prediction_run_id: str

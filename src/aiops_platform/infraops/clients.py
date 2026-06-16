@@ -366,6 +366,14 @@ class KubernetesClient:
             ssl_context=self._ssl_context,
         )
 
+    def scaled_objects(self, namespace: str) -> dict[str, Any]:
+        return self._http_client.get_json(
+            urljoin(self._base_url, f"apis/keda.sh/v1alpha1/namespaces/{namespace}/scaledobjects"),
+            headers=self._headers,
+            timeout=self._timeout_seconds,
+            ssl_context=self._ssl_context,
+        )
+
     def service(self, namespace: str, service_name: str) -> dict[str, Any]:
         encoded_service_name = quote(service_name, safe="")
         return self._http_client.get_json(
