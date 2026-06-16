@@ -48,6 +48,7 @@ AWS_TOOLS = {
     "get_alb_target_health": "alb_target_health",
     "get_cloudfront_origin_mapping": "cloudfront_origin_mapping",
     "get_cloudfront_distribution_status": "cloudfront_distribution_status",
+    "get_aws_vpn_tunnel_status": "vpn_tunnel_status",
 }
 DEPLOYMENT_CHANGE_TOOLS = {
     "get_argocd_application_status": "argocd_application",
@@ -113,7 +114,12 @@ BOUNDARY_TOOL_MAP = {
     "cloudfront": {"get_cloudfront_origin_mapping", "get_cloudfront_distribution_status"},
     "aws_alb": {"get_alb_target_health"},
     "aws_target_group": {"get_alb_target_health"},
-    "vpn_route": {"get_topology_snapshot", "search_topology_knowledge", "get_service_routing_path"},
+    "vpn_route": {
+        "get_topology_snapshot",
+        "search_topology_knowledge",
+        "get_service_routing_path",
+        "get_aws_vpn_tunnel_status",
+    },
     "onprem_metallb": {
         "get_topology_snapshot",
         "get_service_routing_path",
@@ -165,7 +171,7 @@ BOUNDARY_EXPECTED_SIGNALS = {
     "cloudfront": "Distribution deployed and origin mapping points to expected ALB.",
     "aws_alb": "ALB listener/rule and load balancer are reachable.",
     "aws_target_group": "Target group reports healthy targets.",
-    "vpn_route": "AWS route/VPN path to on-prem CIDR is present.",
+    "vpn_route": "AWS route/VPN tunnel to on-prem CIDR is up and carrying the path.",
     "onprem_metallb": "MetalLB entrypoint exists and target IP is reachable.",
     "onprem_ingress": "Ingress routes traffic to the expected ClusterIP/service.",
     "eks_ingress": "EKS ALB/Ingress routes to expected service target group.",
@@ -210,6 +216,17 @@ BOUNDARY_DEGRADED_PATTERNS = {
         re.compile(r"\bdns\b.{0,80}\b(fail|error|timeout)\b"),
         re.compile(r"\blookup\b.{0,80}\b(fail|error|timeout)\b"),
     ),
+    "vpn_route": (
+        re.compile(r"\bdegraded\b"),
+        re.compile(r"\bfailed\b"),
+        re.compile(r"\bdown\b"),
+        re.compile(r"\btunnel(state)?\b.{0,80}\b(0|down|failed|degraded)\b"),
+        re.compile(r"\bstatus\b.{0,40}\b(down|failed|degraded)\b"),
+        re.compile(r"\boverall_status\b.{0,40}\b(failed|degraded)\b"),
+        re.compile(r"\bdown_tunnel_count\b.{0,20}\b[1-9]\d*\b"),
+        re.compile(r"\bup_tunnel_count\b.{0,20}\b0\b"),
+        re.compile(r"\bvpn\b.{0,80}\b(down|failed|unavailable|degraded)\b"),
+    ),
     "onprem_metallb": (
         re.compile(r"\bstatus\b.{0,40}\bdegraded\b"),
         re.compile(r"\breachable\b.{0,20}\bfalse\b"),
@@ -245,6 +262,7 @@ HEALTHY_PATTERNS = (
     re.compile(r"\bhealthy\b"),
     re.compile(r"\brunning\b"),
     re.compile(r"\bready\b"),
+    re.compile(r"\bup\b"),
     re.compile(r"\bactive\b"),
     re.compile(r"\bdeployed\b"),
     re.compile(r"\bsynced\b"),
@@ -474,6 +492,8 @@ def infer_cross_domain_scenario(
         return "onprem_to_loki"
     if any(keyword in normalized for keyword in ("tempo", "otel")):
         return "onprem_to_tempo"
+    if any(keyword in normalized for keyword in ("vpn", "tunnel", "site-to-site")):
+        return "edge_to_onprem_routing"
     if any(keyword in normalized for keyword in ("metallb", "on-prem", "onprem")):
         return "edge_to_onprem_routing"
     if (

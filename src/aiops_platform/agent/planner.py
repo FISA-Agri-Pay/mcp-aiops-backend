@@ -883,6 +883,11 @@ def plan_sre_copilot_tools(
         routing_plans.extend(
             [
                 build_sre_tool_plan(
+                    "get_aws_vpn_tunnel_status",
+                    {"region": "ap-northeast-2"},
+                    "Read AWS Site-to-Site VPN tunnel state for the cross-domain path.",
+                ),
+                build_sre_tool_plan(
                     "get_cloudfront_origin_mapping",
                     {},
                     "Read CloudFront origin mapping for edge to ALB routing.",
@@ -1797,6 +1802,7 @@ def allowed_tool_keys(chat_type: ChatType) -> set[tuple[str, str]]:
                 "get_alb_target_health",
                 "get_cloudfront_origin_mapping",
                 "get_cloudfront_distribution_status",
+                "get_aws_vpn_tunnel_status",
                 "get_argocd_application_status",
                 "get_current_image_tags",
                 "get_recent_deployments",

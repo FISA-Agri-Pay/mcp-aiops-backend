@@ -95,8 +95,14 @@ APPLICATION_SIGNAL_TOOLS = {
         "get_current_image_tags",
     },
     "aws": {"get_sqs_queue_attributes", "get_sqs_dlq_attributes"},
+    "network": {
+        "get_aws_vpn_tunnel_status",
+        "check_onprem_metallb_endpoint",
+        "check_onprem_ingress_route",
+    },
 }
 APPLICATION_CANDIDATE_LABELS = {
+    "vpn_tunnel_degraded": "VPN tunnel degraded",
     "predictive_under_prediction": "트래픽 예측 과소 / 실제 RPS 급증",
     "postgres_connection_saturation": "PostgreSQL connection 포화",
     "pod_waiting_state": "Pod Pending/Waiting 상태",
@@ -127,6 +133,12 @@ SRE_INTENT_BY_ALERT_NAME: dict[str, str] = {
     "albtargetunhealthy": "routing_failure",
     "ingress5xxhigh": "routing_failure",
     "onpremmetallbroutingfailure": "routing_failure",
+    "vpntunneldown": "routing_failure",
+    "vpntunnelstatedegraded": "routing_failure",
+    "awsvpntunneldown": "routing_failure",
+    "vpnconnectivitydegraded": "routing_failure",
+    "awstoonpremprobefailed": "routing_failure",
+    "onpremtoawsaioopswebhookfailed": "routing_failure",
     "podcrashlooping": "pod_crashloop",
     "podcrashloopbackoff": "pod_crashloop",
     "kubepodcrashlooping": "pod_crashloop",
@@ -168,6 +180,14 @@ POSTGRES_CONNECTION_SATURATION_ALERT_NAMES = {
 }
 PREDICTIVE_SCALING_UNDER_PREDICTION_ALERT_NAMES = {
     "predictivescalingunderprediction",
+}
+VPN_TUNNEL_ALERT_NAMES = {
+    "vpntunneldown",
+    "vpntunnelstatedegraded",
+    "awsvpntunneldown",
+    "vpnconnectivitydegraded",
+    "awstoonpremprobefailed",
+    "onpremtoawsaioopswebhookfailed",
 }
 KUBERNETES_POD_HEALTH_ALERT_NAMES = {
     "podcrashlooping",
@@ -955,6 +975,20 @@ def build_rca_analysis_contract(
                 ),
             ]
         )
+    if is_vpn_tunnel_alert(result.alert):
+        rules.extend(
+            [
+                (
+                    "for VPN tunnel/connectivity alerts, analyze AWS TunnelState, "
+                    "tunnel up/down count, CloudWatch VPN traffic metrics, and "
+                    "on-prem gateway reachability before application logs or traces"
+                ),
+                (
+                    "do not classify VPN tunnel alerts as Kubernetes pod health "
+                    "unless pod lifecycle evidence is directly degraded"
+                ),
+            ]
+        )
     if is_kubernetes_pod_health_alert(result.alert):
         rules.extend(
             [
@@ -1360,6 +1394,18 @@ def build_alert_root_cause_findings(
                 ),
             )
         ]
+    if is_vpn_tunnel_alert(alert):
+        return [
+            build_application_finding(
+                "vpn_tunnel_degraded",
+                section="alertmanager",
+                tool_name="alert_labels",
+                evidence=(
+                    "VPN tunnel/connectivity alert fired; inspect AWS TunnelState, "
+                    "tunnel UP/DOWN count, packet flow, and on-prem gateway reachability."
+                ),
+            )
+        ]
     if is_kubernetes_pod_health_alert(alert):
         return [
             build_application_finding(
@@ -1471,6 +1517,12 @@ def next_checks_for_candidate(candidate_type: str) -> list[str]:
             "check KEDA adjusted_pods, current replicas, and desired replicas",
             "check prediction target_time, freshness, and model version",
             "check p95/p99 latency and trace error spans as secondary signals",
+        ],
+        "vpn_tunnel_degraded": [
+            "check AWS VPN TunnelState for both tunnels",
+            "check active tunnel status and accepted route count",
+            "check TunnelDataIn/TunnelDataOut packet flow around the alert window",
+            "check pfSense gateway and IPsec phase status on-prem",
         ],
         "postgres_connection_saturation": [
             "check PostgreSQL current sessions versus max_connections",
@@ -2025,6 +2077,25 @@ def is_predictive_scaling_under_prediction_alert(
     )
 
 
+def is_vpn_tunnel_alert(alert: AlertmanagerSreAlertContext | None) -> bool:
+    if alert is None:
+        return False
+    normalized_name = normalize_alert_name(alert.alert_name)
+    if normalized_name in VPN_TUNNEL_ALERT_NAMES:
+        return True
+    text = " ".join(
+        str(value or "")
+        for value in (
+            alert.alert_name,
+            alert.summary,
+            alert.description,
+        )
+    ).lower()
+    return "vpn" in text and any(
+        keyword in text for keyword in ("tunnel", "ipsec", "site-to-site", "connectivity")
+    )
+
+
 def is_kubernetes_pod_health_alert(alert: AlertmanagerSreAlertContext | None) -> bool:
     if alert is None:
         return False
@@ -2282,6 +2353,8 @@ def notification_boundaries(
 def determine_incident_type(result: AlertmanagerSrePlanResult) -> str:
     if is_predictive_scaling_under_prediction_alert(result.alert):
         return "예측 스케일링 과소 / 실제 RPS 급증"
+    if is_vpn_tunnel_alert(result.alert):
+        return "VPN tunnel/connectivity issue"
     if is_kubernetes_pod_health_alert(result.alert):
         return "Kubernetes Pod 상태 이상"
     if is_postgres_connection_saturation_alert(result.alert):
@@ -2335,6 +2408,11 @@ def build_deterministic_verdict_lines(
         )
         lines.append(
             "실제 RPS가 예측 RPS를 크게 초과하여 사전 스케일링 기준이 부족한 상태입니다."
+        )
+    elif is_vpn_tunnel_alert(alert):
+        lines.append(
+            "VPN tunnel/connectivity alert이므로 service pod보다 AWS TunnelState와 "
+            "cross-domain network path를 우선 분석합니다."
         )
     elif is_kubernetes_pod_health_alert(alert):
         lines.append(
@@ -2515,6 +2593,7 @@ def format_candidate_name(candidate: dict[str, Any]) -> str:
     candidate_type = str(candidate.get("candidate_type") or "")
     fallback = str(candidate.get("candidate") or "unknown")
     names = {
+        "vpn_tunnel_degraded": "VPN tunnel degraded",
         "predictive_under_prediction": "트래픽 예측 과소 / 실제 RPS 급증",
         "pod_waiting_state": "Pod Pending/Waiting 상태",
         "postgres_connection_saturation": "PostgreSQL connection 포화",
@@ -2569,6 +2648,18 @@ def build_next_check_lines(
 def format_next_check(value: str) -> str:
     normalized = value.strip()
     translations = {
+        "check AWS VPN TunnelState for both tunnels": (
+            "AWS VPN 두 터널의 TunnelState 값을 확인합니다."
+        ),
+        "check active tunnel status and accepted route count": (
+            "활성 터널 상태와 accepted route count를 확인합니다."
+        ),
+        "check TunnelDataIn/TunnelDataOut packet flow around the alert window": (
+            "알림 시간대의 TunnelDataIn/TunnelDataOut 흐름을 확인합니다."
+        ),
+        "check pfSense gateway and IPsec phase status on-prem": (
+            "온프렘 pfSense gateway와 IPsec phase 상태를 확인합니다."
+        ),
         "check actual RPS versus GRU predicted RPS deviation": (
             "실제 RPS와 GRU 예측 RPS 편차를 확인합니다."
         ),

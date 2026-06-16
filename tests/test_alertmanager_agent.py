@@ -365,6 +365,7 @@ def test_alertmanager_sre_agent_dry_run_cloudfront_alb_onprem_routing_tool_plan(
     assert_common_rca_context_tools(result)
     assert result.intent == "routing_failure"
     assert result.capability == "edge_routing_analysis"
+    assert "get_aws_vpn_tunnel_status" in names
     assert "get_cloudfront_origin_mapping" in names
     assert "get_cloudfront_distribution_status" in names
     assert "get_alb_target_health" not in names

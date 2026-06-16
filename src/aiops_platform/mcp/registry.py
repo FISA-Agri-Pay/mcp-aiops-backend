@@ -156,6 +156,7 @@ MCP_SERVERS: tuple[McpServerMetadata, ...] = (
                 ("get_alb_target_health", READ),
                 ("get_cloudfront_origin_mapping", READ),
                 ("get_cloudfront_distribution_status", READ),
+                ("get_aws_vpn_tunnel_status", READ),
                 ("get_argocd_application_status", READ),
                 ("get_current_image_tags", READ),
                 ("get_recent_deployments", READ),

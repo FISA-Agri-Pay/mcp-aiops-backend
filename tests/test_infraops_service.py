@@ -334,6 +334,17 @@ def test_aws_and_argocd_read_clients_call_proxy_apis() -> None:
         "queue_name": "credit-payment-requested.fifo",
         "region": "ap-northeast-2",
     }
+    assert aws_client.vpn_tunnel_status(
+        vpn_id="vpn-123",
+        region="ap-northeast-2",
+    ) == {"Attributes": {"ApproximateNumberOfMessages": "0"}}
+    assert aws_http_client.calls[1]["url"] == (
+        "http://ops-proxy:8080/aws/vpn/tunnel-status"
+    )
+    assert aws_http_client.calls[1]["params"] == {
+        "vpn_id": "vpn-123",
+        "region": "ap-northeast-2",
+    }
 
     argocd_http_client = FakeHttpClient({"sync": {"status": "Synced"}})
     argocd_client = ArgoCdClient(
