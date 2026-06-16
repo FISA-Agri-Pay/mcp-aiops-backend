@@ -377,6 +377,26 @@ def test_alertmanager_sre_agent_dry_run_cloudfront_alb_onprem_routing_tool_plan(
     }
 
 
+def test_alertmanager_sre_agent_dry_run_vpn_tunnel_tool_plan() -> None:
+    payload = build_firing_payload(
+        alertname="VpnTunnelStateDegraded",
+        service="aws-vpn",
+        namespace="monitoring",
+        cluster="onprem",
+        severity="warning",
+        summary="Synthetic VPN tunnel state degraded check",
+    )
+
+    result = plan_from_payload(payload)
+
+    names = tool_names(result)
+    assert_dry_run_read_only_plan(result)
+    assert_common_rca_context_tools(result)
+    assert result.intent == "routing_failure"
+    assert result.capability == "edge_routing_analysis"
+    assert "get_aws_vpn_tunnel_status" in names
+
+
 def test_alertmanager_sre_agent_dry_run_db_hikaricp_tool_plan() -> None:
     payload = build_firing_payload(
         alertname="HikariPoolExhausted",
@@ -1502,6 +1522,41 @@ def test_analysis_notification_formats_routing_incident_sections() -> None:
     assert "degraded 경계는 우선 확인 대상입니다: onprem_metallb" in text
     assert "모델 보조 분석" in text
     assert "요약: MetalLB 경로에서 장애 후보가 확인되었습니다." in text
+
+
+def test_analysis_notification_prioritizes_vpn_tunnel_alert() -> None:
+    result = AlertmanagerSrePlanResult(
+        status="ANALYZED",
+        incident_key="alertmanager:vpntunnelstatedegraded:onprem:monitoring:aws-vpn:warning",
+        intent="routing_failure",
+        alert=AlertmanagerSreAlertContext(
+            alert_name="VpnTunnelStateDegraded",
+            status="firing",
+            cluster="onprem",
+            namespace="monitoring",
+            service_name="aws-vpn",
+            severity="warning",
+            summary="Synthetic VPN tunnel state degraded check",
+        ),
+        context_bundle={
+            "failure_boundary_candidates": [
+                {"boundary": "vpn_route", "status": "degraded", "confidence": "high"},
+                {"boundary": "dns", "status": "healthy", "confidence": "medium"},
+            ],
+        },
+        rca_analysis={
+            "run_status": "SUCCESS",
+            "answer": "VPN tunnel state degraded.",
+        },
+    )
+
+    text = build_analysis_notification_text(result)
+
+    assert "VPN tunnel/connectivity issue" in text
+    assert "VPN tunnel degraded" in text
+    assert "- 1순위 후보: VPN tunnel degraded" in text
+    assert "AWS VPN" in text
+    assert "vpn_route" in text
 
 
 def test_collection_notification_explains_failed_tools() -> None:

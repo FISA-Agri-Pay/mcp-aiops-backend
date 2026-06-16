@@ -1311,6 +1311,7 @@ def build_application_root_cause_candidates(
     candidates = []
     for finding_type in (
         "predictive_under_prediction",
+        "vpn_tunnel_degraded",
         "postgres_connection_saturation",
         "pod_waiting_state",
         "db_hikaricp",
@@ -1325,6 +1326,7 @@ def build_application_root_cause_candidates(
                 if finding_type
                 in {
                     "predictive_under_prediction",
+                    "vpn_tunnel_degraded",
                     "postgres_connection_saturation",
                     "pod_waiting_state",
                 }
@@ -2616,6 +2618,11 @@ def build_next_check_lines(
         next_checks = candidate.get("next_checks")
         if isinstance(next_checks, list):
             checks.extend(str(item) for item in next_checks if str(item).strip())
+    if is_vpn_tunnel_alert(result.alert):
+        return [
+            format_next_check(item)
+            for item in next_checks_for_candidate("vpn_tunnel_degraded")
+        ]
     if checks:
         return [format_next_check(item) for item in dedupe_strings(checks)[:6]]
     if is_predictive_scaling_under_prediction_alert(result.alert):
@@ -2743,6 +2750,9 @@ def build_data_limit_lines(
 
 def explain_failed_tool(tool_name: str, *, result: AlertmanagerSrePlanResult) -> str:
     explanations = {
+        "get_aws_vpn_tunnel_status": (
+            "AWS VPN TunnelState 미수집: Pod IAM 권한 또는 AWS ops read proxy 설정을 확인해야 함"
+        ),
         "get_pod_logs": (
             "pod logs 미수집: 컨테이너가 아직 시작되지 않았거나 대상 pod 로그가 없을 수 있음"
         ),

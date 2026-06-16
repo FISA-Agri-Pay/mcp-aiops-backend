@@ -484,6 +484,11 @@ def infer_cross_domain_scenario(
 ) -> str:
     normalized = f"{message} {capability or ''}".lower()
     tool_names = {result.tool_name for result in tool_results}
+    if (
+        "get_aws_vpn_tunnel_status" in tool_names
+        or any(keyword in normalized for keyword in ("vpn", "tunnel", "site-to-site"))
+    ):
+        return "edge_to_onprem_routing"
     if topology_indicates_direct_onprem_entrypoint(tool_results):
         return "direct_onprem_ingress_routing"
     if any(keyword in normalized for keyword in ("sqs", "queue", "dlq", "pin")):
@@ -492,8 +497,6 @@ def infer_cross_domain_scenario(
         return "onprem_to_loki"
     if any(keyword in normalized for keyword in ("tempo", "otel")):
         return "onprem_to_tempo"
-    if any(keyword in normalized for keyword in ("vpn", "tunnel", "site-to-site")):
-        return "edge_to_onprem_routing"
     if any(keyword in normalized for keyword in ("metallb", "on-prem", "onprem")):
         return "edge_to_onprem_routing"
     if (
