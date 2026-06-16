@@ -1049,6 +1049,18 @@ def test_rca_llm_snapshot_builds_application_root_cause_candidates() -> None:
                     }
                 },
             ),
+            build_success_result(
+                "search_traces",
+                {
+                    "traces": [
+                        {
+                            "trace_id": "trace-predictive-001",
+                            "duration_ms": 1900,
+                            "status": "error",
+                        }
+                    ]
+                },
+            ),
         ],
         context_bundle={"summary_for_llm": {}, "cross_domain": {}},
     )
@@ -1145,6 +1157,104 @@ def test_rca_llm_snapshot_prioritizes_postgres_saturation_alert_candidate() -> N
     assert candidates[1]["candidate_type"] == "trace_latency"
     assert "PostgreSQL 계열 DB 알림" in text
     assert "PostgreSQL connection 포화(high)" in text
+
+
+def test_rca_llm_snapshot_prioritizes_predictive_under_prediction_candidate() -> None:
+    result = AlertmanagerSrePlanResult(
+        status="ANALYZED",
+        incident_key=(
+            "alertmanager:predictivescalingunderprediction:onprem:"
+            "kkpp:service-core:critical"
+        ),
+        intent="predictive_scaling_under_prediction",
+        alert=AlertmanagerSreAlertContext(
+            alert_name="PredictiveScalingUnderPrediction",
+            status="firing",
+            cluster="onprem",
+            namespace="kkpp",
+            service_name="service-core",
+            workload="service-core",
+            severity="critical",
+            summary=(
+                "Predictive scaling under-prediction detected: actual RPS "
+                "exceeded GRU forecast for service-core"
+            ),
+            description=(
+                "actual_rps=165.18, predicted_rps=20.53, "
+                "deviation_percent=704.49, adjusted_pods=2"
+            ),
+        ),
+        executed_tools=[
+            build_success_result(
+                "get_service_trace_summary",
+                {
+                    "summary": {
+                        "slow_spans": [
+                            {
+                                "service": "service-core",
+                                "duration_ms": 1800,
+                                "status": "error",
+                            }
+                        ]
+                    }
+                },
+            ),
+            build_success_result(
+                "search_traces",
+                {
+                    "traces": [
+                        {
+                            "trace_id": "trace-predictive-001",
+                            "duration_ms": 1900,
+                            "status": "error",
+                        }
+                    ]
+                },
+            ),
+        ],
+        context_bundle={
+            "failure_boundary_candidates": [
+                {"boundary": "dns", "status": "healthy", "confidence": "medium"},
+                {
+                    "boundary": "onprem_ingress",
+                    "status": "healthy",
+                    "confidence": "medium",
+                },
+                {
+                    "boundary": "k8s_service",
+                    "status": "healthy",
+                    "confidence": "medium",
+                },
+            ],
+        },
+        rca_analysis={
+            "run_status": "SUCCESS",
+            "answer": "Trace latency is the likely root cause.",
+        },
+    )
+
+    snapshot_payload = build_rca_llm_snapshot_payload(result)
+    candidates = snapshot_payload["root_cause_candidates"]
+    text = build_analysis_notification_text(result)
+
+    assert snapshot_payload["analysis_contract"]["incident_focus"] == {
+        "category": "predictive_scaling_under_prediction",
+        "primary_domain": "predictive_scaling",
+        "routing_boundaries_are_primary": False,
+        "expected_primary_evidence": [
+            "actual RPS versus GRU predicted RPS",
+            "RPS deviation percent",
+            "KEDA adjusted_pods",
+            "current and desired replicas",
+            "prediction freshness, target_time, and model version",
+        ],
+    }
+    assert candidates[0]["candidate_type"] == "predictive_under_prediction"
+    assert candidates[0]["confidence"] == "high"
+    assert candidates[1]["candidate_type"] == "trace_latency"
+    assert "예측형 스케일링 알림" in text
+    assert "트래픽 예측 과소 / 실제 RPS 급증(high)" in text
+    assert "실제 RPS와 GRU 예측 RPS 편차를 확인합니다." in text
 
 
 def test_rca_llm_snapshot_prioritizes_kubernetes_pod_health_candidate() -> None:
