@@ -146,6 +146,18 @@ class Settings(BaseSettings):
         le=1440,
         alias="PREDICTION_SCALING_WATCHER_HORIZON_MINUTES",
     )
+    prediction_scaling_rca_trigger_enabled: bool = Field(
+        default=False,
+        alias="PREDICTION_SCALING_RCA_TRIGGER_ENABLED",
+    )
+    prediction_scaling_rca_trigger_min_risk: str = Field(
+        default="high",
+        alias="PREDICTION_SCALING_RCA_TRIGGER_MIN_RISK",
+    )
+    prediction_scaling_rca_trigger_cluster: str = Field(
+        default="onprem",
+        alias="PREDICTION_SCALING_RCA_TRIGGER_CLUSTER",
+    )
     sre_inspection_watcher_enabled: bool = Field(
         default=False,
         alias="SRE_INSPECTION_WATCHER_ENABLED",

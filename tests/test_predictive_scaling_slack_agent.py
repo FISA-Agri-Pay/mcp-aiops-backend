@@ -60,6 +60,15 @@ class FakeSlackSender:
         )
 
 
+class FakeSreAgentService:
+    def __init__(self) -> None:
+        self.calls: list[dict[str, object]] = []
+
+    def handle_manual_inspection(self, request, **kwargs):
+        self.calls.append({"request": request, **kwargs})
+        return object()
+
+
 class FakeEndpointAgent:
     def __init__(self) -> None:
         self.calls: list[dict[str, object]] = []
@@ -298,6 +307,78 @@ def test_predictive_scaling_slack_agent_dedupes_same_risk_fingerprint() -> None:
     assert second.status == "SKIPPED"
     assert second.skipped_reason == "Current predictive scaling risk was already notified."
     assert len(slack_sender.sent_messages) == 1
+
+
+def test_predictive_scaling_slack_agent_triggers_sre_rca_for_high_under_prediction() -> None:
+    slack_sender = FakeSlackSender()
+    sre_agent = FakeSreAgentService()
+    service = PredictiveScalingSlackAgentService(
+        status_reader=FakeStatusReader(risk_level="high", scale_gap=0),
+        slack_sender=slack_sender,
+        sre_agent_service=sre_agent,
+        app_settings=Settings(
+            PREDICTION_SCALING_SLACK_WEBHOOK_URL="https://hooks.slack.com/services/test",
+            PREDICTION_SCALING_SLACK_CHANNEL="#predictive-aiops",
+            PREDICTION_SCALING_RCA_TRIGGER_ENABLED=True,
+            PREDICTION_SCALING_RCA_TRIGGER_MIN_RISK="high",
+            PREDICTION_SCALING_RCA_TRIGGER_CLUSTER="onprem",
+        ),
+    )
+
+    result = service.run_once()
+
+    assert result.status == "NOTIFIED"
+    assert result.rca_triggered_services == ["service-payment"]
+    assert len(sre_agent.calls) == 1
+    request = sre_agent.calls[0]["request"]
+    assert request.inspection_type == "application"
+    assert request.cluster == "onprem"
+    assert request.namespace == "kkpp"
+    assert request.service == "service-payment"
+    assert request.alert_name == "PredictiveScalingUnderPrediction"
+    assert sre_agent.calls[0]["actor"] == "predictive-scaling-watcher"
+    assert sre_agent.calls[0]["execute"] is True
+    assert sre_agent.calls[0]["notify"] is True
+
+
+def test_predictive_scaling_slack_agent_does_not_trigger_sre_rca_for_safety_margin() -> None:
+    item = build_status_item(
+        risk_level="medium",
+        scale_gap=0,
+        actual_rps=50.0,
+        predicted_rps=250.0,
+        rps_deviation=-200.0,
+        rps_deviation_percent=80.0,
+        prediction_match_status="over_predicted",
+    )
+    slack_sender = FakeSlackSender()
+    sre_agent = FakeSreAgentService()
+    service = PredictiveScalingSlackAgentService(
+        status_reader=FakeStatusReader(risk_level="medium", scale_gap=0),
+        slack_sender=slack_sender,
+        sre_agent_service=sre_agent,
+        app_settings=Settings(
+            PREDICTION_SCALING_SLACK_WEBHOOK_URL="https://hooks.slack.com/services/test",
+            PREDICTION_SCALING_RCA_TRIGGER_ENABLED=True,
+            PREDICTION_SCALING_RCA_TRIGGER_MIN_RISK="medium",
+        ),
+    )
+    service._status_reader.get_predictive_scaling_status = lambda **kwargs: (
+        PredictiveScalingStatusResult(
+            namespace="kkpp",
+            service=None,
+            horizon_minutes=180,
+            generated_at="2026-06-15T00:00:00+00:00",
+            items=[item],
+            summary="safety margin",
+        )
+    )
+
+    result = service.run_once(min_risk="medium")
+
+    assert result.status == "NOTIFIED"
+    assert result.rca_triggered_services == []
+    assert sre_agent.calls == []
 
 
 def test_predictive_scaling_slack_agent_dry_run_builds_message_without_sending() -> None:

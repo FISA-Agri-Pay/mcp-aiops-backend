@@ -93,7 +93,9 @@ def create_app() -> FastAPI:
         llmops_service=llmops_service,
     )
     app.state.alertmanager_sre_agent_service = alertmanager_sre_agent_service
-    predictive_scaling_slack_agent_service = PredictiveScalingSlackAgentService()
+    predictive_scaling_slack_agent_service = PredictiveScalingSlackAgentService(
+        sre_agent_service=alertmanager_sre_agent_service,
+    )
     app.state.predictive_scaling_slack_agent_service = (
         predictive_scaling_slack_agent_service
     )
