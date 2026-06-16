@@ -424,16 +424,6 @@ class InfraRcaService:
                     last_error=f"{exc.__class__.__name__}: {exc}",
                 )
                 delivery_statuses.append("FAILED")
-        slack_notification_id, slack_status = self._send_rca_slack_notification(
-            stage=stage,
-            incident=incident,
-            rca_report=rca_report,
-            subject=subject,
-        )
-        if slack_notification_id is not None:
-            notification_ids.append(slack_notification_id)
-        if slack_status is not None:
-            delivery_statuses.append(slack_status)
         return notification_ids, delivery_statuses
 
     def _send_rca_slack_notification(

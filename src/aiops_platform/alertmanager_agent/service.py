@@ -392,30 +392,9 @@ class AlertmanagerSreAgentService:
         result: AlertmanagerSrePlanResult,
     ) -> list[AlertmanagerSreNotificationResult]:
         subject = build_collection_notification_subject(result)
-        html_body = build_collection_notification_html(result)
         slack_text = build_collection_notification_text(result)
         payload = build_collection_notification_payload(result)
         notifications = []
-
-        email_recipients = self._resolve_email_recipients()
-        if not email_recipients:
-            notifications.append(
-                AlertmanagerSreNotificationResult(
-                    channel="EMAIL",
-                    status="SKIPPED",
-                    error_message="RCA_EMAIL_RECIPIENTS is empty.",
-                )
-            )
-        for recipient in email_recipients:
-            notifications.append(
-                self._deliver_email_notification(
-                    recipient=recipient,
-                    subject=subject,
-                    html_body=html_body,
-                    payload=payload,
-                    result=result,
-                )
-            )
 
         notifications.append(
             self._deliver_slack_notification(
@@ -432,31 +411,9 @@ class AlertmanagerSreAgentService:
         result: AlertmanagerSrePlanResult,
     ) -> list[AlertmanagerSreNotificationResult]:
         subject = build_analysis_notification_subject(result)
-        html_body = build_analysis_notification_html(result)
         slack_text = build_analysis_notification_text(result)
         payload = build_analysis_notification_payload(result)
         notifications = []
-
-        email_recipients = self._resolve_email_recipients()
-        if not email_recipients:
-            notifications.append(
-                AlertmanagerSreNotificationResult(
-                    channel="EMAIL",
-                    status="SKIPPED",
-                    error_message="RCA_EMAIL_RECIPIENTS is empty.",
-                )
-            )
-        for recipient in email_recipients:
-            notifications.append(
-                self._deliver_email_notification(
-                    recipient=recipient,
-                    subject=subject,
-                    html_body=html_body,
-                    payload=payload,
-                    result=result,
-                    notification_stage="sre_analysis",
-                )
-            )
 
         notifications.append(
             self._deliver_slack_notification(

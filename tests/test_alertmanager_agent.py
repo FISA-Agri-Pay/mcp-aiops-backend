@@ -1311,7 +1311,7 @@ def test_alertmanager_sre_webhook_execute_query_uses_collection_mode() -> None:
     assert result["executed_tools"]
 
 
-def test_alertmanager_sre_agent_execute_notify_sends_email_and_slack() -> None:
+def test_alertmanager_sre_agent_execute_notify_sends_slack_only() -> None:
     dispatcher = FakeReadOnlyDispatcher()
     notification_service = FakeNotificationService()
     email_sender = FakeEmailSender()
@@ -1338,35 +1338,27 @@ def test_alertmanager_sre_agent_execute_notify_sends_email_and_slack() -> None:
     assert [item.status for item in result.notification_results] == [
         "SENT",
         "SENT",
-        "SENT",
-        "SENT",
     ]
     assert [item.channel for item in result.notification_results] == [
-        "EMAIL",
         "SLACK",
-        "EMAIL",
         "SLACK",
     ]
     assert result.status == "ANALYZED"
     assert result.rca_analysis is not None
     assert result.rca_analysis["run_status"] == "SUCCESS"
-    assert email_sender.sent_messages[0]["recipient"] == "ops@example.com"
-    assert "RCA evidence collected" in email_sender.sent_messages[0]["subject"]
-    assert "RCA analysis completed" in email_sender.sent_messages[1]["subject"]
+    assert email_sender.sent_messages == []
     assert "raw logs" in slack_sender.sent_messages[0]["text"].lower()
     assert "Synthetic RCA analysis completed" in slack_sender.sent_messages[1]["text"]
     assert slack_sender.sent_messages[0]["channel"] == "#sre-alerts"
     assert [item.channel for item in notification_service.notifications] == [
-        "EMAIL",
         "SLACK",
-        "EMAIL",
         "SLACK",
     ]
     assert all(
         update["status"] == "SENT"
         for update in notification_service.status_updates
     )
-    assert "hooks.slack.com" not in str(notification_service.notifications[1].payload)
+    assert "hooks.slack.com" not in str(notification_service.notifications[0].payload)
     assert notification_service.rca_runs
     llm_input = notification_service.rca_runs[0]
     assert len(json.dumps(llm_input, ensure_ascii=False, default=str)) < 70000
@@ -1406,7 +1398,10 @@ def test_alertmanager_sre_webhook_execute_notify_query_sends_notifications() -> 
     assert [item["status"] for item in body["notification_results"]] == [
         "SENT",
         "SENT",
-        "SENT",
-        "SENT",
     ]
+    assert [item["channel"] for item in body["notification_results"]] == [
+        "SLACK",
+        "SLACK",
+    ]
+    assert email_sender.sent_messages == []
     assert body["rca_analysis"]["run_status"] == "SUCCESS"

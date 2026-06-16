@@ -225,17 +225,19 @@ def test_alertmanager_webhook_sends_preliminary_and_final_rca_email() -> None:
     ]
 
 
-def test_alertmanager_webhook_sends_preliminary_and_final_rca_slack() -> None:
+def test_alertmanager_webhook_does_not_send_rca_report_to_slack() -> None:
     repository = FakeInfraRcaRepository()
     llmops_service = FakeLlmOpsService()
     slack_sender = FakeSlackSender()
+    email_sender = FakeEmailSender()
     service = InfraRcaService(
         repository=repository,
         orchestration_repository=FakeOrchestrationRepository(repository),
         llmops_service=llmops_service,
         infraops_service=FakeInfraOpsService(),
         prediction_scaling_service=FakePredictionScalingService(),
-        email_recipients=[],
+        email_sender=email_sender,
+        email_recipients=["ops@example.com"],
         slack_sender=slack_sender,
         app_settings=Settings(
             RCA_SLACK_WEBHOOK_URL="https://hooks.slack.com/services/test",
@@ -250,20 +252,13 @@ def test_alertmanager_webhook_sends_preliminary_and_final_rca_slack() -> None:
 
     assert webhook_result.preliminary_notification_ids == ["notification-1"]
     assert result.final_notification_ids == ["notification-3"]
-    assert [message["channel"] for message in slack_sender.sent_messages] == [
-        "#aiops-alerts",
-        "#aiops-alerts",
+    assert slack_sender.sent_messages == []
+    assert [message["recipient"] for message in email_sender.sent_messages] == [
+        "ops@example.com",
+        "ops@example.com",
     ]
-    assert "RCA analysis started" in slack_sender.sent_messages[0]["text"]
-    assert ":hourglass_flowing_sand: 1. 수집 시작" in slack_sender.sent_messages[0]["text"]
-    assert "Final RCA report" in slack_sender.sent_messages[1]["text"]
-    assert ":vertical_traffic_light: 1. RCA 요약" in slack_sender.sent_messages[1]["text"]
-    assert "probable_root_cause:" in slack_sender.sent_messages[1]["text"]
-    assert ":hammer_and_wrench: 3. 권장 확인/조치" in slack_sender.sent_messages[1]["text"]
-    assert [notification.channel for notification in llmops_service.notifications] == [
-        "SLACK",
-        "DASHBOARD",
-        "SLACK",
+    assert "SLACK" not in [
+        notification.channel for notification in llmops_service.notifications
     ]
 
 
