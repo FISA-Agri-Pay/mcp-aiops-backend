@@ -4,7 +4,10 @@ from fastapi.testclient import TestClient
 
 from aiops_platform.core.config import Settings
 from aiops_platform.main import create_app
-from aiops_platform.prediction_scaling.agent import PredictiveScalingSlackAgentService
+from aiops_platform.prediction_scaling.agent import (
+    PredictiveScalingSlackAgentService,
+    build_predictive_scaling_slack_text,
+)
 from aiops_platform.prediction_scaling.schemas import (
     PredictiveScalingSlackAgentResult,
     PredictiveScalingStatusItem,
@@ -91,7 +94,38 @@ def build_status_item(
     *,
     risk_level: str = "high",
     scale_gap: float | None = 3.0,
+    actual_rps: float | None = None,
+    predicted_rps: float | None = None,
+    rps_deviation: float | None = None,
+    rps_deviation_percent: float | None = None,
+    prediction_match_status: str | None = None,
+    summary: str | None = None,
 ) -> PredictiveScalingStatusItem:
+    resolved_predicted_rps = predicted_rps if predicted_rps is not None else 250.0
+    resolved_actual_rps = (
+        actual_rps if actual_rps is not None else 380.0 if risk_level == "high" else 260.0
+    )
+    resolved_deviation = (
+        rps_deviation
+        if rps_deviation is not None
+        else 130.0
+        if risk_level == "high"
+        else 10.0
+    )
+    resolved_deviation_percent = (
+        rps_deviation_percent
+        if rps_deviation_percent is not None
+        else 52.0
+        if risk_level == "high"
+        else 4.0
+    )
+    resolved_prediction_match_status = (
+        prediction_match_status
+        if prediction_match_status is not None
+        else "under_predicted"
+        if risk_level == "high"
+        else "matched"
+    )
     return PredictiveScalingStatusItem(
         namespace="kkpp",
         service="service-payment",
@@ -102,7 +136,7 @@ def build_status_item(
         model_version="service_gru_annual_2026_20260614082519",
         target_time="2026-06-15T00:05:00+00:00",
         created_at="2026-06-15T00:00:00+00:00",
-        predicted_rps=250.0,
+        predicted_rps=resolved_predicted_rps,
         predicted_pods=4.0,
         base_pods=1.0,
         extra_demand=8.0,
@@ -115,13 +149,13 @@ def build_status_item(
         scaling_active=True,
         scaling_limited=False,
         prediction_freshness="fresh",
-        actual_rps=380.0 if risk_level == "high" else 260.0,
-        rps_deviation=130.0 if risk_level == "high" else 10.0,
-        rps_deviation_percent=52.0 if risk_level == "high" else 4.0,
-        prediction_match_status="under_predicted" if risk_level == "high" else "matched",
+        actual_rps=resolved_actual_rps,
+        rps_deviation=resolved_deviation,
+        rps_deviation_percent=resolved_deviation_percent,
+        prediction_match_status=resolved_prediction_match_status,
         scaling_track_status="lagging" if risk_level == "high" else "tracking",
         risk_level=risk_level,
-        summary="service-payment: 예측 스케일 차이가 큽니다.",
+        summary=summary or "service-payment: 예측 스케일 차이가 큽니다.",
     )
 
 
@@ -153,6 +187,40 @@ def test_predictive_scaling_slack_agent_sends_high_risk_notification() -> None:
     assert "실제 트래픽이 예측보다 큼" in slack_sender.sent_messages[0]["text"]
     assert "KEDA 적용값" in slack_sender.sent_messages[0]["text"]
     assert "hooks.slack.com" not in result.model_dump_json()
+
+
+def test_predictive_scaling_slack_text_treats_over_prediction_as_safety_margin() -> None:
+    item = build_status_item(
+        risk_level="medium",
+        scale_gap=0,
+        actual_rps=50.0,
+        predicted_rps=250.0,
+        rps_deviation=-200.0,
+        rps_deviation_percent=80.0,
+        prediction_match_status="over_predicted",
+        summary=(
+            "service-payment: 실제 RPS가 예측보다 낮습니다 "
+            "(편차=80%). 현재는 예측 기반 사전 여유 범위 안에서 동작 중입니다."
+        ),
+    )
+    status_result = PredictiveScalingStatusResult(
+        namespace="kkpp",
+        service=None,
+        horizon_minutes=180,
+        generated_at="2026-06-15T00:00:00+00:00",
+        items=[item],
+        summary="1개 서비스에서 중간 예측 스케일링 위험이 감지되었습니다.",
+    )
+
+    text = build_predictive_scaling_slack_text(
+        status_result=status_result,
+        notifiable_items=[item],
+        min_risk="medium",
+    )
+
+    assert "예측 여유 범위 - 실제 트래픽이 예측보다 낮음" in text
+    assert "현재는 예측 기반 사전 여유 범위 안에서 동작 중입니다." in text
+    assert "과다 스케일링 가능성" not in text
 
 
 def test_predictive_scaling_slack_agent_skips_low_risk_status() -> None:

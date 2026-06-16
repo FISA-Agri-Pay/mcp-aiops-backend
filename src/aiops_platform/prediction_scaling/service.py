@@ -1088,7 +1088,10 @@ def build_predictive_item_summary(
                 "max replica 설정이 예측 수요 반영을 막고 있을 수 있습니다."
             )
         if scaling_active is False:
-            return f"{service}: HPA 스케일링이 비활성 상태라 KEDA/HPA 신호가 적용되지 않고 있습니다."
+            return (
+                f"{service}: HPA 스케일링이 비활성 상태라 "
+                "KEDA/HPA 신호가 적용되지 않고 있습니다."
+            )
         if max_replicas is not None and onprem_adjusted_pods is not None:
             if onprem_adjusted_pods > max_replicas:
                 return f"{service}: 예측 수요가 max replicas({max_replicas})를 초과합니다."
@@ -1096,14 +1099,15 @@ def build_predictive_item_summary(
     if risk_level == "medium":
         if prediction_match_status == "under_predicted":
             return (
-                f"{service}: 실제 RPS가 예측보다 높아지는 흐름입니다 "
-                f"(편차={format_number(rps_deviation_percent)}%)."
+                f"{service}: 실제 RPS가 예측보다 높습니다 "
+                f"(편차={format_number(rps_deviation_percent)}%). "
+                "예측 과소 또는 갑작스러운 트래픽 증가 가능성을 확인하세요."
             )
         if prediction_match_status == "over_predicted":
             return (
                 f"{service}: 실제 RPS가 예측보다 낮습니다 "
                 f"(편차={format_number(rps_deviation_percent)}%). "
-                "과다 스케일링 가능성을 확인하세요."
+                "현재는 예측 기반 사전 여유 범위 안에서 동작 중입니다."
             )
         if freshness != "fresh":
             return (

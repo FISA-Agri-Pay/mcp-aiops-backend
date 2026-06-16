@@ -338,8 +338,8 @@ def format_risk_label(value: str) -> str:
 def format_prediction_match(value: object) -> str:
     labels = {
         "matched": "예측과 실제가 대체로 일치",
-        "under_predicted": "실제 트래픽이 예측보다 큼",
-        "over_predicted": "예측이 실제보다 큼",
+        "under_predicted": "실제 트래픽이 예측보다 큼 - 예측 과소",
+        "over_predicted": "예측 여유 범위 - 실제 트래픽이 예측보다 낮음",
         "missing_prediction": "예측값 없음",
         "unknown": "확인 불가",
     }

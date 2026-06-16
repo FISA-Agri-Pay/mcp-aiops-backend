@@ -12,6 +12,7 @@ from aiops_platform.prediction_scaling.schemas import PredictiveMetricValue
 from aiops_platform.prediction_scaling.service import (
     PredictionScalingService,
     PredictionScalingValidationError,
+    build_predictive_item_summary,
 )
 from tests.seed_constants import (
     MODEL_TRAFFIC_V1_ID,
@@ -456,6 +457,51 @@ def test_predictive_scaling_status_marks_missing_prediction_as_high() -> None:
 
     assert item.prediction_freshness == "missing"
     assert item.risk_level == "high"
+
+
+def test_predictive_item_summary_marks_under_prediction_as_forecast_miss() -> None:
+    summary = build_predictive_item_summary(
+        service="service-core",
+        risk_level="medium",
+        freshness="fresh",
+        scale_gap=0,
+        scaling_active=True,
+        scaling_limited=False,
+        current_replicas=2,
+        onprem_adjusted_pods=2,
+        max_replicas=6,
+        actual_rps=185.7,
+        predicted_rps=145.65,
+        rps_deviation_percent=27.5,
+        prediction_match_status="under_predicted",
+        scaling_track_status="tracking",
+    )
+
+    assert "실제 RPS가 예측보다 높습니다" in summary
+    assert "예측 과소 또는 갑작스러운 트래픽 증가 가능성" in summary
+
+
+def test_predictive_item_summary_treats_over_prediction_as_safety_margin() -> None:
+    summary = build_predictive_item_summary(
+        service="service-payment",
+        risk_level="medium",
+        freshness="fresh",
+        scale_gap=0,
+        scaling_active=True,
+        scaling_limited=False,
+        current_replicas=4,
+        onprem_adjusted_pods=4,
+        max_replicas=8,
+        actual_rps=0.0,
+        predicted_rps=298.6,
+        rps_deviation_percent=100.0,
+        prediction_match_status="over_predicted",
+        scaling_track_status="tracking",
+    )
+
+    assert "실제 RPS가 예측보다 낮습니다" in summary
+    assert "예측 기반 사전 여유 범위 안에서 동작 중" in summary
+    assert "과다 스케일링 가능성" not in summary
 
 
 def test_invalid_prediction_scaling_inputs_raise_domain_errors() -> None:
