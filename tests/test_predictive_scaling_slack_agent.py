@@ -190,6 +190,28 @@ def test_predictive_scaling_slack_agent_skips_when_webhook_is_missing() -> None:
     assert slack_sender.sent_messages == []
 
 
+def test_predictive_scaling_slack_agent_does_not_fallback_to_rca_slack() -> None:
+    slack_sender = FakeSlackSender()
+    service = PredictiveScalingSlackAgentService(
+        status_reader=FakeStatusReader(risk_level="high"),
+        slack_sender=slack_sender,
+        app_settings=Settings(
+            PREDICTION_SCALING_SLACK_WEBHOOK_URL="",
+            RCA_SLACK_WEBHOOK_URL="https://hooks.slack.com/services/rca",
+            PREDICTION_SCALING_SLACK_CHANNEL="",
+            RCA_SLACK_CHANNEL="#sre-alerts",
+        ),
+    )
+
+    result = service.run_once()
+
+    assert result.status == "SKIPPED"
+    assert result.notification_sent is False
+    assert result.channel is None
+    assert result.skipped_reason == "PREDICTION_SCALING_SLACK_WEBHOOK_URL is required."
+    assert slack_sender.sent_messages == []
+
+
 def test_predictive_scaling_slack_agent_dedupes_same_risk_fingerprint() -> None:
     slack_sender = FakeSlackSender()
     service = PredictiveScalingSlackAgentService(

@@ -140,10 +140,7 @@ class PredictiveScalingSlackAgentService:
                 notification_sent=False,
                 channel=channel,
                 message=message,
-                skipped_reason=(
-                    "PREDICTION_SCALING_SLACK_WEBHOOK_URL or "
-                    "RCA_SLACK_WEBHOOK_URL is required."
-                ),
+                skipped_reason="PREDICTION_SCALING_SLACK_WEBHOOK_URL is required.",
             )
 
         try:
@@ -250,17 +247,11 @@ def select_notifiable_items(
 
 
 def resolve_slack_webhook_url(app_settings: Settings) -> str:
-    return (
-        app_settings.prediction_scaling_slack_webhook_url.strip()
-        or app_settings.rca_slack_webhook_url.strip()
-    )
+    return app_settings.prediction_scaling_slack_webhook_url.strip()
 
 
 def resolve_slack_channel(app_settings: Settings) -> str | None:
-    channel = (
-        app_settings.prediction_scaling_slack_channel.strip()
-        or app_settings.rca_slack_channel.strip()
-    )
+    channel = app_settings.prediction_scaling_slack_channel.strip()
     return channel or None
 
 
