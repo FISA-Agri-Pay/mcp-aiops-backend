@@ -2245,6 +2245,31 @@ def create_mcp_server(
         )
 
     @mcp.tool(
+        name="get_aws_vpn_tunnel_status",
+        description=(
+            "Read AWS Site-to-Site VPN tunnel state through CloudWatch/EC2 "
+            "or the configured ops read proxy."
+        ),
+        tags={"infraops", "aws", "vpn", "cloudwatch", "read"},
+        annotations={"readOnlyHint": True, "openWorldHint": False},
+    )
+    def get_aws_vpn_tunnel_status_tool(
+        vpn_id: str | None = None,
+        region: str | None = None,
+        tunnel_ip_address: str | None = None,
+    ) -> dict[str, Any]:
+        request_payload = {
+            "vpn_id": vpn_id,
+            "region": region,
+            "tunnel_ip_address": tunnel_ip_address,
+        }
+        return call_infraops_read_tool(
+            tool_name="get_aws_vpn_tunnel_status",
+            request_payload=request_payload,
+            operation=lambda: infraops.get_aws_vpn_tunnel_status(**request_payload),
+        )
+
+    @mcp.tool(
         name="get_argocd_application_status",
         description="Read ArgoCD application status through the configured read API.",
         tags={"infraops", "argocd", "gitops", "read"},

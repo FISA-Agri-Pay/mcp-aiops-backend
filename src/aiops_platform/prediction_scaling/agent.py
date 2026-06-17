@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import logging
 from datetime import UTC, datetime
 from threading import Lock
 from typing import Literal, Protocol, cast
 
+from aiops_platform.alertmanager_agent.schemas import AlertmanagerSreInspectionRequest
 from aiops_platform.alertmanager_agent.slack_delivery import (
     SlackDeliveryError,
     SlackSender,
@@ -23,6 +25,7 @@ from aiops_platform.prediction_scaling.service import (
 PredictiveScalingRiskLevel = Literal["low", "medium", "high"]
 
 RISK_ORDER: dict[str, int] = {"low": 0, "medium": 1, "high": 2}
+LOGGER = logging.getLogger(__name__)
 
 
 class PredictiveScalingStatusReader(Protocol):
@@ -38,17 +41,31 @@ class PredictiveScalingStatusReader(Protocol):
         pass
 
 
+class PredictiveScalingRcaRunner(Protocol):
+    def handle_manual_inspection(
+        self,
+        request: AlertmanagerSreInspectionRequest,
+        *,
+        actor: str = "manual-inspection",
+        execute: bool = True,
+        notify: bool = True,
+    ) -> object:
+        pass
+
+
 class PredictiveScalingSlackAgentService:
     def __init__(
         self,
         *,
         status_reader: PredictiveScalingStatusReader | None = None,
         slack_sender: SlackSender | None = None,
+        sre_agent_service: PredictiveScalingRcaRunner | None = None,
         app_settings: Settings = settings,
     ) -> None:
         self._status_reader = status_reader or PredictionScalingService()
         self._settings = app_settings
         self._slack_sender = slack_sender or SlackWebhookSender(app_settings)
+        self._sre_agent_service = sre_agent_service
         self._lock = Lock()
         self._sent_notification_keys: set[str] = set()
 
@@ -166,6 +183,7 @@ class PredictiveScalingSlackAgentService:
             self._replace_notification_keys(
                 {build_notification_key(item) for item in candidates},
             )
+        rca_triggered_services = self._trigger_sre_rca(notifiable_items)
         return build_agent_result(
             status_result=status_result,
             status="NOTIFIED",
@@ -175,7 +193,45 @@ class PredictiveScalingSlackAgentService:
             notification_sent=True,
             channel=channel,
             message=message,
+            rca_triggered_services=rca_triggered_services,
         )
+
+    def _trigger_sre_rca(
+        self,
+        items: list[PredictiveScalingStatusItem],
+    ) -> list[str]:
+        if (
+            self._sre_agent_service is None
+            or not self._settings.prediction_scaling_rca_trigger_enabled
+        ):
+            return []
+        trigger_items = select_rca_trigger_items(
+            items,
+            min_risk=normalize_risk_threshold(
+                self._settings.prediction_scaling_rca_trigger_min_risk
+            ),
+        )
+        triggered_services: list[str] = []
+        for item in trigger_items:
+            request = build_predictive_scaling_rca_request(
+                item,
+                cluster=self._settings.prediction_scaling_rca_trigger_cluster,
+            )
+            try:
+                self._sre_agent_service.handle_manual_inspection(
+                    request,
+                    actor="predictive-scaling-watcher",
+                    execute=True,
+                    notify=True,
+                )
+            except Exception:
+                LOGGER.exception(
+                    "predictive scaling RCA trigger failed service=%s",
+                    item.service,
+                )
+                continue
+            triggered_services.append(item.service)
+        return triggered_services
 
     def _clear_notification_keys(self) -> None:
         with self._lock:
@@ -209,6 +265,7 @@ def build_agent_result(
     message: str | None = None,
     skipped_reason: str | None = None,
     error_message: str | None = None,
+    rca_triggered_services: list[str] | None = None,
 ) -> PredictiveScalingSlackAgentResult:
     return PredictiveScalingSlackAgentResult(
         status=status,
@@ -224,6 +281,7 @@ def build_agent_result(
         message=message,
         skipped_reason=skipped_reason,
         error_message=error_message,
+        rca_triggered_services=rca_triggered_services or [],
         predictive_status=status_result,
     )
 
@@ -246,6 +304,63 @@ def select_notifiable_items(
     return [item for item in items if RISK_ORDER[item.risk_level] >= threshold]
 
 
+def select_rca_trigger_items(
+    items: list[PredictiveScalingStatusItem],
+    *,
+    min_risk: PredictiveScalingRiskLevel,
+) -> list[PredictiveScalingStatusItem]:
+    threshold = RISK_ORDER[min_risk]
+    return [
+        item
+        for item in items
+        if RISK_ORDER[item.risk_level] >= threshold
+        and item.prediction_match_status == "under_predicted"
+    ]
+
+
+def build_predictive_scaling_rca_request(
+    item: PredictiveScalingStatusItem,
+    *,
+    cluster: str,
+) -> AlertmanagerSreInspectionRequest:
+    severity: Literal["warning", "critical"] = (
+        "critical" if item.risk_level == "high" else "warning"
+    )
+    return AlertmanagerSreInspectionRequest(
+        inspection_type="application",
+        cluster=cluster,
+        namespace=item.namespace,
+        service=item.service,
+        workload=item.deployment or item.service,
+        severity=severity,
+        alert_name="PredictiveScalingUnderPrediction",
+        summary=(
+            "Predictive scaling under-prediction detected: actual RPS exceeded "
+            f"GRU forecast for {item.service}"
+        ),
+        description=(
+            f"actual_rps={format_number(item.actual_rps)}, "
+            f"predicted_rps={format_number(item.predicted_rps)}, "
+            f"deviation_percent={format_percent(item.rps_deviation_percent)}, "
+            f"current_replicas={format_number(item.current_replicas)}, "
+            f"desired_replicas={format_number(item.desired_replicas)}, "
+            f"adjusted_pods={format_number(item.onprem_adjusted_pods)}, "
+            f"scale_gap={format_signed_number(item.scale_gap)}, "
+            f"model_version={item.model_version or 'unknown'}"
+        ),
+        labels={
+            "predictive_scaling": "true",
+            "prediction_match": str(item.prediction_match_status),
+            "risk_level": str(item.risk_level),
+            "service": item.service,
+        },
+        annotations={
+            "prediction_summary": item.summary,
+            "model_version": item.model_version or "unknown",
+        },
+    )
+
+
 def resolve_slack_webhook_url(app_settings: Settings) -> str:
     return app_settings.prediction_scaling_slack_webhook_url.strip()
 
@@ -265,14 +380,16 @@ def build_predictive_scaling_slack_text(
         (item.risk_level for item in notifiable_items),
         key=lambda risk: RISK_ORDER[risk],
     )
+    status_label = format_overall_status_label(notifiable_items, risk_label)
+    summary_text = format_overall_summary(status_result.summary, notifiable_items)
     lines = [
-        f"[AIOps] 예측형 스케일링 점검: {format_risk_label(risk_label)}",
+        f"[AIOps] 예측형 스케일링 점검: {status_label}",
         "",
         ":vertical_traffic_light: 1. 요약",
         f"- namespace: {status_result.namespace}",
         f"- 예측 범위: 향후 {status_result.horizon_minutes}분",
         f"- 알림 기준: {format_risk_label(min_risk)} 이상",
-        f"- 점검 결과: {status_result.summary}",
+        f"- 점검 결과: {summary_text}",
         "",
         ":mag_right: 2. 예측/스케일링 상세",
     ]
@@ -290,7 +407,7 @@ def format_slack_item(item: PredictiveScalingStatusItem) -> str:
     lines = [
         "",
         f"*{item.service}*",
-        f"- 위험도: {format_risk_label(item.risk_level)}",
+        f"- 점검 등급: {format_risk_label(item.risk_level)}",
         f"- 예측 일치 상태: {format_prediction_match(item.prediction_match_status)}",
         (
             "- 트래픽: "
@@ -320,6 +437,43 @@ def format_slack_item(item: PredictiveScalingStatusItem) -> str:
         lines.append(f"- 모델 버전: {item.model_version}")
     lines.append(f"- 판단: {item.summary}")
     return "\n".join(lines)
+
+
+def format_overall_status_label(
+    items: list[PredictiveScalingStatusItem],
+    risk_label: str,
+) -> str:
+    if items and all(is_prediction_safety_margin(item) for item in items):
+        return "예측 여유"
+    return format_risk_label(risk_label)
+
+
+def format_overall_summary(
+    summary: str,
+    items: list[PredictiveScalingStatusItem],
+) -> str:
+    safety_margin = sum(is_prediction_safety_margin(item) for item in items)
+    if items and safety_margin == len(items):
+        return (
+            f"{len(items)}개 서비스가 예측 기반 사전 여유 범위 안에서 "
+            "동작 중입니다."
+        )
+    if safety_margin:
+        return (
+            f"{summary} 이 중 {safety_margin}개 서비스는 예측 기반 사전 여유 "
+            "범위 안에서 동작 중입니다."
+        )
+    return summary
+
+
+def is_prediction_safety_margin(item: PredictiveScalingStatusItem) -> bool:
+    return (
+        item.prediction_match_status == "over_predicted"
+        and item.scaling_track_status == "tracking"
+        and (item.scale_gap is None or item.scale_gap <= 0)
+        and item.scaling_active is not False
+        and item.scaling_limited is not True
+    )
 
 
 def format_optional(value: object) -> str:

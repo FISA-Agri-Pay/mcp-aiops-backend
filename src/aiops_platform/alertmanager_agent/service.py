@@ -19,6 +19,7 @@ from aiops_platform.agent.schemas import AgentToolExecutionResult, AgentToolPlan
 from aiops_platform.alertmanager_agent.schemas import (
     AlertmanagerIncidentWindow,
     AlertmanagerSreAlertContext,
+    AlertmanagerSreInspectionRequest,
     AlertmanagerSreNotificationResult,
     AlertmanagerSrePlanResult,
 )
@@ -94,8 +95,15 @@ APPLICATION_SIGNAL_TOOLS = {
         "get_current_image_tags",
     },
     "aws": {"get_sqs_queue_attributes", "get_sqs_dlq_attributes"},
+    "network": {
+        "get_aws_vpn_tunnel_status",
+        "check_onprem_metallb_endpoint",
+        "check_onprem_ingress_route",
+    },
 }
 APPLICATION_CANDIDATE_LABELS = {
+    "vpn_tunnel_degraded": "VPN tunnel degraded",
+    "predictive_under_prediction": "트래픽 예측 과소 / 실제 RPS 급증",
     "postgres_connection_saturation": "PostgreSQL connection 포화",
     "pod_waiting_state": "Pod Pending/Waiting 상태",
     "db_hikaricp": "DB/HikariCP connection pool 압박",
@@ -125,6 +133,12 @@ SRE_INTENT_BY_ALERT_NAME: dict[str, str] = {
     "albtargetunhealthy": "routing_failure",
     "ingress5xxhigh": "routing_failure",
     "onpremmetallbroutingfailure": "routing_failure",
+    "vpntunneldown": "routing_failure",
+    "vpntunnelstatedegraded": "routing_failure",
+    "awsvpntunneldown": "routing_failure",
+    "vpnconnectivitydegraded": "routing_failure",
+    "awstoonpremprobefailed": "routing_failure",
+    "onpremtoawsaioopswebhookfailed": "routing_failure",
     "podcrashlooping": "pod_crashloop",
     "podcrashloopbackoff": "pod_crashloop",
     "kubepodcrashlooping": "pod_crashloop",
@@ -143,6 +157,7 @@ SRE_INTENT_BY_ALERT_NAME: dict[str, str] = {
     "postgresqllockcounthigh": "db_hikaricp_issue",
     "postgresqlserverhighcpuusage": "db_hikaricp_issue",
     "postgresqlserverrootfilesystemalmostfull": "db_hikaricp_issue",
+    "predictivescalingunderprediction": "predictive_scaling_under_prediction",
 }
 
 POSTGRES_ALERT_NAMES = {
@@ -162,6 +177,17 @@ POSTGRES_CONNECTION_SATURATION_ALERT_NAMES = {
     "postgresqlconnectionsaturationhigh",
     "hikaripoolexhausted",
     "hikariconnectionpoolstarvation",
+}
+PREDICTIVE_SCALING_UNDER_PREDICTION_ALERT_NAMES = {
+    "predictivescalingunderprediction",
+}
+VPN_TUNNEL_ALERT_NAMES = {
+    "vpntunneldown",
+    "vpntunnelstatedegraded",
+    "awsvpntunneldown",
+    "vpnconnectivitydegraded",
+    "awstoonpremprobefailed",
+    "onpremtoawsaioopswebhookfailed",
 }
 KUBERNETES_POD_HEALTH_ALERT_NAMES = {
     "podcrashlooping",
@@ -246,6 +272,26 @@ class AlertmanagerSreAgentService:
             actor=actor,
             notify=notify,
         )
+
+    def handle_manual_inspection(
+        self,
+        request: AlertmanagerSreInspectionRequest,
+        *,
+        actor: str = "manual-inspection",
+        execute: bool = True,
+        notify: bool = True,
+    ) -> AlertmanagerSrePlanResult:
+        webhook_request = build_manual_inspection_webhook_request(
+            request,
+            now=normalize_datetime(self._now_provider()),
+        )
+        result = self.handle_webhook(
+            webhook_request,
+            actor=actor,
+            execute=execute,
+            notify=notify,
+        )
+        return result.model_copy(update={"trigger_type": "MANUAL_INSPECTION"})
 
     def _plan_firing_alert(
         self,
@@ -352,17 +398,30 @@ class AlertmanagerSreAgentService:
         if not notify:
             return collected_result
         notification_results = self._send_collection_notifications(collected_result)
-        rca_analysis = self._run_rca_analysis(collected_result)
-        analyzed_result = collected_result.model_copy(
+        return self.analyze_collected_result(
+            collected_result,
+            notify=True,
+            notification_results=notification_results,
+        )
+
+    def analyze_collected_result(
+        self,
+        result: AlertmanagerSrePlanResult,
+        *,
+        notify: bool = True,
+        notification_results: list[AlertmanagerSreNotificationResult] | None = None,
+    ) -> AlertmanagerSrePlanResult:
+        rca_analysis = self._run_rca_analysis(result)
+        analyzed_result = result.model_copy(
             update={
                 "status": "ANALYZED",
                 "rca_analysis": rca_analysis,
             }
         )
-        notification_results.extend(self._send_analysis_notifications(analyzed_result))
-        return analyzed_result.model_copy(
-            update={"notification_results": notification_results}
-        )
+        notifications = list(notification_results or [])
+        if notify:
+            notifications.extend(self._send_analysis_notifications(analyzed_result))
+        return analyzed_result.model_copy(update={"notification_results": notifications})
 
     def _run_rca_analysis(self, result: AlertmanagerSrePlanResult) -> dict[str, Any]:
         try:
@@ -898,6 +957,38 @@ def build_rca_analysis_contract(
                 ),
             ]
         )
+    if is_predictive_scaling_under_prediction_alert(result.alert):
+        rules.extend(
+            [
+                (
+                    "for predictive scaling under-prediction alerts, analyze "
+                    "actual RPS versus GRU predicted RPS before pod lifecycle, "
+                    "routing, or trace latency"
+                ),
+                (
+                    "treat trace latency/error signals as secondary evidence or "
+                    "possible impact unless they directly explain the traffic surge"
+                ),
+                (
+                    "do not classify predictive under-prediction as Kubernetes pod "
+                    "health unless pod lifecycle evidence is directly degraded"
+                ),
+            ]
+        )
+    if is_vpn_tunnel_alert(result.alert):
+        rules.extend(
+            [
+                (
+                    "for VPN tunnel/connectivity alerts, analyze AWS TunnelState, "
+                    "tunnel up/down count, CloudWatch VPN traffic metrics, and "
+                    "on-prem gateway reachability before application logs or traces"
+                ),
+                (
+                    "do not classify VPN tunnel alerts as Kubernetes pod health "
+                    "unless pod lifecycle evidence is directly degraded"
+                ),
+            ]
+        )
     if is_kubernetes_pod_health_alert(result.alert):
         rules.extend(
             [
@@ -1219,6 +1310,8 @@ def build_application_root_cause_candidates(
 
     candidates = []
     for finding_type in (
+        "predictive_under_prediction",
+        "vpn_tunnel_degraded",
         "postgres_connection_saturation",
         "pod_waiting_state",
         "db_hikaricp",
@@ -1230,7 +1323,13 @@ def build_application_root_cause_candidates(
         if finding_type in findings_by_type:
             confidence_override = (
                 "high"
-                if finding_type in {"postgres_connection_saturation", "pod_waiting_state"}
+                if finding_type
+                in {
+                    "predictive_under_prediction",
+                    "vpn_tunnel_degraded",
+                    "postgres_connection_saturation",
+                    "pod_waiting_state",
+                }
                 else None
             )
             candidates.append(
@@ -1285,6 +1384,30 @@ def build_alert_root_cause_findings(
     alert = result.alert
     if alert is None:
         return []
+    if is_predictive_scaling_under_prediction_alert(alert):
+        return [
+            build_application_finding(
+                "predictive_under_prediction",
+                section="alertmanager",
+                tool_name="alert_labels",
+                evidence=(
+                    "실제 RPS가 GRU 예측 RPS를 크게 초과하여 "
+                    "예측 기반 사전 스케일링 기준이 부족한 상태입니다."
+                ),
+            )
+        ]
+    if is_vpn_tunnel_alert(alert):
+        return [
+            build_application_finding(
+                "vpn_tunnel_degraded",
+                section="alertmanager",
+                tool_name="alert_labels",
+                evidence=(
+                    "VPN tunnel/connectivity alert fired; inspect AWS TunnelState, "
+                    "tunnel UP/DOWN count, packet flow, and on-prem gateway reachability."
+                ),
+            )
+        ]
     if is_kubernetes_pod_health_alert(alert):
         return [
             build_application_finding(
@@ -1391,6 +1514,18 @@ def candidate_confidence_rank(confidence: str) -> int:
 
 def next_checks_for_candidate(candidate_type: str) -> list[str]:
     checks = {
+        "predictive_under_prediction": [
+            "check actual RPS versus GRU predicted RPS deviation",
+            "check KEDA adjusted_pods, current replicas, and desired replicas",
+            "check prediction target_time, freshness, and model version",
+            "check p95/p99 latency and trace error spans as secondary signals",
+        ],
+        "vpn_tunnel_degraded": [
+            "check AWS VPN TunnelState for both tunnels",
+            "check active tunnel status and accepted route count",
+            "check TunnelDataIn/TunnelDataOut packet flow around the alert window",
+            "check pfSense gateway and IPsec phase status on-prem",
+        ],
         "postgres_connection_saturation": [
             "check PostgreSQL current sessions versus max_connections",
             "split active and idle sessions by database, user, and client",
@@ -1599,6 +1734,19 @@ def build_incident_focus(alert: AlertmanagerSreAlertContext | None) -> dict[str,
             "primary_domain": "unknown",
             "routing_boundaries_are_primary": True,
         }
+    if is_predictive_scaling_under_prediction_alert(alert):
+        return {
+            "category": "predictive_scaling_under_prediction",
+            "primary_domain": "predictive_scaling",
+            "routing_boundaries_are_primary": False,
+            "expected_primary_evidence": [
+                "actual RPS versus GRU predicted RPS",
+                "RPS deviation percent",
+                "KEDA adjusted_pods",
+                "current and desired replicas",
+                "prediction freshness, target_time, and model version",
+            ],
+        }
     if is_kubernetes_pod_health_alert(alert):
         return {
             "category": "kubernetes_pod_health",
@@ -1678,6 +1826,13 @@ def build_rca_guardrail_prefix(result: AlertmanagerSrePlanResult) -> str:
         for boundary in contract["unknown_boundaries"]
         if boundary in ROUTING_BOUNDARIES
     ]
+    if is_predictive_scaling_under_prediction_alert(result.alert):
+        return build_predictive_scaling_guardrail_prefix(
+            root_cause_candidates=root_cause_candidates,
+            healthy_boundaries=healthy_boundaries,
+            degraded_boundaries=degraded_boundaries,
+            unknown_boundaries=unknown_boundaries,
+        )
     if is_kubernetes_pod_health_alert(result.alert):
         return build_kubernetes_pod_guardrail_prefix(
             root_cause_candidates=root_cause_candidates,
@@ -1735,6 +1890,51 @@ def build_rca_guardrail_prefix(result: AlertmanagerSrePlanResult) -> str:
             "- 라우팅 경계보다 애플리케이션 원인 후보를 우선 확인합니다: "
             f"{candidate_summary}"
         )
+    return "\n".join(lines)
+
+
+def build_predictive_scaling_guardrail_prefix(
+    *,
+    root_cause_candidates: list[dict[str, Any]],
+    healthy_boundaries: list[str],
+    degraded_boundaries: list[str],
+    unknown_boundaries: list[str],
+) -> str:
+    lines = [
+        "자동 판정",
+        (
+            "- 예측형 스케일링 알림이므로 routing/pod lifecycle보다 "
+            "실제 RPS와 GRU 예측값 차이를 우선 분석합니다."
+        ),
+        (
+            "- 실제 RPS가 예측 RPS를 크게 초과하여 "
+            "사전 스케일링 기준이 부족한 상태입니다."
+        ),
+    ]
+    if healthy_boundaries:
+        lines.append(
+            "- Kubernetes/Ingress/MetalLB 경계는 healthy이므로 "
+            f"원인 후보에서 제외합니다: {', '.join(healthy_boundaries)}"
+        )
+    if degraded_boundaries:
+        lines.append(
+            "- degraded 경계는 보조 신호로 확인합니다: "
+            f"{', '.join(degraded_boundaries)}"
+        )
+    if unknown_boundaries:
+        lines.append(
+            "- unknown 경계는 원인 확정이 아니라 데이터 한계로 둡니다: "
+            f"{', '.join(unknown_boundaries)}"
+        )
+    if root_cause_candidates:
+        candidate_summary = ", ".join(
+            f"{candidate['candidate']}({candidate['confidence']})"
+            for candidate in root_cause_candidates[:3]
+        )
+        lines.append(f"- 우선 원인 후보: {candidate_summary}")
+    lines.append(
+        "- trace latency/error 신호는 트래픽 급증의 결과 또는 보조 원인으로 분류합니다."
+    )
     return "\n".join(lines)
 
 
@@ -1854,6 +2054,48 @@ def is_synthetic_sre_alert(alert: AlertmanagerSreAlertContext | None) -> bool:
 
 def is_kubernetes_pod_health_alert_name(normalized_alert_name: str) -> bool:
     return normalized_alert_name in KUBERNETES_POD_HEALTH_ALERT_NAMES
+
+
+def is_predictive_scaling_under_prediction_alert(
+    alert: AlertmanagerSreAlertContext | None,
+) -> bool:
+    if alert is None:
+        return False
+    normalized_name = normalize_alert_name(alert.alert_name)
+    if normalized_name in PREDICTIVE_SCALING_UNDER_PREDICTION_ALERT_NAMES:
+        return True
+    text = " ".join(
+        str(value or "")
+        for value in (
+            alert.alert_name,
+            alert.summary,
+            alert.description,
+        )
+    ).lower()
+    return (
+        "predictive" in text
+        and "under" in text
+        and ("prediction" in text or "forecast" in text)
+    )
+
+
+def is_vpn_tunnel_alert(alert: AlertmanagerSreAlertContext | None) -> bool:
+    if alert is None:
+        return False
+    normalized_name = normalize_alert_name(alert.alert_name)
+    if normalized_name in VPN_TUNNEL_ALERT_NAMES:
+        return True
+    text = " ".join(
+        str(value or "")
+        for value in (
+            alert.alert_name,
+            alert.summary,
+            alert.description,
+        )
+    ).lower()
+    return "vpn" in text and any(
+        keyword in text for keyword in ("tunnel", "ipsec", "site-to-site", "connectivity")
+    )
 
 
 def is_kubernetes_pod_health_alert(alert: AlertmanagerSreAlertContext | None) -> bool:
@@ -2111,6 +2353,10 @@ def notification_boundaries(
 
 
 def determine_incident_type(result: AlertmanagerSrePlanResult) -> str:
+    if is_predictive_scaling_under_prediction_alert(result.alert):
+        return "예측 스케일링 과소 / 실제 RPS 급증"
+    if is_vpn_tunnel_alert(result.alert):
+        return "VPN tunnel/connectivity issue"
     if is_kubernetes_pod_health_alert(result.alert):
         return "Kubernetes Pod 상태 이상"
     if is_postgres_connection_saturation_alert(result.alert):
@@ -2150,6 +2396,97 @@ def determine_impact_scope(result: AlertmanagerSrePlanResult) -> str:
 
 
 def build_deterministic_verdict_lines(
+    result: AlertmanagerSrePlanResult,
+    *,
+    candidates: list[dict[str, Any]],
+    boundaries: list[dict[str, Any]],
+) -> list[str]:
+    alert = result.alert
+    lines = []
+    if is_predictive_scaling_under_prediction_alert(alert):
+        lines.append(
+            "예측형 스케일링 알림이므로 routing/pod lifecycle보다 실제 RPS와 "
+            "GRU 예측값 차이를 우선 분석합니다."
+        )
+        lines.append(
+            "실제 RPS가 예측 RPS를 크게 초과하여 사전 스케일링 기준이 부족한 상태입니다."
+        )
+    elif is_vpn_tunnel_alert(alert):
+        lines.append(
+            "VPN tunnel/connectivity alert이므로 service pod보다 AWS TunnelState와 "
+            "cross-domain network path를 우선 분석합니다."
+        )
+    elif is_kubernetes_pod_health_alert(alert):
+        lines.append(
+            "Kubernetes Pod 상태 알림이므로 routing/trace보다 pod lifecycle을 우선 분석합니다."
+        )
+    elif is_postgres_sre_alert(alert):
+        lines.append(
+            "PostgreSQL 계열 DB 알림이므로 routing boundary보다 "
+            "DB session/connection 압박을 우선 분석합니다."
+        )
+    elif result.intent == "routing_failure":
+        lines.append("Routing/Ingress/MetalLB 경계 상태를 우선 분석합니다.")
+    else:
+        lines.append(
+            "Alertmanager 알림과 수집된 관측 신호를 기준으로 READ-only RCA를 수행했습니다."
+        )
+    return build_deterministic_verdict_detail_lines(
+        result,
+        candidates=candidates,
+        boundaries=boundaries,
+        base_lines=lines,
+    )
+
+
+def build_deterministic_verdict_detail_lines(
+    result: AlertmanagerSrePlanResult,
+    *,
+    candidates: list[dict[str, Any]],
+    boundaries: list[dict[str, Any]],
+    base_lines: list[str],
+) -> list[str]:
+    alert = result.alert
+    lines = list(base_lines)
+    healthy = boundary_names_by_status(boundaries, "healthy")
+    degraded = boundary_names_by_status(boundaries, "degraded")
+    unknown = boundary_names_by_status(boundaries, "unknown")
+    non_routing_focus = (
+        is_predictive_scaling_under_prediction_alert(alert)
+        or is_kubernetes_pod_health_alert(alert)
+        or is_postgres_sre_alert(alert)
+    )
+    if is_synthetic_sre_alert(alert):
+        lines.append("실제 장애를 유발하지 않고 주입한 synthetic 검증 알림입니다.")
+    if healthy:
+        lines.append(f"healthy 경계는 원인 후보에서 제외합니다: {', '.join(healthy)}")
+    if degraded:
+        if non_routing_focus:
+            lines.append(
+                f"라우팅 경계 degraded 신호는 보조 신호로만 기록합니다: {', '.join(degraded)}"
+            )
+        else:
+            lines.append(f"degraded 경계는 우선 확인 대상입니다: {', '.join(degraded)}")
+    if unknown:
+        lines.append(
+            f"unknown 경계는 원인 확정이 아니라 데이터 한계로 둡니다: {', '.join(unknown)}"
+        )
+    if candidates:
+        lines.append(
+            "우선 원인 후보: "
+            + ", ".join(
+                f"{format_candidate_name(candidate)}({candidate.get('confidence')})"
+                for candidate in candidates[:3]
+            )
+        )
+    if is_predictive_scaling_under_prediction_alert(alert):
+        lines.append(
+            "trace latency/error 신호는 트래픽 급증의 결과 또는 보조 원인으로 분류합니다."
+        )
+    return lines
+
+
+def build_deterministic_verdict_lines_legacy(
     result: AlertmanagerSrePlanResult,
     *,
     candidates: list[dict[str, Any]],
@@ -2258,6 +2595,8 @@ def format_candidate_name(candidate: dict[str, Any]) -> str:
     candidate_type = str(candidate.get("candidate_type") or "")
     fallback = str(candidate.get("candidate") or "unknown")
     names = {
+        "vpn_tunnel_degraded": "VPN tunnel degraded",
+        "predictive_under_prediction": "트래픽 예측 과소 / 실제 RPS 급증",
         "pod_waiting_state": "Pod Pending/Waiting 상태",
         "postgres_connection_saturation": "PostgreSQL connection 포화",
         "db_hikaricp": "DB/HikariCP connection pool 압박",
@@ -2279,8 +2618,23 @@ def build_next_check_lines(
         next_checks = candidate.get("next_checks")
         if isinstance(next_checks, list):
             checks.extend(str(item) for item in next_checks if str(item).strip())
+    if is_vpn_tunnel_alert(result.alert):
+        return [
+            format_next_check(item)
+            for item in next_checks_for_candidate("vpn_tunnel_degraded")
+        ]
     if checks:
         return [format_next_check(item) for item in dedupe_strings(checks)[:6]]
+    if is_predictive_scaling_under_prediction_alert(result.alert):
+        return [
+            "실제 RPS와 GRU 예측 RPS 편차를 확인합니다.",
+            (
+                "KEDA adjusted_pods, current replicas, desired replicas가 "
+                "트래픽을 따라가고 있는지 확인합니다."
+            ),
+            "필요 시 예측 모델의 target_time, freshness, 최근 학습/생성 시각을 확인합니다.",
+            "동시간대 p95/p99 latency와 trace error span을 보조 신호로 확인합니다.",
+        ]
     if is_kubernetes_pod_health_alert(result.alert):
         return [format_next_check(item) for item in next_checks_for_candidate("pod_waiting_state")]
     if is_postgres_sre_alert(result.alert):
@@ -2301,6 +2655,31 @@ def build_next_check_lines(
 def format_next_check(value: str) -> str:
     normalized = value.strip()
     translations = {
+        "check AWS VPN TunnelState for both tunnels": (
+            "AWS VPN 두 터널의 TunnelState 값을 확인합니다."
+        ),
+        "check active tunnel status and accepted route count": (
+            "활성 터널 상태와 accepted route count를 확인합니다."
+        ),
+        "check TunnelDataIn/TunnelDataOut packet flow around the alert window": (
+            "알림 시간대의 TunnelDataIn/TunnelDataOut 흐름을 확인합니다."
+        ),
+        "check pfSense gateway and IPsec phase status on-prem": (
+            "온프렘 pfSense gateway와 IPsec phase 상태를 확인합니다."
+        ),
+        "check actual RPS versus GRU predicted RPS deviation": (
+            "실제 RPS와 GRU 예측 RPS 편차를 확인합니다."
+        ),
+        "check KEDA adjusted_pods, current replicas, and desired replicas": (
+            "KEDA adjusted_pods, current replicas, desired replicas가 "
+            "트래픽을 따라가고 있는지 확인합니다."
+        ),
+        "check prediction target_time, freshness, and model version": (
+            "예측 target_time, freshness, model version과 최근 예측 생성 시각을 확인합니다."
+        ),
+        "check p95/p99 latency and trace error spans as secondary signals": (
+            "동시간대 p95/p99 latency와 trace error span을 보조 신호로 확인합니다."
+        ),
         "check Kubernetes events for image pull, scheduling, and mount errors": (
             "Kubernetes events에서 image pull, scheduling, mount 오류를 확인합니다."
         ),
@@ -2371,6 +2750,9 @@ def build_data_limit_lines(
 
 def explain_failed_tool(tool_name: str, *, result: AlertmanagerSrePlanResult) -> str:
     explanations = {
+        "get_aws_vpn_tunnel_status": (
+            "AWS VPN TunnelState 미수집: Pod IAM 권한 또는 AWS ops read proxy 설정을 확인해야 함"
+        ),
         "get_pod_logs": (
             "pod logs 미수집: 컨테이너가 아직 시작되지 않았거나 대상 pod 로그가 없을 수 있음"
         ),
@@ -3020,6 +3402,102 @@ def enum_value(value: object) -> object:
     return getattr(value, "value", value)
 
 
+MANUAL_INSPECTION_ALERT_NAMES = {
+    "current_state": "SyntheticCurrentStateInspection",
+    "routing": "SyntheticRoutingInspection",
+    "kubernetes_pod": "SyntheticKubernetesPodInspection",
+    "postgresql": "SyntheticPostgreSQLInspection",
+    "sqs_publish": "SyntheticSqsPublishInspection",
+    "sqs_consume": "SyntheticSqsConsumeInspection",
+    "application": "SyntheticApplicationInspection",
+}
+MANUAL_INSPECTION_SUMMARIES = {
+    "current_state": "Manual current-state inspection for AIOps SRE Agent",
+    "routing": "Manual routing, ingress, and MetalLB inspection for AIOps SRE Agent",
+    "kubernetes_pod": "Manual Kubernetes pod lifecycle inspection for AIOps SRE Agent",
+    "postgresql": "Manual PostgreSQL connection and database inspection for AIOps SRE Agent",
+    "sqs_publish": "Manual SQS publish failure inspection for AIOps SRE Agent",
+    "sqs_consume": "Manual SQS consume, lag, and DLQ inspection for AIOps SRE Agent",
+    "application": "Manual application error, latency, logs, and traces inspection",
+}
+
+
+def build_manual_inspection_webhook_request(
+    request: AlertmanagerSreInspectionRequest,
+    *,
+    now: datetime,
+) -> AlertmanagerWebhookRequest:
+    inspection_type = request.inspection_type
+    alert_name = (
+        normalized_optional(request.alert_name)
+        or MANUAL_INSPECTION_ALERT_NAMES[inspection_type]
+    )
+    summary = (
+        normalized_optional(request.summary)
+        or MANUAL_INSPECTION_SUMMARIES[inspection_type]
+    )
+    labels = {
+        "alertname": alert_name,
+        "cluster": request.cluster,
+        "namespace": request.namespace,
+        "severity": request.severity,
+        "manual_inspection": "true",
+        "inspection_type": inspection_type,
+    }
+    if request.service:
+        labels["service"] = request.service
+        labels["app"] = request.service
+    if request.workload:
+        labels["workload"] = request.workload
+        labels["deployment"] = request.workload
+    elif request.service:
+        labels["workload"] = request.service
+        labels["deployment"] = request.service
+    if request.pod:
+        labels["pod"] = request.pod
+    labels.update({str(key): str(value) for key, value in request.labels.items()})
+
+    annotations = {"summary": summary}
+    if request.description:
+        annotations["description"] = request.description
+    annotations.update(
+        {str(key): str(value) for key, value in request.annotations.items()}
+    )
+
+    fingerprint_seed = "|".join(
+        [
+            format_datetime(now),
+            alert_name,
+            request.cluster,
+            request.namespace,
+            request.service or "",
+            request.workload or "",
+            request.pod or "",
+        ]
+    )
+    alert = AlertmanagerAlert(
+        status="firing",
+        labels=labels,
+        annotations=annotations,
+        startsAt=format_datetime(now),
+        fingerprint=(
+            "manual-inspection-"
+            f"{slugify(alert_name)}-"
+            f"{hashlib.sha256(fingerprint_seed.encode('utf-8')).hexdigest()[:12]}"
+        ),
+    )
+    return AlertmanagerWebhookRequest(
+        receiver="aiops-sre-manual-inspection",
+        status="firing",
+        alerts=[alert],
+        commonLabels={
+            "manual_inspection": "true",
+            "inspection_type": inspection_type,
+        },
+        commonAnnotations={"summary": summary},
+    )
+
+
 def select_firing_alert(request: AlertmanagerWebhookRequest) -> AlertmanagerAlert | None:
     for alert in request.alerts:
         if alert.status.strip().lower() == "firing":
@@ -3222,6 +3700,9 @@ def build_sre_analysis_message(*, intent: str, context: AlertmanagerSreAlertCont
         "routing_failure": routing_phrase,
         "pod_crashloop": "pod CrashLoopBackOff restart analysis",
         "db_hikaricp_issue": "DB HikariCP connection pool analysis",
+        "predictive_scaling_under_prediction": (
+            "predictive scaling under-prediction actual RPS exceeded GRU forecast analysis"
+        ),
         "general_incident": "on-prem AWS Kubernetes SRE general incident analysis",
     }
     details = [

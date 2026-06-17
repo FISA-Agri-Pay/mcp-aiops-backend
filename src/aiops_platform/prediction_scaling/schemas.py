@@ -216,6 +216,7 @@ class PredictiveScalingSlackAgentResult(BaseModel):
     message: str | None = None
     skipped_reason: str | None = None
     error_message: str | None = None
+    rca_triggered_services: list[str] = Field(default_factory=list)
     predictive_status: PredictiveScalingStatusResult
 
 

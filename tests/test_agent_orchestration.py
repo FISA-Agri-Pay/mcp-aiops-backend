@@ -932,6 +932,36 @@ def test_incident_context_bundle_marks_degraded_edge_boundary() -> None:
     assert boundaries["aws_target_group"]["status"] == "degraded"
 
 
+def test_incident_context_bundle_marks_degraded_vpn_route_boundary() -> None:
+    bundle = build_incident_context_bundle(
+        chat_type="sre_copilot",
+        message="AWS VPN tunnel state degraded for onprem path",
+        capability="edge_routing_analysis",
+        tool_results=[
+            make_sre_tool_result(
+                "get_aws_vpn_tunnel_status",
+                {
+                    "summary": {
+                        "overall_status": "degraded",
+                        "up_tunnel_count": 1,
+                        "down_tunnel_count": 1,
+                    }
+                },
+            ),
+        ],
+    )
+
+    boundaries = {
+        candidate["boundary"]: candidate
+        for candidate in bundle["failure_boundary_candidates"]
+    }
+    assert bundle["cross_domain"]["scenario"] == "edge_to_onprem_routing"
+    assert boundaries["vpn_route"]["status"] == "degraded"
+    assert boundaries["vpn_route"]["health_evidence_tools"] == [
+        "get_aws_vpn_tunnel_status"
+    ]
+
+
 def test_incident_context_bundle_uses_direct_onprem_payment_path_from_topology() -> None:
     bundle = build_incident_context_bundle(
         chat_type="sre_copilot",

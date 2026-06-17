@@ -7,6 +7,7 @@ from aiops_platform.agent.dispatcher import build_tool_result, resolve_registere
 from aiops_platform.agent.schemas import AgentToolExecutionResult, AgentToolPlan
 from aiops_platform.alertmanager_agent.schemas import (
     AlertmanagerSreAlertContext,
+    AlertmanagerSreInspectionRequest,
     AlertmanagerSrePlanResult,
 )
 from aiops_platform.alertmanager_agent.service import (
@@ -15,6 +16,10 @@ from aiops_platform.alertmanager_agent.service import (
     build_collection_notification_text,
     build_notification_idempotency_key,
     build_rca_llm_snapshot_payload,
+)
+from aiops_platform.alertmanager_agent.watcher import (
+    SreInspectionWatcher,
+    build_sre_inspection_watcher,
 )
 from aiops_platform.core.config import Settings
 from aiops_platform.infra_rca.schemas import AlertmanagerWebhookRequest
@@ -360,6 +365,7 @@ def test_alertmanager_sre_agent_dry_run_cloudfront_alb_onprem_routing_tool_plan(
     assert_common_rca_context_tools(result)
     assert result.intent == "routing_failure"
     assert result.capability == "edge_routing_analysis"
+    assert "get_aws_vpn_tunnel_status" in names
     assert "get_cloudfront_origin_mapping" in names
     assert "get_cloudfront_distribution_status" in names
     assert "get_alb_target_health" not in names
@@ -369,6 +375,26 @@ def test_alertmanager_sre_agent_dry_run_cloudfront_alb_onprem_routing_tool_plan(
         "deployment_name": "service-payment",
         "source": "onprem",
     }
+
+
+def test_alertmanager_sre_agent_dry_run_vpn_tunnel_tool_plan() -> None:
+    payload = build_firing_payload(
+        alertname="VpnTunnelStateDegraded",
+        service="aws-vpn",
+        namespace="monitoring",
+        cluster="onprem",
+        severity="warning",
+        summary="Synthetic VPN tunnel state degraded check",
+    )
+
+    result = plan_from_payload(payload)
+
+    names = tool_names(result)
+    assert_dry_run_read_only_plan(result)
+    assert_common_rca_context_tools(result)
+    assert result.intent == "routing_failure"
+    assert result.capability == "edge_routing_analysis"
+    assert "get_aws_vpn_tunnel_status" in names
 
 
 def test_alertmanager_sre_agent_dry_run_db_hikaricp_tool_plan() -> None:
@@ -474,6 +500,62 @@ def test_alertmanager_sre_webhook_api_returns_dry_run_plan() -> None:
         "get_k8s_pods",
         "get_k8s_events",
     }
+
+
+def test_manual_inspection_builds_synthetic_routing_plan() -> None:
+    service = AlertmanagerSreAgentService(
+        now_provider=lambda: datetime(2026, 6, 16, 6, 30, tzinfo=UTC),
+    )
+
+    result = service.handle_manual_inspection(
+        AlertmanagerSreInspectionRequest(
+            inspection_type="routing",
+            cluster="onprem",
+            namespace="kkpp",
+            service="service-payment",
+        ),
+        execute=False,
+        notify=False,
+    )
+
+    assert result.trigger_type == "MANUAL_INSPECTION"
+    assert result.dry_run is True
+    assert result.status == "PLANNED"
+    assert result.receiver == "aiops-sre-manual-inspection"
+    assert result.actor == "manual-inspection"
+    assert result.alert is not None
+    assert result.alert.alert_name == "SyntheticRoutingInspection"
+    assert result.alert.starts_at == "2026-06-16T06:30:00Z"
+    assert result.incident_key == (
+        "alertmanager:syntheticroutinginspection:onprem:kkpp:service-payment:info"
+    )
+    assert result.intent == "routing_failure"
+    assert result.capability == "edge_routing_analysis"
+
+
+def test_manual_inspection_api_is_exposed_under_external_prefix() -> None:
+    client = TestClient(create_app())
+
+    response = client.post(
+        "/api/v1/infra-rca/inspection/run?execute=false&notify=false",
+        json={
+            "inspection_type": "kubernetes_pod",
+            "cluster": "onprem",
+            "namespace": "kkpp",
+            "service": "service-admin",
+            "pod": "service-admin-7fd97fc67d-m2mpf",
+        },
+    )
+
+    assert response.status_code == 200
+    result = response.json()
+    assert result["trigger_type"] == "MANUAL_INSPECTION"
+    assert result["dry_run"] is True
+    assert result["status"] == "PLANNED"
+    assert result["alert"]["alert_name"] == "SyntheticKubernetesPodInspection"
+    assert result["alert"]["service_name"] == "service-admin"
+    assert result["alert"]["pod"] == "service-admin-7fd97fc67d-m2mpf"
+    assert result["intent"] == "pod_crashloop"
 
 
 def test_external_alertmanager_sre_webhook_api_is_exposed() -> None:
@@ -612,6 +694,136 @@ class FakeSlackSender:
                 "channel": channel,
             }
         )
+
+
+class FakeInspectionAgentService:
+    def __init__(self, result: AlertmanagerSrePlanResult) -> None:
+        self.result = result
+        self.inspection_calls: list[dict[str, object]] = []
+        self.analysis_calls: list[AlertmanagerSrePlanResult] = []
+
+    def handle_manual_inspection(self, request, **kwargs):
+        self.inspection_calls.append({"request": request, **kwargs})
+        return self.result
+
+    def analyze_collected_result(self, result, **kwargs):
+        self.analysis_calls.append(result)
+        return result.model_copy(update={"status": "ANALYZED"})
+
+
+def build_inspection_result(*, boundary_status: str) -> AlertmanagerSrePlanResult:
+    return AlertmanagerSrePlanResult(
+        trigger_type="MANUAL_INSPECTION",
+        dry_run=False,
+        status="COLLECTED",
+        incident_key=(
+            "alertmanager:syntheticcurrentstateinspection:onprem:"
+            "kkpp:service-payment:info"
+        ),
+        alert=AlertmanagerSreAlertContext(
+            alert_name="SyntheticCurrentStateInspection",
+            status="firing",
+            severity="info",
+            cluster="onprem",
+            namespace="kkpp",
+            service_name="service-payment",
+            workload="service-payment",
+            summary="Manual current-state inspection for AIOps SRE Agent",
+        ),
+        context_bundle={
+            "failure_boundary_candidates": [
+                {
+                    "boundary": "dns",
+                    "status": "healthy",
+                    "confidence": "medium",
+                },
+                {
+                    "boundary": "k8s_service",
+                    "status": boundary_status,
+                    "confidence": "medium",
+                },
+            ],
+        },
+    )
+
+
+def test_sre_inspection_watcher_sends_short_summary_for_healthy_status() -> None:
+    slack_sender = FakeSlackSender()
+    agent_service = FakeInspectionAgentService(
+        build_inspection_result(boundary_status="healthy")
+    )
+    watcher = SreInspectionWatcher(
+        agent_service=agent_service,
+        interval_seconds=30,
+        inspection_request=AlertmanagerSreInspectionRequest(
+            inspection_type="current_state",
+            cluster="onprem",
+            namespace="kkpp",
+            service="service-payment",
+        ),
+        slack_sender=slack_sender,
+        app_settings=Settings(
+            RCA_SLACK_WEBHOOK_URL="https://hooks.slack.example/test",
+            RCA_SLACK_CHANNEL="#aiops-alerts",
+        ),
+    )
+
+    result = watcher.run_once()
+
+    assert result.status == "COLLECTED"
+    assert agent_service.analysis_calls == []
+    assert len(slack_sender.sent_messages) == 1
+    assert "정기 상태 점검: 정상" in slack_sender.sent_messages[0]["text"]
+    assert "즉시 조치 필요 항목은 없습니다" in slack_sender.sent_messages[0]["text"]
+
+
+def test_sre_inspection_watcher_runs_llm_for_degraded_status() -> None:
+    slack_sender = FakeSlackSender()
+    agent_service = FakeInspectionAgentService(
+        build_inspection_result(boundary_status="degraded")
+    )
+    watcher = SreInspectionWatcher(
+        agent_service=agent_service,
+        interval_seconds=30,
+        inspection_request=AlertmanagerSreInspectionRequest(
+            inspection_type="current_state",
+            cluster="onprem",
+            namespace="kkpp",
+            service="service-payment",
+        ),
+        slack_sender=slack_sender,
+        app_settings=Settings(
+            RCA_SLACK_WEBHOOK_URL="https://hooks.slack.example/test",
+            RCA_SLACK_CHANNEL="#aiops-alerts",
+        ),
+    )
+
+    result = watcher.run_once()
+
+    assert result.status == "ANALYZED"
+    assert len(agent_service.analysis_calls) == 1
+    assert len(slack_sender.sent_messages) == 1
+    assert "정기 상태 점검: 위험" in slack_sender.sent_messages[0]["text"]
+    assert "LLM RCA 분석을 자동 실행" in slack_sender.sent_messages[0]["text"]
+
+
+def test_sre_inspection_watcher_factory_respects_enabled_flag() -> None:
+    service = AlertmanagerSreAgentService()
+
+    disabled = build_sre_inspection_watcher(
+        agent_service=service,
+        app_settings=Settings(SRE_INSPECTION_WATCHER_ENABLED=False),
+    )
+    enabled = build_sre_inspection_watcher(
+        agent_service=service,
+        app_settings=Settings(
+            SRE_INSPECTION_WATCHER_ENABLED=True,
+            SRE_INSPECTION_WATCHER_INTERVAL_SECONDS=30,
+        ),
+    )
+
+    assert disabled is None
+    assert enabled is not None
 
 
 def test_analysis_notification_idempotency_key_includes_llm_run_id() -> None:
@@ -858,6 +1070,18 @@ def test_rca_llm_snapshot_builds_application_root_cause_candidates() -> None:
                     }
                 },
             ),
+            build_success_result(
+                "search_traces",
+                {
+                    "traces": [
+                        {
+                            "trace_id": "trace-predictive-001",
+                            "duration_ms": 1900,
+                            "status": "error",
+                        }
+                    ]
+                },
+            ),
         ],
         context_bundle={"summary_for_llm": {}, "cross_domain": {}},
     )
@@ -954,6 +1178,104 @@ def test_rca_llm_snapshot_prioritizes_postgres_saturation_alert_candidate() -> N
     assert candidates[1]["candidate_type"] == "trace_latency"
     assert "PostgreSQL 계열 DB 알림" in text
     assert "PostgreSQL connection 포화(high)" in text
+
+
+def test_rca_llm_snapshot_prioritizes_predictive_under_prediction_candidate() -> None:
+    result = AlertmanagerSrePlanResult(
+        status="ANALYZED",
+        incident_key=(
+            "alertmanager:predictivescalingunderprediction:onprem:"
+            "kkpp:service-core:critical"
+        ),
+        intent="predictive_scaling_under_prediction",
+        alert=AlertmanagerSreAlertContext(
+            alert_name="PredictiveScalingUnderPrediction",
+            status="firing",
+            cluster="onprem",
+            namespace="kkpp",
+            service_name="service-core",
+            workload="service-core",
+            severity="critical",
+            summary=(
+                "Predictive scaling under-prediction detected: actual RPS "
+                "exceeded GRU forecast for service-core"
+            ),
+            description=(
+                "actual_rps=165.18, predicted_rps=20.53, "
+                "deviation_percent=704.49, adjusted_pods=2"
+            ),
+        ),
+        executed_tools=[
+            build_success_result(
+                "get_service_trace_summary",
+                {
+                    "summary": {
+                        "slow_spans": [
+                            {
+                                "service": "service-core",
+                                "duration_ms": 1800,
+                                "status": "error",
+                            }
+                        ]
+                    }
+                },
+            ),
+            build_success_result(
+                "search_traces",
+                {
+                    "traces": [
+                        {
+                            "trace_id": "trace-predictive-001",
+                            "duration_ms": 1900,
+                            "status": "error",
+                        }
+                    ]
+                },
+            ),
+        ],
+        context_bundle={
+            "failure_boundary_candidates": [
+                {"boundary": "dns", "status": "healthy", "confidence": "medium"},
+                {
+                    "boundary": "onprem_ingress",
+                    "status": "healthy",
+                    "confidence": "medium",
+                },
+                {
+                    "boundary": "k8s_service",
+                    "status": "healthy",
+                    "confidence": "medium",
+                },
+            ],
+        },
+        rca_analysis={
+            "run_status": "SUCCESS",
+            "answer": "Trace latency is the likely root cause.",
+        },
+    )
+
+    snapshot_payload = build_rca_llm_snapshot_payload(result)
+    candidates = snapshot_payload["root_cause_candidates"]
+    text = build_analysis_notification_text(result)
+
+    assert snapshot_payload["analysis_contract"]["incident_focus"] == {
+        "category": "predictive_scaling_under_prediction",
+        "primary_domain": "predictive_scaling",
+        "routing_boundaries_are_primary": False,
+        "expected_primary_evidence": [
+            "actual RPS versus GRU predicted RPS",
+            "RPS deviation percent",
+            "KEDA adjusted_pods",
+            "current and desired replicas",
+            "prediction freshness, target_time, and model version",
+        ],
+    }
+    assert candidates[0]["candidate_type"] == "predictive_under_prediction"
+    assert candidates[0]["confidence"] == "high"
+    assert candidates[1]["candidate_type"] == "trace_latency"
+    assert "예측형 스케일링 알림" in text
+    assert "트래픽 예측 과소 / 실제 RPS 급증(high)" in text
+    assert "실제 RPS와 GRU 예측 RPS 편차를 확인합니다." in text
 
 
 def test_rca_llm_snapshot_prioritizes_kubernetes_pod_health_candidate() -> None:
@@ -1200,6 +1522,41 @@ def test_analysis_notification_formats_routing_incident_sections() -> None:
     assert "degraded 경계는 우선 확인 대상입니다: onprem_metallb" in text
     assert "모델 보조 분석" in text
     assert "요약: MetalLB 경로에서 장애 후보가 확인되었습니다." in text
+
+
+def test_analysis_notification_prioritizes_vpn_tunnel_alert() -> None:
+    result = AlertmanagerSrePlanResult(
+        status="ANALYZED",
+        incident_key="alertmanager:vpntunnelstatedegraded:onprem:monitoring:aws-vpn:warning",
+        intent="routing_failure",
+        alert=AlertmanagerSreAlertContext(
+            alert_name="VpnTunnelStateDegraded",
+            status="firing",
+            cluster="onprem",
+            namespace="monitoring",
+            service_name="aws-vpn",
+            severity="warning",
+            summary="Synthetic VPN tunnel state degraded check",
+        ),
+        context_bundle={
+            "failure_boundary_candidates": [
+                {"boundary": "vpn_route", "status": "degraded", "confidence": "high"},
+                {"boundary": "dns", "status": "healthy", "confidence": "medium"},
+            ],
+        },
+        rca_analysis={
+            "run_status": "SUCCESS",
+            "answer": "VPN tunnel state degraded.",
+        },
+    )
+
+    text = build_analysis_notification_text(result)
+
+    assert "VPN tunnel/connectivity issue" in text
+    assert "VPN tunnel degraded" in text
+    assert "- 1순위 후보: VPN tunnel degraded" in text
+    assert "AWS VPN" in text
+    assert "vpn_route" in text
 
 
 def test_collection_notification_explains_failed_tools() -> None:

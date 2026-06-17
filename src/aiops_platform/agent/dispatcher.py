@@ -302,6 +302,9 @@ class McpToolDispatcher:
             ("infraops-mcp", "get_cloudfront_distribution_status"): (
                 lambda payload: self._infraops.get_cloudfront_distribution_status(**payload)
             ),
+            ("infraops-mcp", "get_aws_vpn_tunnel_status"): (
+                lambda payload: self._infraops.get_aws_vpn_tunnel_status(**payload)
+            ),
             ("infraops-mcp", "get_argocd_application_status"): (
                 lambda payload: self._infraops.get_argocd_application_status(**payload)
             ),

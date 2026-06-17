@@ -580,6 +580,9 @@ class AwsOpsClient:
     def cloudfront_distribution_status(self, **params: str) -> dict[str, Any]:
         return self._get("aws/cloudfront/distribution-status", params=params)
 
+    def vpn_tunnel_status(self, **params: str) -> dict[str, Any]:
+        return self._get("aws/vpn/tunnel-status", params=params)
+
     def _get(self, path: str, *, params: Mapping[str, str]) -> dict[str, Any]:
         if not self.is_configured:
             raise InfraOpsClientError("AWS ops read proxy base URL is not configured.")

@@ -5,8 +5,12 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from aiops_platform.admin_riskops.service import AdminRiskOpsService
 from aiops_platform.alertmanager_agent.service import AlertmanagerSreAgentService
+from aiops_platform.alertmanager_agent.watcher import build_sre_inspection_watcher
 from aiops_platform.api.admin import router as admin_router
 from aiops_platform.api.admin_risk import router as admin_risk_router
+from aiops_platform.api.alertmanager import (
+    inspection_router as alertmanager_inspection_router,
+)
 from aiops_platform.api.alertmanager import router as alertmanager_router
 from aiops_platform.api.farmer import router as farmer_router
 from aiops_platform.api.farmer_bnpl import router as farmer_bnpl_router
@@ -46,14 +50,19 @@ def create_app() -> FastAPI:
     @asynccontextmanager
     async def lifespan(app: FastAPI):
         async with mcp_asgi_app.lifespan(app):
-            watcher = getattr(app.state, "predictive_scaling_slack_watcher", None)
-            if watcher is not None:
-                watcher.start()
+            watchers = [
+                getattr(app.state, "predictive_scaling_slack_watcher", None),
+                getattr(app.state, "sre_inspection_watcher", None),
+            ]
+            for watcher in watchers:
+                if watcher is not None:
+                    watcher.start()
             try:
                 yield
             finally:
-                if watcher is not None:
-                    watcher.stop()
+                for watcher in watchers:
+                    if watcher is not None:
+                        watcher.stop()
 
     app = FastAPI(
         title=settings.app_name,
@@ -80,15 +89,21 @@ def create_app() -> FastAPI:
     app.state.ops_report_service = OpsReportService(llmops_service=llmops_service)
     app.state.admin_riskops_service = AdminRiskOpsService()
     app.state.farmer_bnpl_service = FarmerBnplService()
-    app.state.alertmanager_sre_agent_service = AlertmanagerSreAgentService(
+    alertmanager_sre_agent_service = AlertmanagerSreAgentService(
         llmops_service=llmops_service,
     )
-    predictive_scaling_slack_agent_service = PredictiveScalingSlackAgentService()
+    app.state.alertmanager_sre_agent_service = alertmanager_sre_agent_service
+    predictive_scaling_slack_agent_service = PredictiveScalingSlackAgentService(
+        sre_agent_service=alertmanager_sre_agent_service,
+    )
     app.state.predictive_scaling_slack_agent_service = (
         predictive_scaling_slack_agent_service
     )
     app.state.predictive_scaling_slack_watcher = build_predictive_scaling_slack_watcher(
         agent_service=predictive_scaling_slack_agent_service,
+    )
+    app.state.sre_inspection_watcher = build_sre_inspection_watcher(
+        agent_service=alertmanager_sre_agent_service,
     )
     app.include_router(admin_router)
     app.include_router(admin_router, prefix=f"{EXTERNAL_API_PREFIX}/aiops")
@@ -111,6 +126,8 @@ def create_app() -> FastAPI:
     app.include_router(sre_router, prefix=f"{EXTERNAL_API_PREFIX}/aiops")
     app.include_router(alertmanager_router)
     app.include_router(alertmanager_router, prefix=EXTERNAL_API_PREFIX)
+    app.include_router(alertmanager_inspection_router)
+    app.include_router(alertmanager_inspection_router, prefix=EXTERNAL_API_PREFIX)
     app.mount(MCP_TRANSPORT_MOUNT_PATH, mcp_asgi_app)
     app.mount(f"{EXTERNAL_API_PREFIX}{MCP_TRANSPORT_MOUNT_PATH}", mcp_asgi_app)
     return app

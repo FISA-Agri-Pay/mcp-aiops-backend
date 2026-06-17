@@ -6,6 +6,16 @@ from aiops_platform.agent.schemas import AgentToolExecutionResult, AgentToolPlan
 
 AlertmanagerSrePlanStatus = Literal["PLANNED", "COLLECTED", "ANALYZED", "SKIPPED"]
 AlertmanagerSreNotificationStatus = Literal["SENT", "FAILED", "SKIPPED"]
+AlertmanagerSreTriggerType = Literal["ALERTMANAGER", "MANUAL_INSPECTION"]
+AlertmanagerSreInspectionType = Literal[
+    "current_state",
+    "routing",
+    "kubernetes_pod",
+    "postgresql",
+    "sqs_publish",
+    "sqs_consume",
+    "application",
+]
 
 
 class AlertmanagerIncidentWindow(BaseModel):
@@ -39,8 +49,23 @@ class AlertmanagerSreNotificationResult(BaseModel):
     error_message: str | None = None
 
 
+class AlertmanagerSreInspectionRequest(BaseModel):
+    inspection_type: AlertmanagerSreInspectionType = "current_state"
+    cluster: str = Field(default="onprem", min_length=1, max_length=120)
+    namespace: str = Field(default="kkpp", min_length=1, max_length=120)
+    service: str | None = Field(default=None, max_length=120)
+    workload: str | None = Field(default=None, max_length=120)
+    pod: str | None = Field(default=None, max_length=180)
+    severity: Literal["info", "warning", "critical"] = "info"
+    alert_name: str | None = Field(default=None, max_length=120)
+    summary: str | None = Field(default=None, max_length=500)
+    description: str | None = Field(default=None, max_length=1000)
+    labels: dict[str, str] = Field(default_factory=dict)
+    annotations: dict[str, str] = Field(default_factory=dict)
+
+
 class AlertmanagerSrePlanResult(BaseModel):
-    trigger_type: Literal["ALERTMANAGER"] = "ALERTMANAGER"
+    trigger_type: AlertmanagerSreTriggerType = "ALERTMANAGER"
     dry_run: bool = True
     status: AlertmanagerSrePlanStatus
     receiver: str | None = None

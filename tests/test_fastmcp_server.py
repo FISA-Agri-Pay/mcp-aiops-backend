@@ -162,6 +162,7 @@ def test_fastmcp_server_exposes_registry_tools() -> None:
             "get_alb_target_health",
             "get_cloudfront_origin_mapping",
             "get_cloudfront_distribution_status",
+            "get_aws_vpn_tunnel_status",
             "get_argocd_application_status",
             "get_current_image_tags",
             "get_recent_deployments",
@@ -1142,6 +1143,29 @@ def test_fastmcp_sre_mvp_read_tools_return_results() -> None:
                 response={"status": "Deployed"},
             )
 
+        def get_aws_vpn_tunnel_status(
+            self,
+            vpn_id: str | None = None,
+            region: str | None = None,
+            tunnel_ip_address: str | None = None,
+        ):
+            return InfraOpsExternalReadResult(
+                source="aws",
+                resource="vpn_tunnel_status",
+                request={
+                    "vpn_id": vpn_id,
+                    "region": region,
+                    "tunnel_ip_address": tunnel_ip_address,
+                },
+                response={
+                    "summary": {
+                        "overall_status": "degraded",
+                        "up_tunnel_count": 1,
+                        "down_tunnel_count": 1,
+                    }
+                },
+            )
+
         def get_argocd_application_status(
             self,
             application_name: str,
@@ -1239,6 +1263,10 @@ def test_fastmcp_sre_mvp_read_tools_return_results() -> None:
                 "get_cloudfront_distribution_status",
                 {"distribution_id": "E123"},
             )
+            vpn = await client.call_tool(
+                "get_aws_vpn_tunnel_status",
+                {"vpn_id": "vpn-123", "region": "ap-northeast-2"},
+            )
             argocd = await client.call_tool(
                 "get_argocd_application_status",
                 {"application_name": "service-catalog"},
@@ -1264,6 +1292,8 @@ def test_fastmcp_sre_mvp_read_tools_return_results() -> None:
         assert alb.data["resource"] == "alb_target_health"
         assert origin.data["resource"] == "cloudfront_origin_mapping"
         assert distribution.data["response"]["status"] == "Deployed"
+        assert vpn.data["resource"] == "vpn_tunnel_status"
+        assert vpn.data["response"]["summary"]["overall_status"] == "degraded"
         assert argocd.data["response"]["sync"]["status"] == "Synced"
         assert images.data["items"][0]["tag"] == "v1"
         assert recent.data["items"][0]["deployment_name"] == "api"

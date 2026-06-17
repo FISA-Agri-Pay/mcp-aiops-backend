@@ -3,6 +3,7 @@ from __future__ import annotations
 import re
 import socket
 from collections.abc import Callable
+from datetime import UTC, datetime, timedelta
 from fnmatch import fnmatch
 from ipaddress import ip_address, ip_network
 from time import perf_counter
@@ -764,6 +765,32 @@ class InfraOpsService:
             loader=lambda: self._aws_ops_client.cloudfront_distribution_status(**request),
         )
 
+    def get_aws_vpn_tunnel_status(
+        self,
+        vpn_id: str | None = None,
+        region: str | None = None,
+        tunnel_ip_address: str | None = None,
+    ) -> InfraOpsExternalReadResult:
+        request = clean_request_payload(
+            vpn_id=vpn_id,
+            region=region,
+            tunnel_ip_address=tunnel_ip_address,
+        )
+        if self._aws_ops_client.is_configured:
+            return self._aws_external_read(
+                resource="vpn_tunnel_status",
+                request=request,
+                loader=lambda: self._aws_ops_client.vpn_tunnel_status(**request),
+            )
+        response, note = self._read_aws_vpn_tunnel_status_direct(request)
+        return InfraOpsExternalReadResult(
+            source="aws",
+            resource="vpn_tunnel_status",
+            request=request,
+            response=response,
+            note=note,
+        )
+
     def get_argocd_application_status(
         self,
         application_name: str,
@@ -1397,6 +1424,139 @@ class InfraOpsService:
             request=request,
             response=loader(),
         )
+
+    def _read_aws_vpn_tunnel_status_direct(
+        self,
+        request: dict[str, Any],
+    ) -> tuple[dict[str, Any], str | None]:
+        try:
+            import boto3  # type: ignore[import-not-found]
+        except ImportError:
+            return {}, "AWS SDK boto3 is not installed and AWS ops read proxy is not configured."
+
+        region = str(request.get("region") or "ap-northeast-2")
+        vpn_id = str(request.get("vpn_id") or "").strip()
+        tunnel_ip_filter = str(request.get("tunnel_ip_address") or "").strip()
+        try:
+            ec2 = boto3.client("ec2", region_name=region)
+            cloudwatch = boto3.client("cloudwatch", region_name=region)
+            params: dict[str, Any] = {}
+            if vpn_id:
+                params["VpnConnectionIds"] = [vpn_id]
+            vpn_response = ec2.describe_vpn_connections(**params)
+        except Exception as exc:  # pragma: no cover - exercised only with live AWS credentials.
+            return {}, f"AWS VPN tunnel status read failed: {exc}"
+
+        now = datetime.now(UTC)
+        start_time = now - timedelta(minutes=15)
+        connections = []
+        total_up = 0
+        total_down = 0
+        total_unknown = 0
+        for connection in vpn_response.get("VpnConnections", []):
+            tunnels = []
+            for tunnel in connection.get("VgwTelemetry", []):
+                outside_ip = str(tunnel.get("OutsideIpAddress") or "")
+                if tunnel_ip_filter and outside_ip != tunnel_ip_filter:
+                    continue
+                status = str(tunnel.get("Status") or "UNKNOWN").upper()
+                if status == "UP":
+                    total_up += 1
+                elif status == "DOWN":
+                    total_down += 1
+                else:
+                    total_unknown += 1
+                tunnels.append(
+                    {
+                        "outside_ip": outside_ip,
+                        "status": status,
+                        "accepted_route_count": tunnel.get("AcceptedRouteCount"),
+                        "last_status_change": isoformat_if_datetime(
+                            tunnel.get("LastStatusChange")
+                        ),
+                        "cloudwatch_tunnel_state": read_latest_vpn_tunnel_state(
+                            cloudwatch=cloudwatch,
+                            tunnel_ip_address=outside_ip,
+                            start_time=start_time,
+                            end_time=now,
+                        ),
+                    }
+                )
+            connections.append(
+                {
+                    "vpn_id": connection.get("VpnConnectionId"),
+                    "state": connection.get("State"),
+                    "customer_gateway_id": connection.get("CustomerGatewayId"),
+                    "vpn_gateway_id": connection.get("VpnGatewayId"),
+                    "routes": [
+                        route.get("DestinationCidrBlock")
+                        for route in connection.get("Routes", [])
+                        if route.get("DestinationCidrBlock")
+                    ],
+                    "tunnels": tunnels,
+                }
+            )
+        overall_status = "unknown"
+        if total_up or total_down:
+            if total_down == 0 and total_unknown == 0:
+                overall_status = "healthy"
+            elif total_up == 0:
+                overall_status = "failed"
+            else:
+                overall_status = "degraded"
+        return (
+            {
+                "region": region,
+                "vpn_connections": connections,
+                "summary": {
+                    "overall_status": overall_status,
+                    "up_tunnel_count": total_up,
+                    "down_tunnel_count": total_down,
+                    "unknown_tunnel_count": total_unknown,
+                },
+            },
+            None,
+        )
+
+
+def isoformat_if_datetime(value: Any) -> Any:
+    if isinstance(value, datetime):
+        return value.isoformat()
+    return value
+
+
+def read_latest_vpn_tunnel_state(
+    *,
+    cloudwatch: Any,
+    tunnel_ip_address: str,
+    start_time: datetime,
+    end_time: datetime,
+) -> float | None:
+    if not tunnel_ip_address:
+        return None
+    try:
+        response = cloudwatch.get_metric_statistics(
+            Namespace="AWS/VPN",
+            MetricName="TunnelState",
+            Dimensions=[
+                {
+                    "Name": "TunnelIpAddress",
+                    "Value": tunnel_ip_address,
+                }
+            ],
+            StartTime=start_time,
+            EndTime=end_time,
+            Period=300,
+            Statistics=["Average"],
+        )
+    except Exception:  # pragma: no cover - best-effort enrichment around EC2 telemetry.
+        return None
+    datapoints = response.get("Datapoints") or []
+    if not datapoints:
+        return None
+    latest = max(datapoints, key=lambda item: item.get("Timestamp", start_time))
+    value = latest.get("Average")
+    return float(value) if value is not None else None
 
 
 def parse_allowlist(value: str) -> tuple[str, ...]:
