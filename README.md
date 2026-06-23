@@ -1,19 +1,71 @@
 # mcp-aiops-backend
 
-MCP 기반 농업 BNPL AIOps 백엔드입니다. 농민용 BNPL/농업 조언 챗봇, 관리자 RiskOps Copilot, SRE Copilot, Alertmanager 기반 RCA, 예측 기반 스케일링 점검, 운영 리포트 생성을 하나의 FastAPI 서비스와 MCP Tool 계층으로 연결합니다.
+KongKongFarm 서비스에 붙는 MCP 기반 AIOps 백엔드입니다. 농민 BNPL 업무, 관리자 리스크 운영, SRE 장애 분석을 하나의 Agent/MCP 계층으로 연결해 챗봇, Copilot, RCA, 예측 기반 스케일링 점검, 운영 리포트를 제공합니다.
 
-## 주요 기능
+이 프로젝트는 단순한 BNPL API 서버가 아니라, 농업 BNPL 플랫폼을 운영하면서 생기는 사용자 문의, 관리자 의사결정, 장애 조사, 운영 보고를 AI Agent가 도와주는 백엔드입니다.
 
-| 영역 | 주요 역할 | 대표 API / MCP |
-| --- | --- | --- |
-| Farmer BNPL | 신용 신청, 한도 조회, 상환/연체 조회, 상품 탐색, 장바구니, BNPL checkout 초안 | `POST /farmer/chat/ask`, `GET /farmer/orders/latest/delivery`, `farmer-bnpl-mcp` |
-| Farm Advisory | 작물 일정, 농자재/비료 추천, 날씨/질병 리스크, 수익/현금흐름 시뮬레이션 | `farm-advisory-mcp` |
-| Admin RiskOps | 신용 심사 큐, BNPL/연체 요약, BSS 이력, 재해 리스크 시뮬레이션, 알림 preview | `POST /admin/copilot/ask`, `GET /admin/risk/*`, `admin-riskops-mcp` |
-| SRE / InfraOps | 관측 데이터 조회, Kubernetes 상태 조회, topology knowledge 검색, RCA evidence 수집 | `POST /sre/copilot/ask`, `infraops-mcp` |
-| Alertmanager RCA | firing alert 수신, preliminary/final RCA 알림, due RCA job 실행 | `POST /api/alerts`, `POST /rca/jobs/run-due` |
-| Prediction Scaling | 예측 run/metric, 실측 metric, 예측 오차, scaling event, Slack/RCA trigger | `POST /prediction-scaling/slack-agent/run`, `prediction-scaling-mcp` |
-| Ops Reports | 일간/주간 운영 리포트 생성, RCA/예측/스케일링 요약 포함, SMTP 발송 | `POST /reports/ops`, `POST /reports/ops/{report_id}/send-email` |
-| LLMOps / Audit | prompt version, LLM run, MCP tool-call history, approval queue, notification outbox | `GET /llm-runs`, `GET /mcp/tool-calls`, `GET /approvals`, `GET /notifications` |
+## 프로젝트 목적
+
+| 사용자/상황 | 이 프로젝트가 지원하는 흐름 |
+| --- | --- |
+| 농민 사용자 | BNPL 한도, 상환, 배송, 농자재 추천, 농업 조언을 챗봇으로 안내합니다. |
+| 관리자 | 신용 심사, 연체, 재해 리스크, 고객 위험도를 Copilot으로 조회하고 요약합니다. |
+| SRE/운영자 | Prometheus, Loki, Kubernetes, Alertmanager 데이터를 모아 장애 원인 분석과 운영 리포트를 만듭니다. |
+| LLM Agent | DB나 인프라를 직접 만지지 않고, 권한이 정해진 MCP Tool만 호출해 답변과 실행 이력을 남깁니다. |
+
+즉, 비즈니스 도메인인 **농업 BNPL**과 운영 도메인인 **AIOps/SRE**를 함께 다루는 프로젝트입니다.
+
+## 대표 시나리오
+
+### 1. 농민 BNPL 상담
+
+농민 사용자가 “이번 달 상환해야 할 금액과 남은 한도를 알려줘”라고 물으면 Farmer 챗봇은 사용자 프로필, 신용 한도, 상환 일정, 연체 여부를 MCP Tool로 조회합니다. LLM은 조회 결과를 바탕으로 쉬운 문장으로 답변하고, 필요한 경우 배송 상태나 농자재 추천 카드까지 함께 반환합니다.
+
+```text
+사용자 질문
+  -> Farmer BNPL Agent
+  -> credit / repayment / product MCP Tool 조회
+  -> 답변, UI card, tool-call history 저장
+```
+
+### 2. 관리자 리스크 운영
+
+관리자가 “연체 위험이 높은 고객과 재해 리스크 영향도를 요약해줘”라고 요청하면 Admin Copilot은 심사 큐, BNPL 요약, 연체 요약, BSS 이력, 재해 시뮬레이션 도구를 조합합니다. 결과는 관리자 화면에서 바로 확인할 수 있는 요약과 근거 데이터로 남습니다.
+
+```text
+관리자 질문
+  -> Admin Copilot
+  -> RiskOps / BNPL / overdue MCP Tool 조회
+  -> 위험 요약, 근거 payload, LLM run 저장
+```
+
+### 3. SRE 장애 분석과 RCA
+
+SRE가 “결제 서비스 5xx 원인 봐줘”라고 묻거나 Alertmanager가 firing alert를 보내면 SRE Agent는 서비스, namespace, alert 유형을 추론합니다. 이후 Prometheus metric, Loki log, Kubernetes event, service endpoint, topology knowledge, 이전 RCA 이력을 READ-only Tool로 수집하고 RCA 초안을 생성합니다.
+
+```text
+SRE 질문 또는 Alertmanager alert
+  -> 장애 의도와 대상 서비스 추론
+  -> READ-only InfraOps Tool 계획
+  -> metric / log / trace / Kubernetes / topology 증거 수집
+  -> incident context bundle 및 RCA snapshot 생성
+  -> LLM RCA 분석
+  -> Slack / Email 알림 및 audit 기록
+```
+
+SRE Agent 자동 실행은 읽기 전용입니다. `scale_deployment`, `restart_pod`, `delete_pod`, `run_kubectl_exec`처럼 운영 상태를 바꾸거나 파괴적인 Tool은 자동 RCA 흐름에서 제외합니다.
+
+## 핵심 구성
+
+| 구성 | 역할 |
+| --- | --- |
+| FastAPI API | Farmer/Admin/SRE Copilot, MCP registry, job/history, report endpoint를 제공합니다. |
+| Agent planner | 사용자 질문을 도메인별 의도로 분류하고 필요한 MCP Tool 실행 계획을 만듭니다. |
+| MCP registry/policy | 사용할 수 있는 Tool 목록과 권한을 관리하고 자동 실행 가능 여부를 판단합니다. |
+| MCP dispatcher | Tool 이름을 실제 Python service 함수로 연결해 실행합니다. |
+| LLMOps/Audit | LLM run, prompt version, MCP tool call, approval, notification 이력을 저장합니다. |
+| InfraOps/SRE | Prometheus, Loki, Tempo, Kubernetes, topology knowledge, RCA history를 조회합니다. |
+| Ops Reports | RCA, 예측/스케일링, 운영 metric을 모아 일간/주간 리포트와 이메일 발송을 처리합니다. |
 
 ## 아키텍처 흐름
 
@@ -29,39 +81,28 @@ Agent planner / orchestrator
   |---> LLM provider
   |
   v
-MCP 도구 목록 / 권한 정책
+MCP registry / policy / masking
   |
   v
-MCP 도구 실행 계층
+MCP dispatcher
   |---> PostgreSQL
   |---> Prometheus / Loki / Tempo
   |---> Kubernetes / Infra APIs
+  |---> Topology knowledge
 ```
 
-## MCP 구조
+## MCP 용어 정리
 
-이 프로젝트에서 MCP는 LLM Agent가 외부 시스템을 직접 만지지 않고, 정해진 도구만 호출하도록 만드는 도구 실행 계층입니다.
+LLM Agent가 데이터베이스나 인프라 API를 직접 호출하면 실행 범위를 통제하기 어렵습니다. 이 프로젝트는 모든 외부 동작을 MCP Tool로 감싸고, registry와 policy를 통해 “어떤 도구를, 어떤 권한으로, 어떤 입력에 대해 실행했는지”를 남깁니다.
 
-| 용어 | 이 프로젝트에서의 의미 |
+| 용어 | 의미 |
 | --- | --- |
-| MCP Server | 비슷한 역할의 도구 묶음입니다. 예: `farmer-bnpl-mcp`, `infraops-mcp` |
+| MCP Server | 비슷한 역할의 Tool 묶음입니다. 예: `farmer-bnpl-mcp`, `infraops-mcp` |
 | MCP Tool | Agent가 호출할 수 있는 단일 기능입니다. 예: `get_credit_limit_status`, `query_prometheus` |
-| Registry | 어떤 MCP Server와 Tool이 있는지 등록해 둔 목록입니다. Tool 이름, 설명, 권한을 관리합니다. |
-| Policy | Tool을 자동 실행할 수 있는지, 승인이 필요한지, 차단해야 하는지 판단하는 규칙입니다. |
-| Dispatcher | 실제 Tool 이름을 Python service 함수에 연결해 실행하는 계층입니다. |
+| Registry | MCP Server와 Tool의 이름, 설명, 권한을 등록해 둔 목록입니다. |
+| Policy | Tool을 자동 실행할지, 승인이 필요한지, 차단할지 판단하는 규칙입니다. |
+| Dispatcher | Tool 이름을 실제 service 함수로 연결해 실행하는 계층입니다. |
 | Audit | Tool 호출 요청/응답, LLM 실행, 승인 필요 상태를 저장하는 이력입니다. |
-
-흐름은 다음처럼 이해하면 됩니다.
-
-```text
-사용자 질문
-  -> Agent가 필요한 MCP Tool 계획
-  -> Registry에서 Tool 존재 여부와 권한 확인
-  -> Policy로 자동 실행/승인 필요/차단 판단
-  -> Dispatcher가 실제 service 함수 실행
-  -> 결과와 감사 이력을 DB에 저장
-  -> Agent가 사용자 답변 생성
-```
 
 ## 저장소 구조
 
@@ -81,7 +122,12 @@ mcp-aiops-backend/
 |       |-- ops_reports/          운영 리포트 생성, 조회, 이메일 발송
 |       |-- llmops/               LLM provider client, run history, prompt/audit
 |       `-- core/                 config, database, metrics
-|-- docs/                         클라이언트 계약, ERD 요약, SRE 보안 정책
+|-- docs/
+|   |-- mcp-client-contract.md    프론트엔드/API/MCP 연동 계약
+|   |-- erd.md                    공개 가능한 ERD 요약
+|   |-- configuration.md          환경변수와 LLM provider 설정
+|   |-- deployment.md             Docker/Kubernetes/GitHub Actions 배포
+|   `-- sre-agent-security-policy.md
 |-- infra/
 |   |-- k8s/                      EKS/Kubernetes manifests
 |   |-- docker/                   로컬 보조 인프라 예시
@@ -91,35 +137,17 @@ mcp-aiops-backend/
 
 ## 빠른 시작
 
-### 요구사항
+요구사항:
 
 - Python 3.11+
 - PostgreSQL 접속 정보
 - PowerShell 기준 예시입니다.
 
-### 1. 환경변수 준비
-
 ```powershell
 Copy-Item .env.example .env
-```
-
-기본 로컬 DB 연결값은 다음과 같습니다. 실제 환경에서는 `.env`의 `DATABASE_URL`을 사용하는 DB에 맞게 바꿉니다.
-
-```text
-DATABASE_URL=postgresql+psycopg://kkpp:kkpp@localhost:5432/kkpp
-```
-
-### 2. 패키지 설치
-
-```powershell
 python -m venv .venv
 .\.venv\Scripts\Activate.ps1
 python -m pip install -e ".[dev]"
-```
-
-### 3. API 실행
-
-```powershell
 uvicorn aiops_platform.main:app --reload
 ```
 
@@ -130,172 +158,13 @@ GET http://localhost:8000/health
 GET http://localhost:8000/docs
 ```
 
-### 4. 테스트
+테스트:
 
 ```powershell
 python -m pytest
 ```
 
-로컬 DB fixture seed까지 적용해야 하는 테스트를 돌릴 때는 로컬 DB 스키마가 준비된 상태에서 opt-in 합니다.
-
-```powershell
-$env:RUN_TEST_SEEDS = "true"
-python -m pytest
-```
-
-## LLM 설정
-
-기본값은 로컬 개발용 `fake` provider입니다. 이 상태에서는 외부 LLM key 없이 planner와 API 흐름을 검증할 수 있습니다.
-
-```text
-LLM_PROVIDER=fake
-LLM_MODEL=fake-agentic-planner
-LLM_API_KEY=
-```
-
-OpenAI 호환 API를 사용할 때:
-
-```text
-LLM_PROVIDER=openai
-LLM_MODEL=gpt-4o-mini
-LLM_API_BASE_URL=https://api.openai.com/v1
-LLM_API_KEY=replace-with-api-key
-LLM_REQUIRE_API_KEY=true
-```
-
-vLLM 같은 keyless OpenAI-compatible endpoint를 사용할 때:
-
-```text
-LLM_PROVIDER=openai-compatible
-LLM_MODEL=Qwen/Qwen3-32B
-LLM_API_BASE_URL=http://gpu-pod-host:8000/v1
-LLM_API_KEY=
-LLM_REQUIRE_API_KEY=false
-```
-
-`LLM_MODEL`은 provider 또는 vLLM server의 served model name과 맞아야 합니다.
-
-## 주요 환경변수
-
-전체 예시는 `.env.example`을 기준으로 봅니다. README에는 자주 바꾸는 값만 요약합니다.
-
-| 구분 | 환경변수 |
-| --- | --- |
-| App | `APP_ENV`, `APP_NAME`, `APP_VERSION`, `APP_TIMEZONE`, `CORS_ALLOW_ORIGINS` |
-| Database | `DATABASE_URL` |
-| LLM | `LLM_PROVIDER`, `LLM_MODEL`, `LLM_API_BASE_URL`, `LLM_API_KEY`, `LLM_REQUIRE_API_KEY`, `LLM_MAX_TOKENS` |
-| Observability | `PROMETHEUS_BASE_URL`, `PROMETHEUS_SOURCE_URLS`, `LOKI_BASE_URL`, `LOKI_SOURCE_URLS`, `TEMPO_BASE_URL` |
-| Kubernetes | `KUBERNETES_API_BASE_URL`, `KUBERNETES_BEARER_TOKEN_FILE`, `KUBERNETES_CA_CERT_FILE`, `KUBERNETES_NAMESPACE_ALLOWLIST` |
-| On-prem Kubernetes | `ONPREM_KUBERNETES_API_BASE_URL`, `ONPREM_KUBERNETES_BEARER_TOKEN`, `ONPREM_KUBERNETES_CA_CERT` |
-| Infra optional tools | `INFRAOPS_ELK_ENABLED`, `INFRAOPS_KAFKA_ENABLED`, `INFRAOPS_BATCH_ENABLED` |
-| Prediction scaling | `PREDICTION_SCALING_*` |
-| RCA / report notification | `SMTP_*`, `OPS_REPORT_EMAIL_RECIPIENTS`, `RCA_EMAIL_RECIPIENTS`, `RCA_SLACK_WEBHOOK_URL` |
-| Watchers | `PREDICTION_SCALING_WATCHER_ENABLED`, `SRE_INSPECTION_WATCHER_ENABLED` |
-
-## API 표면
-
-CloudFront/ALB 외부 경로는 `/api/v1` prefix도 함께 제공합니다. 예를 들어 `/mcp/servers`는 `/api/v1/mcp/servers`로도 접근할 수 있습니다.
-
-| 용도 | Endpoint |
-| --- | --- |
-| Health | `GET /health` |
-| Swagger | `GET /docs` |
-| Prometheus metrics | `GET /metrics` |
-| MCP registry | `GET /mcp/servers`, `GET /mcp/tools` |
-| FastMCP transport | `POST /mcp-server/mcp`, `POST /api/v1/mcp-server/mcp` |
-| Farmer chatbot | `POST /farmer/chat/ask` |
-| Admin Copilot | `POST /admin/copilot/ask` |
-| SRE Copilot | `POST /sre/copilot/ask` |
-| Alertmanager webhook | `POST /api/alerts`, `POST /alerts/webhook` |
-| Alertmanager SRE dry-run/execute | `POST /infra-rca/alertmanager/webhook` |
-| Ops report | `POST /reports/ops`, `GET /reports/ops`, `GET /reports/ops/{report_id}` |
-| Report email | `POST /reports/ops/{report_id}/send-email` |
-| Job history | `GET /jobs`, `GET /jobs/{job_id}` |
-| Audit/history | `GET /mcp/tool-calls`, `GET /llm-runs`, `GET /approvals`, `GET /notifications`, `GET /agent-snapshots` |
-
-프론트엔드 연동 계약은 `docs/mcp-client-contract.md`를 기준으로 관리합니다.
-
-## MCP 서버와 권한
-
-| MCP server | 역할 |
-| --- | --- |
-| `farmer-bnpl-mcp` | 농민 신용/상품/장바구니/checkout 도구 |
-| `farm-advisory-mcp` | 작물 일정, 농자재 추천, 농업 리스크 도구 |
-| `admin-riskops-mcp` | 관리자 심사/연체/재해 리스크 도구 |
-| `infraops-mcp` | 관측, Kubernetes, Kafka, RCA evidence, topology 도구 |
-| `prediction-scaling-mcp` | 예측 metric, 실측 metric, 예측 오차, scaling event 도구 |
-
-| Permission | 실행 정책 |
-| --- | --- |
-| `READ` | 자동 실행 가능 |
-| `WRITE` | 승인 필요 상태로 기록 가능 |
-| `USER_CONFIRMED_WRITE` | 농민 사용자 명시 확인 필요 |
-| `OPS_WRITE` | 운영자 승인 필요 |
-| `DESTRUCTIVE` | 기본 차단 대상 |
-
-SRE Agent 자동 실행은 `READ` tool만 사용합니다. 운영 변경이나 파괴적 명령은 자동 RCA 흐름에서 제외합니다. 자세한 정책은 `docs/sre-agent-security-policy.md`를 봅니다.
-
-## 데이터와 감사
-
-- 기존 KongKongFarm 비즈니스 테이블은 `core.*`, `catalog.*`를 기준으로 참조합니다.
-- AI/LLM/MCP 확장 데이터는 `ai` schema에 저장합니다.
-- LLM run, MCP tool call, approval, notification, job history는 감사와 재현성을 위해 별도 조회 API를 제공합니다.
-- LLM은 DB에 직접 접근하지 않고 MCP tool 결과와 masking된 context만 입력으로 받습니다.
-
-데이터 모델 요약은 `docs/erd.md`에 있습니다.
-
-## Docker
-
-```powershell
-docker build -t mcp-aiops-backend .
-docker run --env-file .env -p 8000:8000 mcp-aiops-backend
-```
-
-런타임 이미지는 distroless nonroot 기반이며 기본 command는 다음과 같습니다.
-
-```text
-python -m uvicorn aiops_platform.main:app --host 0.0.0.0 --port 8000
-```
-
-## 배포와 운영
-
-Kubernetes manifest는 `infra/k8s`에 있습니다.
-
-```text
-infra/k8s/serviceaccount.yaml
-infra/k8s/rbac.yaml
-infra/k8s/configmap.yaml
-infra/k8s/secret.example.yaml
-infra/k8s/deployment.yaml
-infra/k8s/service.yaml
-infra/k8s/ops-report-cronjobs.yaml
-infra/k8s/kustomization.yaml
-```
-
-운영 secret은 Git에 커밋하지 않고 Kubernetes Secret 또는 GitHub Secrets로 주입합니다. `infra/k8s/ingress.yaml`은 공용 service-catalog Ingress에 합칠 MCP 경로 참고본으로 유지합니다.
-
-`.github/workflows/deploy.yml`은 현재 branch push와 수동 실행에서 다음 순서로 동작합니다.
-
-```text
-pytest
-Docker image build
-Amazon ECR push
-EKS kubeconfig 설정
-ConfigMap / Secret / Manifest 적용
-Deployment rollout 확인
-서비스 내부 /health smoke test
-```
-
-배포 후 확인할 대표 endpoint:
-
-```text
-GET /health
-GET /mcp/servers
-GET /mcp/tools
-POST /mcp-server/mcp
-GET /api/v1/mcp/servers
-POST /api/v1/mcp-server/mcp
-```
+환경변수, LLM provider, 테스트 seed 설정은 `docs/configuration.md`를 참고합니다.
 
 ## 관련 문서
 
@@ -303,6 +172,8 @@ POST /api/v1/mcp-server/mcp
 | --- | --- |
 | `docs/mcp-client-contract.md` | 프론트엔드/API/MCP 연동 계약 |
 | `docs/erd.md` | 공개 가능한 ERD와 데이터 관계 요약 |
+| `docs/configuration.md` | 로컬/운영 환경변수와 LLM provider 설정 |
+| `docs/deployment.md` | Docker, Kubernetes, GitHub Actions 배포 흐름 |
 | `docs/sre-agent-security-policy.md` | SRE Agent 권한, masking, audit 정책 |
 | `docs/vessl-vllm-prometheus-scrape.md` | VESSL/vLLM Prometheus scrape 메모 |
 | `infra/docker/postgres/init/README.md` | 로컬 PostgreSQL init script 관리 원칙 |
