@@ -331,29 +331,28 @@ RCA, prediction/scaling 요약, 운영 metric을 모아 일간/주간 리포트�
 
 ## ✅ 테스트
 
-본 프로젝트는 API 응답 형식뿐 아니라, MCP 권한 판정·masking·audit이 실제로 의도대로 동작하는지를 중심으로 테스트했습니다(`tests/` 26개 파일 · 345개 케이스, `pytest --collect-only` 기준).
+본 프로젝트는 API 응답 형식뿐 아니라, MCP 권한 판정·masking·audit이 실제로 의도대로 동작하는지를 중심으로 테스트했습니다.
 
 ### 주요 검증 항목
 
 | 구분 | 검증 내용 |
 | --- | --- |
-| MCP 권한/정책 | READ는 즉시 허용, WRITE/USER_CONFIRMED_WRITE는 사용자 확인 preview, OPS_WRITE는 승인 필요 preview, DESTRUCTIVE는 완전 차단 |
-| MCP Registry | 서버/Tool 목록 조회, server_name·permission 필터링, ELK/Kafka/Batch Tool on/off 노출 |
-| Masking / Audit | 중첩 payload의 민감값 마스킹, 감사 로그에 정책·상태·지연시간 기록, 원본 payload는 옵션일 때만 저장 |
-| Agent Planner | 농민/관리자/SRE 의도 분류, 인사말은 Tool 미실행, 미등록 Tool을 계획하면 안전하게 fallback |
-| Agent Dispatcher | READ Tool 실행 후 마스킹, TTL 캐시 재사용, WRITE 이상 권한은 실행 자체가 차단 |
-| Farmer BNPL 챗봇 | 세션 생성과 tool-call 이력 저장, 배송/상환/체크아웃 확인 카드 생성, LLM 실패 시 Tool 기반 fallback 답변 |
-| Admin RiskOps Copilot | 심사 큐·BNPL·연체 요약 조회, 관리자 역할 헤더 검증, 알림 Tool은 실제 발송 없이 preview만 반환 |
-| SRE / Alertmanager RCA | pod crashloop·SQS DLQ·VPN 등 alert 유형별 READ Tool 계획 수립, RCA 근거에 topology 사실 포함, 조회 전용/알림 전용 실행 모드 분리 |
-| Prediction Scaling | 예측·실측 오차 계산, KEDA/HPA 상태 병합, 과소/과다 예측 위험도 판정 |
-| Ops Reports | RCA/예측/스케일링 증거 통합, 이메일 발송 시 notification outbox 기록, LLM 실패 시 리포트·job을 실패로 표시 |
-| LLMOps | LLM run/prompt version 기록, 관리자·농민 프롬프트의 한국어 안내 요구사항 검증 |
+| MCP 권한/정책 | 권한 등급별 자동실행/확인/승인/차단 판정 |
+| MCP Registry | Tool 목록 조회·필터링, ELK/Batch 노출 on/off |
+| Masking/Audit | 민감값 마스킹, 감사 로그 기록 |
+| Agent Planner/Dispatcher | 의도 분류부터 Tool 실행·캐시까지 계획-실행 흐름 |
+| Farmer BNPL 챗봇 | 세션·tool-call 이력, 카드 응답, LLM 실패 fallback |
+| Admin RiskOps Copilot | 심사·BNPL·연체 조회, 알림은 preview만 반환 |
+| SRE / Alertmanager RCA | Alert 유형별 READ Tool 계획, RCA 근거 구성 |
+| Prediction Scaling | 예측·실측 오차 |
+| Ops Reports | 리포트 생성·이메일 발송, LLM 실패 처리 |
+| LLMOps | LLM run/prompt 기록, 프롬프트 요구사항 검증 |
 
 ```powershell
 python -m pytest
 ```
 
-CI에서는 PostgreSQL 16 서비스 컨테이너를 띄우고 `tests/seed/ci_schema.sql`로 스키마를 초기화한 뒤 동일한 테스트를 실행합니다(`.github/workflows/deploy.yml`의 `test` job).
+
 
 ---
 
