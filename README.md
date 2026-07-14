@@ -1,4 +1,4 @@
-# 🌾 FISA-Agri-Pay · MCP AIOps Backend
+# 🌱 콩콩팥팥 · MCP AIOps Backend
 
 > 농업 데이터 기반 **BNPL 플랫폼**에 붙는 **MCP 기반 AIOps 백엔드**입니다.
 > 농민 BNPL 상담, 관리자 RiskOps, SRE 장애 분석(RCA)을 하나의 **Agent → MCP Tool** 계층으로 연결해 챗봇, Copilot, RCA, 예측 기반 스케일링 점검, 운영 리포트를 제공하는 FastAPI/FastMCP 멀티도메인 서비스입니다.
@@ -16,23 +16,16 @@
 
 ## 목차
 
-- [프로젝트 개요](#overview)
-- [모듈/실행 경로 구성](#modules)
-- [핵심 업무 흐름](#workflow)
-- [핵심 기능](#features)
-  - [MCP Tool Registry와 권한 정책](#mcp-architecture)
-  - [Farmer BNPL Agent](#farmer-agent)
-  - [Admin RiskOps Copilot](#admin-copilot)
-  - [SRE 장애 분석과 RCA](#sre-rca)
-  - [Masking과 Audit](#masking-audit)
-  - [Ops Reports](#ops-reports)
-- [테스트](#test-scenarios)
-- [CI/CD](#cicd)
-- [기술 스택](#tech-stack)
-- [디렉터리 구조](#directory)
-- [관련 문서](#docs)
-- [관련 레포지토리](#repositories)
-- [팀원 소개](#team)
+1. [프로젝트 개요](#overview)
+2. [모듈/실행 경로 구성](#modules)
+3. [핵심 업무 흐름](#workflow)
+4. [핵심 기능](#features)
+5. [테스트](#test-scenarios)
+6. [CI/CD](#cicd)
+7. [기술 스택](#tech-stack)
+8. [디렉터리 구조](#directory)
+9. [관련 문서](#docs)
+10. [관련 레포지토리](#repositories)
 
 ---
 
@@ -53,8 +46,6 @@ LLM Agent가 데이터베이스나 인프라 API를 직접 호출하면 실행 �
 * MCP registry/policy 기반 Tool 권한 통제와 감사 로그
 * LLM 실행 이력, 승인 큐, 알림 이력의 완전한 추적성
 * GitHub Actions → ECR → EKS 기반 배포
-
-
 
 > 전체 프로젝트의 하이브리드 클라우드, 예측 기반 오토스케일링, Observability 구성은 [FISA-Agri-Pay 조직 프로필](https://github.com/FISA-Agri-Pay)을 참고하세요.
 
@@ -79,7 +70,7 @@ flowchart LR
     REGISTRY --> FARMERBNPL["farmer_bnpl / farm_advisory"]
     REGISTRY --> RISKOPS["admin_riskops"]
     REGISTRY --> INFRAOPS["infraops / infra_rca / topology_knowledge"]
-  
+    REGISTRY --> PREDSCALE["prediction_scaling"]
 
     FARMERBNPL --> DB[("PostgreSQL")]
     RISKOPS --> DB
@@ -90,7 +81,7 @@ flowchart LR
     OPSREPORT --> NOTIFY["Slack / Email"]
 ```
 
-| 모듈 | 책임 |
+| 모듈 | 역할 |
 | --- | --- |
 | `api/` | FastAPI 라우터 |
 | `agent/` | planner, orchestrator, dispatcher |
@@ -139,8 +130,9 @@ SRE Agent 자동 실행은 읽기 전용입니다. `scale_deployment`, `restart_
 ## 🔍 핵심 기능
 
 <a id="mcp-architecture"></a>
-
-### 1. MCP Tool Registry와 권한 정책
+<details>
+<summary><strong>1. MCP Tool Registry와 권한 정책</strong></summary>
+<br>
 
 모든 외부 동작(DB 조회, Prometheus/Loki 쿼리, Kubernetes API, 알림 발송 등)은 MCP Tool로 감싸고, registry와 policy가 실행 가능 여부를 판단합니다.
 
@@ -151,7 +143,7 @@ Tool 호출 하나가 실행되기까지 6단계를 거치도록 설계했습니
 ```mermaid
 flowchart TD
     CHAT["챗봇 메시지"] --> PLANNER
-    MCPCLIENT["외부 MCP 클라이트"] --> REGISTRY
+    MCPCLIENT["외부 MCP 클라이언트"] --> REGISTRY
 
     PLANNER["① Planner"] --> REGISTRY["② Registry"]
     REGISTRY --> POLICY{"③ Policy"}
@@ -215,11 +207,12 @@ SRE Copilot에서 `create_rca_snapshot` Tool은 특별 취급됩니다. `AgentOr
 * [`agent/dispatcher.py`](src/aiops_platform/agent/dispatcher.py)
 * [`agent/orchestrator.py`](src/aiops_platform/agent/orchestrator.py)
 
----
+</details>
 
 <a id="farmer-agent"></a>
-
-### 2. Farmer BNPL Agent
+<details>
+<summary><strong>2. Farmer BNPL Agent</strong></summary>
+<br>
 
 농민 사용자가 "이번 달 상환해야 할 금액과 남은 한도를 알려줘"라고 물으면 Farmer 챗봇은 사용자 프로필, 신용 한도, 상환 일정, 연체 여부를 MCP Tool로 조회합니다. LLM은 조회 결과를 바탕으로 쉬운 문장으로 답변하고, 필요한 경우 배송 상태나 농자재 추천 카드까지 함께 반환합니다.
 
@@ -231,11 +224,12 @@ READ Tool 일부(`get_farmer_profile`, `get_user_credit_limit`, `search_products
 * [`farmer_bnpl/service.py`](src/aiops_platform/farmer_bnpl/service.py)
 * [`agent/dispatcher.py`](src/aiops_platform/agent/dispatcher.py) — `FARMER_BNPL_TOOL_CACHE_TTL_SECONDS`
 
----
+</details>
 
 <a id="admin-copilot"></a>
-
-### 3. Admin RiskOps Copilot
+<details>
+<summary><strong>3. Admin RiskOps Copilot</strong></summary>
+<br>
 
 관리자가 "연체 위험이 높은 고객과 재해 리스크 영향도를 요약해줘"라고 요청하면 Admin Copilot은 심사 큐, BNPL 요약, 연체 요약, BSS 이력, 재해 시뮬레이션 도구를 조합합니다. 결과는 관리자 화면에서 바로 확인할 수 있는 요약과 근거 데이터로 남습니다.
 
@@ -244,11 +238,12 @@ READ Tool 일부(`get_farmer_profile`, `get_user_credit_limit`, `search_products
 * [`api/admin.py`](src/aiops_platform/api/admin.py), [`api/admin_risk.py`](src/aiops_platform/api/admin_risk.py)
 * [`admin_riskops/service.py`](src/aiops_platform/admin_riskops/service.py)
 
----
+</details>
 
 <a id="sre-rca"></a>
-
-### 4. SRE 장애 분석과 RCA
+<details>
+<summary><strong>4. SRE 장애 분석과 RCA</strong></summary>
+<br>
 
 SRE가 "결제 서비스 5xx 원인 봐줘"라고 묻거나 Alertmanager가 firing alert를 보내면 SRE Agent는 서비스, namespace, alert 유형을 추론합니다. 이후 Prometheus metric, Loki log, Kubernetes event, service endpoint, topology knowledge, 이전 RCA 이력을 READ-only Tool로 수집하고 RCA 초안을 생성합니다.
 
@@ -281,11 +276,12 @@ sequenceDiagram
 * [`infra_rca/service.py`](src/aiops_platform/infra_rca/service.py)
 * 세부 권한/감사 규칙: [`docs/sre-agent-security-policy.md`](docs/sre-agent-security-policy.md)
 
----
+</details>
 
 <a id="prediction-scaling"></a>
-
-### 5. Prediction Scaling 점검
+<details>
+<summary><strong>5. Prediction Scaling 점검</strong></summary>
+<br>
 
 `ai-prediction-model`이 산출한 GRU 예측 metric을 PostgreSQL에서 읽어와 실측 metric, 오차, HPA/KEDA 상태와 비교합니다. `PREDICTION_SCALING_WATCHER_ENABLED=true`면 주기적으로 편차를 점검해 Slack으로 위험도별 알림을 보냅니다.
 
@@ -294,11 +290,12 @@ sequenceDiagram
 * [`api/prediction_scaling.py`](src/aiops_platform/api/prediction_scaling.py)
 * [`prediction_scaling/service.py`](src/aiops_platform/prediction_scaling/service.py), [`prediction_scaling/watcher.py`](src/aiops_platform/prediction_scaling/watcher.py)
 
----
+</details>
 
 <a id="masking-audit"></a>
-
-### 6. Masking과 Audit
+<details>
+<summary><strong>6. Masking과 Audit</strong></summary>
+<br>
 
 * `agent/dispatcher.py`의 `sanitize_execution_context()`는 Tool 실행 **전** payload에서 `access_token`, `api_key`, `authorization`, `password`, `secret`, `token` 키를 완전히 제거합니다.
 * `mcp/masking.py`의 `mask_payload()`는 저장/응답용으로 `password`, `passwd`, `secret`, `token`, `api_key`, `apikey`, `authorization`, `access_key`, `refresh_key`, `private_key`가 포함된 키를 `***MASKED***`로 치환합니다.
@@ -308,22 +305,25 @@ sequenceDiagram
 
 관련 코드: [`mcp/masking.py`](src/aiops_platform/mcp/masking.py), [`mcp/audit.py`](src/aiops_platform/mcp/audit.py), [`models/mcp.py`](src/aiops_platform/models/mcp.py)
 
----
+</details>
 
 <a id="ops-reports"></a>
-
-### 7. Ops Reports
+<details>
+<summary><strong>7. Ops Reports</strong></summary>
+<br>
 
 RCA, prediction/scaling 요약, 운영 metric을 모아 일간/주간 리포트를 생성하고, 생성된 리포트를 HTML 이메일로 발송합니다. 1차 범위는 대시보드 UI 없이 API 조회와 이메일 발송으로 소비합니다.
 
-![Daily operations report 예시](docs/images/ops-report-daily-example.png)
+![Daily operations report 이메일 발송 예시](docs/images/ops-report-email-example.png)
 
-`POST /reports/ops`로 생성한 일간 리포트 예시입니다. 위험도와 요약, 주요 발견/권장 조치, Alertmanager 인시던트·RCA 하이라이트, 예측/스케일링 인사이트, 인시던트 상세(심각도·Alert·서비스·요약) 표까지 한 번에 담깁니다. 심각도별 서비스 매핑(예: `onprem-kube-prometheus-stack-kube-state-metrics`)은 실제 alert label을 그대로 노출해 원문 조사가 가능하도록 했습니다.
+`POST /reports/ops/{report_id}/send-email`로 실제 발송된 일간 리포트 이메일(Gmail 수신함) 예시입니다. 위험도와 요약, 주요 발견/권장 조치, Alertmanager 인시던트·RCA 하이라이트, 예측/스케일링 인사이트가 HTML 이메일 본문으로 그대로 전달되는 것을 확인할 수 있습니다. 스크린샷은 상단부만 캡처한 것이며, 실제 이메일에는 인시던트 상세(심각도·Alert·서비스·요약) 표가 이어집니다.
 
 관련 코드:
 
 * [`api/reports.py`](src/aiops_platform/api/reports.py)
 * [`ops_reports/service.py`](src/aiops_platform/ops_reports/service.py), [`ops_reports/email_delivery.py`](src/aiops_platform/ops_reports/email_delivery.py), [`ops_reports/job_runner.py`](src/aiops_platform/ops_reports/job_runner.py)
+
+</details>
 
 ---
 
@@ -331,21 +331,23 @@ RCA, prediction/scaling 요약, 운영 metric을 모아 일간/주간 리포트�
 
 ## ✅ 테스트
 
-`tests/` 아래 26개 파일, 345개 테스트 케이스로 도메인 서비스·MCP 계층·Agent 오케스트레이션을 검증합니다(`pytest --collect-only` 기준).
+본 프로젝트는 API 응답 형식뿐 아니라, MCP 권한 판정·masking·audit이 실제로 의도대로 동작하는지를 중심으로 테스트했습니다(`tests/` 26개 파일 · 345개 케이스, `pytest --collect-only` 기준).
 
-### 주요 검증 영역
+### 주요 검증 항목
 
-| 구분 | 검증 파일 |
+| 구분 | 검증 내용 |
 | --- | --- |
-| MCP registry/policy/masking/audit | `test_mcp_registry.py`, `test_mcp_policy.py`, `test_mcp_masking.py`, `test_mcp_audit.py`, `test_mcp_models.py`, `test_fastmcp_server.py` |
-| Agent 오케스트레이션 | `test_agent_orchestration.py`, `test_api_orchestration.py`, `test_client_contract.py` |
-| Farmer BNPL / Farm Advisory | `test_farmer_bnpl_service.py`, `test_farm_advisory_service.py` |
-| Admin RiskOps | `test_admin_riskops_service.py` |
-| InfraOps / RCA / Alertmanager | `test_infraops_service.py`, `test_infra_rca_service.py`, `test_alertmanager_agent.py`, `test_topology_knowledge_service.py` |
-| Prediction Scaling | `test_prediction_scaling_service.py`, `test_predictive_scaling_slack_agent.py` |
-| LLMOps | `test_llmops_api.py`, `test_llmops_client.py`, `test_llmops_repository.py` |
-| Ops Reports | `test_ops_reports_service.py`, `test_ops_report_job_runner.py`, `test_ops_report_email_delivery.py` |
-| 공통 | `test_health.py`, `test_config.py`, `test_metrics.py` |
+| MCP 권한/정책 | READ는 즉시 허용, WRITE/USER_CONFIRMED_WRITE는 사용자 확인 preview, OPS_WRITE는 승인 필요 preview, DESTRUCTIVE는 완전 차단 |
+| MCP Registry | 서버/Tool 목록 조회, server_name·permission 필터링, ELK/Kafka/Batch Tool on/off 노출 |
+| Masking / Audit | 중첩 payload의 민감값 마스킹, 감사 로그에 정책·상태·지연시간 기록, 원본 payload는 옵션일 때만 저장 |
+| Agent Planner | 농민/관리자/SRE 의도 분류, 인사말은 Tool 미실행, 미등록 Tool을 계획하면 안전하게 fallback |
+| Agent Dispatcher | READ Tool 실행 후 마스킹, TTL 캐시 재사용, WRITE 이상 권한은 실행 자체가 차단 |
+| Farmer BNPL 챗봇 | 세션 생성과 tool-call 이력 저장, 배송/상환/체크아웃 확인 카드 생성, LLM 실패 시 Tool 기반 fallback 답변 |
+| Admin RiskOps Copilot | 심사 큐·BNPL·연체 요약 조회, 관리자 역할 헤더 검증, 알림 Tool은 실제 발송 없이 preview만 반환 |
+| SRE / Alertmanager RCA | pod crashloop·SQS DLQ·VPN 등 alert 유형별 READ Tool 계획 수립, RCA 근거에 topology 사실 포함, 조회 전용/알림 전용 실행 모드 분리 |
+| Prediction Scaling | 예측·실측 오차 계산, KEDA/HPA 상태 병합, 과소/과다 예측 위험도 판정 |
+| Ops Reports | RCA/예측/스케일링 증거 통합, 이메일 발송 시 notification outbox 기록, LLM 실패 시 리포트·job을 실패로 표시 |
+| LLMOps | LLM run/prompt version 기록, 관리자·농민 프롬프트의 한국어 안내 요구사항 검증 |
 
 ```powershell
 python -m pytest
@@ -361,7 +363,6 @@ CI에서는 PostgreSQL 16 서비스 컨테이너를 띄우고 `tests/seed/ci_sch
 
 GitHub Actions 단일 워크플로(`.github/workflows/deploy.yml`)가 테스트부터 EKS 배포까지 처리합니다.
 
-
 ```mermaid
 flowchart LR
     GIT["GitHub"] --> GHA["Actions"]
@@ -374,7 +375,6 @@ flowchart LR
     DEPLOY --> EKS["EKS"]
     EKS --> SMOKE["Health Check"]
 ```
-
 
 | 단계 | 역할 |
 | --- | --- |
@@ -396,7 +396,7 @@ flowchart LR
 | --- | --- |
 | Language / Framework | Python 3.11, FastAPI, FastMCP |
 | Data | PostgreSQL 16, SQLAlchemy 2.0 |
-| Observability | Prometheus, Loki, Tempo, Alertmanager|
+| Observability | Prometheus, Loki, Tempo, Alertmanager |
 | Kubernetes / AWS | Kubernetes API, AWS, ArgoCD |
 | LLM | vLLM(Qwen3-32B) |
 | Build / Container | Docker, Amazon ECR |
@@ -454,10 +454,7 @@ mcp-aiops-backend/
 | [`docs/vessl-vllm-prometheus-scrape.md`](docs/vessl-vllm-prometheus-scrape.md) | VESSL/vLLM Prometheus scrape 메모 |
 | [`infra/docker/postgres/init/README.md`](infra/docker/postgres/init/README.md) | 로컬 PostgreSQL init script 관리 원칙 |
 
-
 ---
-
-
 
 <a id="repositories"></a>
 
@@ -469,21 +466,5 @@ mcp-aiops-backend/
 | [`front-end`](https://github.com/FISA-Agri-Pay/front-end) | 사용자용 웹앱 프론트엔드 |
 | [`front-end-admin`](https://github.com/FISA-Agri-Pay/front-end-admin) | 관리자용 웹 프론트엔드 |
 | [`ai-prediction-model`](https://github.com/FISA-Agri-Pay/ai-prediction-model) | 시계열 예측 모델 · 오토스케일링 정책 |
-| **`mcp-aiops-backend`** | FastMCP 기반 AIOps 백엔드 (본 저장소) |
 | [`infra`](https://github.com/FISA-Agri-Pay/infra) | Terraform 기반 IaC · 운영 스크립트 |
 | [`git-ops`](https://github.com/FISA-Agri-Pay/git-ops) | ArgoCD GitOps 배포 매니페스트 |
-
----
-
-<a id="team"></a>
-
-## 👥 팀원 소개
-
-| <img src="https://github.com/Federico-15.png" width="90"/> | <img src="https://github.com/HiLeeS.png" width="90"/> | <img src="https://github.com/cuterrabbit.png" width="90"/> | <img src="https://github.com/Zaixian5.png" width="90"/> | <img src="https://github.com/ygreee0320.png" width="90"/> |
-| :---: | :---: | :---: | :---: | :---: |
-| **류승환** | **이승준** | **이동욱** | **사재헌** | **양규리** |
-| [@Federico-15](https://github.com/Federico-15) | [@HiLeeS](https://github.com/HiLeeS) | [@cuterrabbit](https://github.com/cuterrabbit) | [@Zaixian5](https://github.com/Zaixian5) | [@ygreee0320](https://github.com/ygreee0320) |
-
-우리FISA 6기 클라우드 엔지니어링 과정 3팀
-
-팀원 상세 소개는 [조직 프로필](https://github.com/FISA-Agri-Pay)을 참고하세요.
