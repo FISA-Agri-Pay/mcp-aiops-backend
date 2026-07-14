@@ -1,10 +1,10 @@
-# VESSL vLLM Prometheus and AWS Grafana Setup
+# VESSL vLLM Prometheus와 AWS Grafana 연동
 
-## Goal
+## 목표
 
-Expose VESSL-hosted Qwen3-32B vLLM and H100 GPU metrics to the existing AWS EKS Grafana dashboard without opening VESSL metrics ports publicly.
+VESSL metrics 포트를 외부에 공개하지 않으면서, VESSL에서 호스팅하는 Qwen3-32B vLLM과 H100 GPU metric을 기존 AWS EKS Grafana 대시보드에 노출합니다.
 
-## Final Architecture
+## 최종 아키텍처
 
 ```text
 VESSL AI
@@ -23,20 +23,20 @@ AWS Grafana
   dashboard uid      vessl-vllm-qwen3
 ```
 
-## VESSL Components
+## VESSL 구성 요소
 
-- vLLM model: `Qwen/Qwen3-32B`
+- vLLM 모델: `Qwen/Qwen3-32B`
 - vLLM metrics endpoint: `127.0.0.1:8000/metrics`
 - GPU exporter endpoint: `127.0.0.1:9400/metrics`
-- Prometheus config: `infra/vessl/prometheus.yml`
-- GPU exporter script: `infra/vessl/nvidia_smi_exporter.py`
+- Prometheus 설정: `infra/vessl/prometheus.yml`
+- GPU exporter 스크립트: `infra/vessl/nvidia_smi_exporter.py`
 
-Prometheus scrapes both local VESSL endpoints and keeps the metrics private on `127.0.0.1:9090`.
+Prometheus는 두 VESSL 로컬 endpoint를 스크랩하며, metric을 `127.0.0.1:9090`에만 비공개로 유지합니다.
 
-## AWS EKS Components
+## AWS EKS 구성 요소
 
-- Tunnel manifest: `infra/k8s/monitoring/vessl-prometheus-tunnel.yaml`
-- Required Secret, created outside Git:
+- 터널 manifest: `infra/k8s/monitoring/vessl-prometheus-tunnel.yaml`
+- Git 밖에서 생성하는 필수 Secret:
 
 ```bash
 kubectl create secret generic vessl-llm-ssh-key \
@@ -47,9 +47,9 @@ kubectl create secret generic vessl-llm-ssh-key \
 - Grafana datasource: `infra/grafana/vessl-prometheus-datasource.json`
 - Grafana dashboard: `infra/grafana/vessl-vllm-qwen3-dashboard.json`
 
-## Verification
+## 검증
 
-From the VESSL server:
+VESSL 서버에서:
 
 ```bash
 curl http://127.0.0.1:9090/-/ready
@@ -57,7 +57,7 @@ curl 'http://127.0.0.1:9090/api/v1/query?query=vllm%3Anum_requests_running'
 curl 'http://127.0.0.1:9090/api/v1/query?query=DCGM_FI_DEV_GPU_UTIL'
 ```
 
-From the AWS Grafana pod:
+AWS Grafana pod에서:
 
 ```bash
 kubectl exec -n monitoring <grafana-pod> -- \
@@ -70,15 +70,15 @@ kubectl exec -n monitoring <grafana-pod> -- \
   wget -qO- 'http://vessl-prometheus.monitoring.svc.cluster.local:9090/api/v1/query?query=DCGM_FI_DEV_GPU_UTIL'
 ```
 
-Expected:
+기대 결과:
 
-- Prometheus readiness returns `Prometheus is Ready.`
-- `vllm:num_requests_running` returns at least one series.
-- `DCGM_FI_DEV_GPU_UTIL` returns at least one series.
-- Grafana dashboard `vessl-vllm-qwen3` no longer shows `No data` after refresh.
+- Prometheus readiness가 `Prometheus is Ready.`를 반환합니다.
+- `vllm:num_requests_running`이 최소 1개 이상의 series를 반환합니다.
+- `DCGM_FI_DEV_GPU_UTIL`이 최소 1개 이상의 series를 반환합니다.
+- Grafana 대시보드 `vessl-vllm-qwen3`가 새로고침 후 더 이상 `No data`를 표시하지 않습니다.
 
-## Operational Notes
+## 운영 참고 사항
 
-- VESSL SSH host keys may change when the VESSL instance is recreated. The demo tunnel uses `StrictHostKeyChecking=no` for availability. Pin the host key for production.
-- VESSL-local Prometheus and the GPU exporter are started inside the VESSL runtime. If the VESSL workspace is recreated, restart them or add equivalent startup commands.
-- The SSH private key Secret is intentionally not stored in Git.
+- VESSL 인스턴스가 재생성되면 VESSL SSH host key가 바뀔 수 있습니다. 데모용 터널은 가용성을 위해 `StrictHostKeyChecking=no`를 사용합니다. 운영 환경에서는 host key를 고정합니다.
+- VESSL 로컬 Prometheus와 GPU exporter는 VESSL runtime 내부에서 시작됩니다. VESSL workspace가 재생성되면 재시작하거나 동일한 시작 명령을 다시 추가해야 합니다.
+- SSH private key Secret은 의도적으로 Git에 저장하지 않습니다.

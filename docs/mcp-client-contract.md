@@ -1,6 +1,6 @@
 # MCP Client Integration Contract
 
-클라이언트 앱은 이 문서를 기준으로 MCP 서버 목록, Agent 실행 응답, 승인 필요 상태, job/tool-call 이력을 표시한다.
+클라이언트 앱은 이 문서를 기준으로 MCP 서버 목록, Agent 실행 응답, 승인 필요 상태, job/tool-call 이력을 표시합니다.
 
 ## Base URLs
 
@@ -42,15 +42,15 @@ POST /api/v1/mcp-server/mcp
 
 | Permission | Client 처리 |
 | --- | --- |
-| `READ` | 자동 실행 결과를 바로 표시한다. |
-| `WRITE` | `APPROVAL_REQUIRED`이면 사용자 확인 UI를 표시한다. |
-| `USER_CONFIRMED_WRITE` | 농민 사용자 명시 확인이 필요한 행동으로 표시한다. |
-| `OPS_WRITE` | 운영자 승인 필요 상태로 표시한다. |
-| `DESTRUCTIVE` | 기본 차단 상태로 표시하고 실행 버튼을 비활성화한다. |
+| `READ` | 자동 실행 결과를 바로 표시합니다. |
+| `WRITE` | `APPROVAL_REQUIRED`이면 사용자 확인 UI를 표시합니다. |
+| `USER_CONFIRMED_WRITE` | 농민 사용자 명시 확인이 필요한 행동으로 표시합니다. |
+| `OPS_WRITE` | 운영자 승인 필요 상태로 표시합니다. |
+| `DESTRUCTIVE` | 기본 차단 상태로 표시하고 실행 버튼을 비활성화합니다. |
 
 ## Agent Response Contract
 
-`POST /farmer/chat/ask`와 `POST /admin/copilot/ask`는 같은 응답 구조를 사용한다.
+`POST /farmer/chat/ask`와 `POST /admin/copilot/ask`는 같은 응답 구조를 사용합니다.
 
 ```json
 {
@@ -74,12 +74,12 @@ POST /api/v1/mcp-server/mcp
 }
 ```
 
-클라이언트는 `planned_tools`로 실행 계획을 먼저 보여주고, `tool_results`로 실제 실행 결과 또는 승인 필요 상태를 표시한다.
-LLM 실행 근거와 prompt version은 `llm_run`과 `/llm-runs/{llm_run_id}`에서 확인한다.
-Agent 실행 snapshot은 `/agent-snapshots`의 `session_id`, `llm_run_id`, `payload`로 채팅 세션과 LLM 실행 근거를 연결한다.
-외부 LLM provider를 사용할 때도 LLM은 DB를 직접 조회하지 않고, MCP tool 실행 결과와 masking된 context만 입력으로 받는다.
+클라이언트는 `planned_tools`로 실행 계획을 먼저 보여주고, `tool_results`로 실제 실행 결과 또는 승인 필요 상태를 표시합니다.
+LLM 실행 근거와 prompt version은 `llm_run`과 `/llm-runs/{llm_run_id}`에서 확인합니다.
+Agent 실행 snapshot은 `/agent-snapshots`의 `session_id`, `llm_run_id`, `payload`로 채팅 세션과 LLM 실행 근거를 연결합니다.
+외부 LLM provider를 사용할 때도 LLM은 DB를 직접 조회하지 않고, MCP tool 실행 결과와 masking된 context만 입력으로 받습니다.
 
-Farmer 챗봇은 프론트 카드 UI 렌더링을 위해 `ui_cards`와 `ui_actions`를 함께 반환할 수 있다. 클라이언트는 LLM 답변 문장을 파싱하지 않고 `ui_cards[*].type` 기준으로 카드를 렌더링한다.
+Farmer 챗봇은 프론트 카드 UI 렌더링을 위해 `ui_cards`와 `ui_actions`를 함께 반환할 수 있습니다. 클라이언트는 LLM 답변 문장을 파싱하지 않고 `ui_cards[*].type` 기준으로 카드를 렌더링합니다.
 
 지원 Farmer 카드 타입:
 
@@ -93,7 +93,7 @@ Farmer 챗봇은 프론트 카드 UI 렌더링을 위해 `ui_cards`와 `ui_actio
 
 ## Admin Copilot Session List
 
-프론트의 "최근 대화 더보기"는 서버 기반 세션 목록 API를 사용한다.
+프론트의 "최근 대화 더보기"는 서버 기반 세션 목록 API를 사용합니다.
 
 ### `GET /admin/copilot/sessions`
 
@@ -122,16 +122,16 @@ Farmer 챗봇은 프론트 카드 UI 렌더링을 위해 `ui_cards`와 `ui_actio
 }
 ```
 
-이 API는 신규 테이블 없이 `chat_sessions`를 조회한다. 제목은 `context.title`을 우선 사용하고, 없으면 첫 사용자 메시지 또는 기본 제목을 API 계층에서 계산한다.
+이 API는 신규 테이블 없이 `chat_sessions`를 조회합니다. 제목은 `context.title`을 우선 사용하고, 없으면 첫 사용자 메시지 또는 기본 제목을 API 계층에서 계산합니다.
 
 ## Operations Report API Contract
 
-일간/주간 운영 리포트는 대시보드 없이도 API 조회와 이메일 발송으로 소비할 수 있어야 한다.
-리포트 생성은 기존 MCP Tool, RCA report, prediction/scaling 데이터를 수집한 뒤 LLM `ops_report` 실행 결과를 `ops_reports`에 저장한다.
+일간/주간 운영 리포트는 대시보드 없이도 API 조회와 이메일 발송으로 소비할 수 있어야 합니다.
+리포트 생성은 기존 MCP Tool, RCA report, prediction/scaling 데이터를 수집한 뒤 LLM `ops_report` 실행 결과를 `ops_reports`에 저장합니다.
 
 ### `POST /reports/ops`
 
-일간 또는 주간 운영 리포트를 생성한다.
+일간 또는 주간 운영 리포트를 생성합니다.
 
 ```json
 {
@@ -145,7 +145,7 @@ Farmer 챗봇은 프론트 카드 UI 렌더링을 위해 `ui_cards`와 `ui_actio
 }
 ```
 
-응답은 생성된 리포트와 비동기 처리 추적용 job, LLM 실행 이력을 포함한다.
+응답은 생성된 리포트와 비동기 처리 추적용 job, LLM 실행 이력을 포함합니다.
 
 ```json
 {
@@ -178,7 +178,7 @@ Farmer 챗봇은 프론트 카드 UI 렌더링을 위해 `ui_cards`와 `ui_actio
 
 ### `GET /reports/ops`
 
-운영 리포트 목록을 조회한다.
+운영 리포트 목록을 조회합니다.
 
 지원 필터:
 
@@ -194,13 +194,13 @@ Farmer 챗봇은 프론트 카드 UI 렌더링을 위해 `ui_cards`와 `ui_actio
 
 ### `GET /reports/ops/{report_id}`
 
-운영 리포트 상세를 조회한다.
-응답에는 리포트 본문, incident 요약, 포함 RCA report, prediction error summary, scaling event summary, 이메일 발송 상태를 포함한다.
-리포트의 서술형 본문은 한국어로 작성하고, metric name, alert name, source type, Kubernetes resource name, identifier는 원문을 유지한다.
+운영 리포트 상세를 조회합니다.
+응답에는 리포트 본문, incident 요약, 포함 RCA report, prediction error summary, scaling event summary, 이메일 발송 상태를 포함합니다.
+리포트의 서술형 본문은 한국어로 작성하고, metric name, alert name, source type, Kubernetes resource name, identifier는 원문을 유지합니다.
 
 ### `POST /reports/ops/{report_id}/send-email`
 
-생성된 운영 리포트를 HTML 이메일로 발송 요청한다.
+생성된 운영 리포트를 HTML 이메일로 발송 요청합니다.
 
 ```json
 {
@@ -210,9 +210,9 @@ Farmer 챗봇은 프론트 카드 UI 렌더링을 위해 `ui_cards`와 `ui_actio
 }
 ```
 
-1차 MVP는 PDF 또는 문서 첨부를 만들지 않는다.
+1차 MVP는 PDF 또는 문서 첨부를 만들지 않습니다.
 API는 수신자별 `notification_outbox` record를 생성하고 SMTP 발송을 시도한 뒤
-`SENT` 또는 `FAILED` 상태로 갱신한다. 응답은 `notification_id` 목록과 전체 발송 상태를 반환한다.
+`SENT` 또는 `FAILED` 상태로 갱신합니다. 응답은 `notification_id` 목록과 전체 발송 상태를 반환합니다.
 
 ```json
 {
@@ -237,32 +237,32 @@ API는 수신자별 `notification_outbox` record를 생성하고 SMTP 발송을 
 ## Recommended Swagger Checks
 
 1. `GET /mcp/servers`
-   - 5개 MCP 서버가 보이는지 확인한다.
+   - 5개 MCP 서버가 보이는지 확인합니다.
 2. `GET /mcp/tools?server_name=farmer-bnpl-mcp`
-   - Farmer 챗봇용 tool 목록이 보이는지 확인한다.
+   - Farmer 챗봇용 tool 목록이 보이는지 확인합니다.
 3. `POST /farmer/chat/ask`
-   - `tool_results`에 `SUCCESS` 또는 `APPROVAL_REQUIRED`가 포함되는지 확인한다.
+   - `tool_results`에 `SUCCESS` 또는 `APPROVAL_REQUIRED`가 포함되는지 확인합니다.
 4. `POST /admin/copilot/ask`
-   - RiskOps, InfraOps, Prediction Scaling tool 결과가 함께 반환되는지 확인한다.
+   - RiskOps, InfraOps, Prediction Scaling tool 결과가 함께 반환되는지 확인합니다.
 5. `GET /jobs`
-   - Agent 실행 job이 조회되는지 확인한다.
+   - Agent 실행 job이 조회되는지 확인합니다.
 6. `GET /mcp/tool-calls`
-   - tool-call history에 민감 payload가 노출되지 않는지 확인한다.
+   - tool-call history에 민감 payload가 노출되지 않는지 확인합니다.
 7. `GET /llm-runs`
-   - Agent 답변을 생성한 LLM run history가 조회되는지 확인한다.
+   - Agent 답변을 생성한 LLM run history가 조회되는지 확인합니다.
 8. `GET /approvals`
-   - 승인 필요 tool 실행이 approval queue에 기록되는지 확인한다.
+   - 승인 필요 tool 실행이 approval queue에 기록되는지 확인합니다.
 9. `POST /reports/ops`
-   - 일간/주간 운영 리포트가 RCA, prediction/scaling 요약과 함께 생성되는지 확인한다.
+   - 일간/주간 운영 리포트가 RCA, prediction/scaling 요약과 함께 생성되는지 확인합니다.
 10. `POST /reports/ops/{report_id}/send-email`
-   - HTML 이메일이 SMTP로 발송되고 `notification_outbox` 상태가 갱신되는지 확인한다.
+   - HTML 이메일이 SMTP로 발송되고 `notification_outbox` 상태가 갱신되는지 확인합니다.
 
 ## Client Implementation Notes
 
-- 채팅 화면은 `assistant_message.content`를 기본 답변으로 렌더링한다.
-- tool 결과 상세 패널은 `tool_results[*].response_payload`를 사용한다.
-- 승인 필요 CTA는 `requires_approval=true` 또는 `call_status=APPROVAL_REQUIRED` 기준으로 표시한다.
-- 차단된 작업은 `is_blocked=true` 또는 `call_status=BLOCKED` 기준으로 표시한다.
-- 실행 이력 화면은 `/jobs`와 `/mcp/tool-calls`를 함께 사용한다.
-- 감사/근거 화면은 `/llm-runs`, `/prompt-versions`, `/approvals`, `/notifications`, `/agent-snapshots`를 사용한다.
-- 운영 리포트 화면 또는 이메일 미리보기는 `/reports/ops/{report_id}`를 사용한다. 별도 대시보드 UI는 1차 MVP 필수 범위가 아니다.
+- 채팅 화면은 `assistant_message.content`를 기본 답변으로 렌더링합니다.
+- tool 결과 상세 패널은 `tool_results[*].response_payload`를 사용합니다.
+- 승인 필요 CTA는 `requires_approval=true` 또는 `call_status=APPROVAL_REQUIRED` 기준으로 표시합니다.
+- 차단된 작업은 `is_blocked=true` 또는 `call_status=BLOCKED` 기준으로 표시합니다.
+- 실행 이력 화면은 `/jobs`와 `/mcp/tool-calls`를 함께 사용합니다.
+- 감사/근거 화면은 `/llm-runs`, `/prompt-versions`, `/approvals`, `/notifications`, `/agent-snapshots`를 사용합니다.
+- 운영 리포트 화면 또는 이메일 미리보기는 `/reports/ops/{report_id}`를 사용합니다. 별도 대시보드 UI는 1차 MVP 필수 범위가 아닙니다.
