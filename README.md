@@ -31,7 +31,7 @@
 
 <a id="overview"></a>
 
-## 📌 프로젝트 개요
+## 📌 1. 프로젝트 개요
 
 농업인은 파종·생육·수확 시점에 따라 소득과 문의가 몰리고, 파종기·수확기·상환일에는 신청/결제/상환 요청과 함께 운영 트래픽도 급증합니다. 이 저장소는 단순한 BNPL API 서버가 아니라, 이런 상황에서 발생하는 **사용자 문의, 관리자 의사결정, 장애 조사, 운영 보고를 AI Agent가 도와주는 백엔드**입니다.
 
@@ -53,7 +53,7 @@ LLM Agent가 데이터베이스나 인프라 API를 직접 호출하면 실행 �
 
 <a id="modules"></a>
 
-## 🏗️ 모듈/실행 경로 구성
+## 🏗️ 2. 모듈/실행 경로 구성
 
 단일 FastAPI 애플리케이션 안에 도메인별 서비스 모듈을 두고, 그 위에 Agent 계층과 MCP 계층을 얹은 구조입니다. Java 백엔드처럼 서비스가 컨테이너 단위로 쪼개져 있지는 않지만, 도메인 패키지(`src/aiops_platform/*`)로 책임을 분리했습니다.
 
@@ -81,7 +81,7 @@ flowchart LR
     OPSREPORT --> NOTIFY["Slack / Email"]
 ```
 
-| 모듈 | 역할 |
+| 모듈 | 기능 |
 | --- | --- |
 | `api/` | FastAPI 라우터 |
 | `agent/` | planner, orchestrator, dispatcher |
@@ -102,7 +102,7 @@ flowchart LR
 
 <a id="workflow"></a>
 
-## 🔁 핵심 시나리오
+## 🔁 3. 핵심 시나리오
 
 ```text
 [농민 BNPL 상담]
@@ -127,11 +127,11 @@ SRE Agent 자동 실행은 읽기 전용입니다. `scale_deployment`, `restart_
 
 <a id="features"></a>
 
-## 🔍 핵심 기능
+## 🔍 4. 핵심 기능
 
 <a id="mcp-architecture"></a>
 <details>
-<summary><strong>1. MCP Tool Registry와 권한 정책</strong></summary>
+<summary><strong> 4-1. MCP Tool Registry와 권한 정책</strong></summary>
 <br>
 
 모든 외부 동작(DB 조회, Prometheus/Loki 쿼리, Kubernetes API, 알림 발송 등)은 MCP Tool로 감싸고, registry와 policy가 실행 가능 여부를 판단합니다.
@@ -211,7 +211,7 @@ SRE Copilot에서 `create_rca_snapshot` Tool은 특별 취급됩니다. `AgentOr
 
 <a id="farmer-agent"></a>
 <details>
-<summary><strong>2. Farmer BNPL Agent</strong></summary>
+<summary><strong>4-2. Farmer BNPL Agent</strong></summary>
 <br>
 
 농민 사용자가 "이번 달 상환해야 할 금액과 남은 한도를 알려줘"라고 물으면 Farmer 챗봇은 사용자 프로필, 신용 한도, 상환 일정, 연체 여부를 MCP Tool로 조회합니다. LLM은 조회 결과를 바탕으로 쉬운 문장으로 답변하고, 필요한 경우 배송 상태나 농자재 추천 카드까지 함께 반환합니다.
@@ -228,7 +228,7 @@ READ Tool 일부(`get_farmer_profile`, `get_user_credit_limit`, `search_products
 
 <a id="admin-copilot"></a>
 <details>
-<summary><strong>3. Admin RiskOps Copilot</strong></summary>
+<summary><strong>4-3. Admin RiskOps Copilot</strong></summary>
 <br>
 
 관리자가 "연체 위험이 높은 고객과 재해 리스크 영향도를 요약해줘"라고 요청하면 Admin Copilot은 심사 큐, BNPL 요약, 연체 요약, BSS 이력, 재해 시뮬레이션 도구를 조합합니다. 결과는 관리자 화면에서 바로 확인할 수 있는 요약과 근거 데이터로 남습니다.
@@ -242,7 +242,7 @@ READ Tool 일부(`get_farmer_profile`, `get_user_credit_limit`, `search_products
 
 <a id="sre-rca"></a>
 <details>
-<summary><strong>4. SRE 장애 분석과 RCA</strong></summary>
+<summary><strong>4-4. SRE 장애 분석과 RCA</strong></summary>
 <br>
 
 SRE가 "결제 서비스 5xx 원인 봐줘"라고 묻거나 Alertmanager가 firing alert를 보내면 SRE Agent는 서비스, namespace, alert 유형을 추론합니다. 이후 Prometheus metric, Loki log, Kubernetes event, service endpoint, topology knowledge, 이전 RCA 이력을 READ-only Tool로 수집하고 RCA 초안을 생성합니다.
@@ -280,7 +280,7 @@ sequenceDiagram
 
 <a id="prediction-scaling"></a>
 <details>
-<summary><strong>5. Prediction Scaling 점검</strong></summary>
+<summary><strong>4-5. Prediction Scaling 점검</strong></summary>
 <br>
 
 `ai-prediction-model`이 산출한 GRU 예측 metric을 PostgreSQL에서 읽어와 실측 metric, 오차, HPA/KEDA 상태와 비교합니다. `PREDICTION_SCALING_WATCHER_ENABLED=true`면 주기적으로 편차를 점검해 Slack으로 위험도별 알림을 보냅니다.
@@ -294,7 +294,7 @@ sequenceDiagram
 
 <a id="masking-audit"></a>
 <details>
-<summary><strong>6. Masking과 Audit</strong></summary>
+<summary><strong>4-6. Masking과 Audit</strong></summary>
 <br>
 
 * `agent/dispatcher.py`의 `sanitize_execution_context()`는 Tool 실행 **전** payload에서 `access_token`, `api_key`, `authorization`, `password`, `secret`, `token` 키를 완전히 제거합니다.
@@ -309,7 +309,7 @@ sequenceDiagram
 
 <a id="ops-reports"></a>
 <details>
-<summary><strong>7. Ops Reports</strong></summary>
+<summary><strong>4-7. Ops Reports</strong></summary>
 <br>
 
 RCA, prediction/scaling 요약, 운영 metric을 모아 일간/주간 리포트를 생성하고, 생성된 리포트를 HTML 이메일로 발송합니다. 1차 범위는 대시보드 UI 없이 API 조회와 이메일 발송으로 소비합니다.
@@ -329,7 +329,7 @@ RCA, prediction/scaling 요약, 운영 metric을 모아 일간/주간 리포트�
 
 <a id="test-scenarios"></a>
 
-## ✅ 테스트
+## ✅ 5. 테스트
 
 본 프로젝트는 API 응답 형식뿐 아니라, MCP 권한 판정·masking·audit이 실제로 의도대로 동작하는지를 중심으로 테스트했습니다.
 
@@ -358,7 +358,7 @@ python -m pytest
 
 <a id="cicd"></a>
 
-## 🚀 CI/CD
+## 🚀 6. CI/CD
 
 GitHub Actions 단일 워크플로(`.github/workflows/deploy.yml`)가 테스트부터 EKS 배포까지 처리합니다.
 
@@ -389,7 +389,7 @@ flowchart LR
 
 <a id="tech-stack"></a>
 
-## 🛠️ 기술 스택
+## 🛠️ 7. 기술 스택
 
 | 영역 | 스택 |
 | --- | --- |
@@ -407,7 +407,7 @@ flowchart LR
 
 <a id="directory"></a>
 
-## 📂 디렉터리 구조
+## 📂 8. 디렉터리 구조
 
 ```text
 mcp-aiops-backend/
@@ -441,7 +441,7 @@ mcp-aiops-backend/
 
 <a id="docs"></a>
 
-## 📄 관련 문서
+## 📄 9. 관련 문서
 
 | 문서 | 내용 |
 | --- | --- |
@@ -457,7 +457,7 @@ mcp-aiops-backend/
 
 <a id="repositories"></a>
 
-## 🔗 관련 레포지토리
+## 🔗 10. 관련 레포지토리
 
 | 레포 | 설명 |
 | --- | --- |
