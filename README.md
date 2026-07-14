@@ -18,7 +18,7 @@
 
 1. [프로젝트 개요](#overview)
 2. [모듈/실행 경로 구성](#modules)
-3. [핵심 업무 흐름](#workflow)
+3. [핵심 시나리오](#workflow)
 4. [핵심 기능](#features)
 5. [테스트](#test-scenarios)
 6. [CI/CD](#cicd)
@@ -102,7 +102,7 @@ flowchart LR
 
 <a id="workflow"></a>
 
-## 🔁 핵심 업무 흐름
+## 🔁 핵심 시나리오
 
 ```text
 [농민 BNPL 상담]
