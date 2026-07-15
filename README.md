@@ -162,18 +162,18 @@ flowchart TD
 
 | 단계 | 책임 | 코드 |
 | --- | --- | --- |
-| 1. Planner | 사용자 메시지를 도메인 의도로 분류하고 Tool 실행 계획을 세운다 | [`agent/planner.py`](src/aiops_platform/agent/planner.py) — `LlmAgentPlanner` |
-| 2. Registry | 계획된 Tool이 실제로 등록돼 있는지 확인한다 (없으면 즉시 실패) | [`mcp/registry.py`](src/aiops_platform/mcp/registry.py) — `list_mcp_tools`, `resolve_registered_tool` |
-| 3. Policy | 권한 등급을 실행 가능 여부로 변환한다 | [`mcp/policy.py`](src/aiops_platform/mcp/policy.py) — `resolve_tool_policy` |
-| 4. Masking | 개인·금융·인증 정보를 실행 전/후 두 지점에서 가린다 | [`agent/dispatcher.py`](src/aiops_platform/agent/dispatcher.py) — `sanitize_execution_context`, [`mcp/masking.py`](src/aiops_platform/mcp/masking.py) — `mask_payload` |
-| 5. Dispatcher | Tool 이름을 실제 service 함수로 연결해 실행한다 | [`agent/dispatcher.py`](src/aiops_platform/agent/dispatcher.py) — `McpToolDispatcher.execute` |
-| 6. Audit | 요청·응답·LLM run을 감사 로그로 남긴다 | [`mcp/audit.py`](src/aiops_platform/mcp/audit.py) — `McpToolAuditService`, [`orchestration/service.py`](src/aiops_platform/orchestration/service.py) — `_persist_agent_tool_result` |
+| 1. Planner | 사용자 메시지를 도메인 의도로 분류하고 Tool 실행 계획 세움 | [`agent/planner.py`](src/aiops_platform/agent/planner.py) — `LlmAgentPlanner` |
+| 2. Registry | 계획된 Tool이 실제로 등록돼 있는지 확인 (없으면 즉시 실패) | [`mcp/registry.py`](src/aiops_platform/mcp/registry.py) — `list_mcp_tools`, `resolve_registered_tool` |
+| 3. Policy | 권한 등급을 실행 가능 여부로 변환 | [`mcp/policy.py`](src/aiops_platform/mcp/policy.py) — `resolve_tool_policy` |
+| 4. Masking | 개인·금융·인증 정보를 실행 전/후 두 지점에서 마스킹함 | [`agent/dispatcher.py`](src/aiops_platform/agent/dispatcher.py) — `sanitize_execution_context`, [`mcp/masking.py`](src/aiops_platform/mcp/masking.py) — `mask_payload` |
+| 5. Dispatcher | Tool 이름을 실제 service 함수로 연결 및 실행 | [`agent/dispatcher.py`](src/aiops_platform/agent/dispatcher.py) — `McpToolDispatcher.execute` |
+| 6. Audit | 요청·응답·LLM run을 감사 로그로 남김 | [`mcp/audit.py`](src/aiops_platform/mcp/audit.py) — `McpToolAuditService`, [`orchestration/service.py`](src/aiops_platform/orchestration/service.py) — `_persist_agent_tool_result` |
 
-설계에서 의도적으로 챙긴 부분:
+AIOps 설계에서의 고려사항:
 
-- **3단계(Policy)에서 조기 차단.** `WRITE` 이상 권한은 정책상 `ALLOWED`가 아니면 5단계(Dispatcher)까지 가지 않고 `dry_run`/preview 응답을 즉시 반환합니다. `DESTRUCTIVE`는 애초에 실행 경로 자체가 없습니다.
-- **Masking은 한 번이 아니라 두 번.** 실행 전 `sanitize_execution_context()`는 `access_token`/`password`류 키를 아예 제거해 service 함수에 전달하지 않고, 실행 후 `mask_payload()`는 저장/응답용으로 더 넓은 키워드 목록을 마스킹합니다. 차단·실패 응답도 동일하게 마스킹을 거칩니다.
-- **Audit은 성공 여부와 무관하게 남는다.** 3단계에서 막힌 요청(`APPROVAL_REQUIRED`, `BLOCKED`)도, 5단계에서 실패한 요청(`FAILED`)도 모두 감사 기록으로 남아 `/mcp/tool-calls`에서 조회할 수 있습니다.
+- **3단계(Policy)에서 조기 차단** : `WRITE` 이상 권한은 정책상 `ALLOWED`가 아니면 5단계(Dispatcher)까지 가지 않고 `dry_run`/preview 응답을 즉시 반환합니다. `DESTRUCTIVE`는 애초에 실행 경로 자체가 없습니다.
+- **Masking은 두 번 진행** : 실행 전 `sanitize_execution_context()`는 `access_token`/`password`류 키를 아예 제거해 service 함수에 전달하지 않고, 실행 후 `mask_payload()`는 저장/응답용으로 더 넓은 키워드 목록을 마스킹합니다. 차단·실패 응답도 동일하게 마스킹을 거칩니다.
+- **Audit은 성공 여부와 무관하게 남는다** : 3단계에서 막힌 요청(`APPROVAL_REQUIRED`, `BLOCKED`)도, 5단계에서 실패한 요청(`FAILED`)도 모두 감사 기록으로 남아 `/mcp/tool-calls`에서 조회할 수 있습니다.
 
 #### 등록된 MCP 서버
 
@@ -348,9 +348,7 @@ RCA, prediction/scaling 요약, 운영 metric을 모아 일간/주간 리포트�
 | Ops Reports | 리포트 생성·이메일 발송, LLM 실패 처리 |
 | LLMOps | LLM run/prompt 기록, 프롬프트 요구사항 검증 |
 
-```powershell
-python -m pytest
-```
+
 
 
 
