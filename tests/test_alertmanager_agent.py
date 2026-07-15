@@ -1,0 +1,1764 @@
+import json
+from datetime import UTC, datetime
+
+from fastapi.testclient import TestClient
+
+from aiops_platform.agent.dispatcher import build_tool_result, resolve_registered_tool
+from aiops_platform.agent.schemas import AgentToolExecutionResult, AgentToolPlan
+from aiops_platform.alertmanager_agent.schemas import (
+    AlertmanagerSreAlertContext,
+    AlertmanagerSreInspectionRequest,
+    AlertmanagerSrePlanResult,
+)
+from aiops_platform.alertmanager_agent.service import (
+    AlertmanagerSreAgentService,
+    build_analysis_notification_text,
+    build_collection_notification_text,
+    build_notification_idempotency_key,
+    build_rca_llm_snapshot_payload,
+)
+from aiops_platform.alertmanager_agent.watcher import (
+    SreInspectionWatcher,
+    build_sre_inspection_watcher,
+)
+from aiops_platform.core.config import Settings
+from aiops_platform.infra_rca.schemas import AlertmanagerWebhookRequest
+from aiops_platform.llmops.schemas import LlmRunResult, NotificationOutboxResult
+from aiops_platform.main import create_app
+from aiops_platform.mcp.schemas import McpExecutionPolicy, McpToolCallStatus
+
+MUTATING_TOOL_NAMES = {
+    "scale_deployment",
+    "restart_pod",
+    "delete_pod",
+    "run_kubectl_exec",
+}
+
+POD_CRASH_PAYLOAD = {
+    "receiver": "aiops-platform",
+    "status": "firing",
+    "alerts": [
+        {
+            "status": "firing",
+            "labels": {
+                "alertname": "PodCrashLooping",
+                "cluster": "onprem",
+                "namespace": "service-catalog",
+                "service": "service-catalog",
+                "pod": "service-catalog-abc",
+                "severity": "critical",
+            },
+            "annotations": {
+                "summary": "Pod service-catalog-abc is crash looping",
+            },
+            "startsAt": "2026-06-12T01:00:00Z",
+            "fingerprint": "pod-crash-001",
+        }
+    ],
+}
+
+
+def build_firing_payload(
+    *,
+    alertname: str,
+    service: str,
+    namespace: str,
+    cluster: str = "onprem",
+    severity: str = "critical",
+    summary: str,
+    extra_labels: dict[str, str] | None = None,
+    extra_annotations: dict[str, str] | None = None,
+) -> dict[str, object]:
+    labels = {
+        "alertname": alertname,
+        "cluster": cluster,
+        "namespace": namespace,
+        "service": service,
+        "severity": severity,
+    }
+    if extra_labels is not None:
+        labels.update(extra_labels)
+    annotations = {"summary": summary}
+    if extra_annotations is not None:
+        annotations.update(extra_annotations)
+    return {
+        "receiver": "aiops-platform",
+        "status": "firing",
+        "alerts": [
+            {
+                "status": "firing",
+                "labels": labels,
+                "annotations": annotations,
+                "fingerprint": f"{alertname.lower()}-001",
+            }
+        ],
+    }
+
+
+def plan_from_payload(payload: dict[str, object]):
+    service = AlertmanagerSreAgentService()
+    return service.plan_from_webhook(AlertmanagerWebhookRequest.model_validate(payload))
+
+
+def tool_names(result) -> set[str]:
+    return {tool.tool_name for tool in result.planned_tools}
+
+
+def assert_dry_run_read_only_plan(result) -> None:
+    assert result.dry_run is True
+    assert result.status == "PLANNED"
+    assert MUTATING_TOOL_NAMES.isdisjoint(tool_names(result))
+
+
+def assert_common_rca_context_tools(result) -> None:
+    names = tool_names(result)
+    assert {
+        "get_topology_snapshot",
+        "search_topology_knowledge",
+        "get_service_routing_path",
+        "get_service_dependency_map",
+        "get_alertmanager_alerts",
+        "query_multi_cluster_prometheus",
+        "query_multi_cluster_loki",
+        "get_service_trace_summary",
+        "search_traces",
+        "get_recent_deployments",
+        "create_rca_snapshot",
+    }.issubset(names)
+
+
+def build_success_result(tool_name: str, response_payload: dict[str, object]):
+    tool = resolve_registered_tool(
+        server_name="infraops-mcp",
+        tool_name=tool_name,
+    )
+    return build_tool_result(
+        tool=tool,
+        request_payload={},
+        response_payload=response_payload,
+        call_status=McpToolCallStatus.SUCCESS,
+        execution_policy=McpExecutionPolicy.ALLOWED,
+    )
+
+
+def build_failed_result(tool_name: str, error_message: str = "tool failed"):
+    tool = resolve_registered_tool(
+        server_name="infraops-mcp",
+        tool_name=tool_name,
+    )
+    return build_tool_result(
+        tool=tool,
+        request_payload={},
+        response_payload=None,
+        call_status=McpToolCallStatus.FAILED,
+        execution_policy=McpExecutionPolicy.ALLOWED,
+        error_message=error_message,
+    )
+
+
+def test_alertmanager_sre_agent_plans_pod_crashloop_read_tools() -> None:
+    result = plan_from_payload(POD_CRASH_PAYLOAD)
+
+    names = tool_names(result)
+    assert_dry_run_read_only_plan(result)
+    assert result.incident_key == (
+        "alertmanager:podcrashlooping:onprem:service-catalog:service-catalog:critical"
+    )
+    assert result.intent == "pod_crashloop"
+    assert result.capability == "pod_crashloop_analysis"
+    assert "get_k8s_pods" in names
+    assert "get_k8s_events" in names
+    assert "get_pod_logs" in names
+
+
+def test_alertmanager_sre_agent_uses_k8s_namespace_for_pod_health_alert() -> None:
+    payload = {
+        "receiver": "aiops-platform",
+        "status": "firing",
+        "alerts": [
+            {
+                "status": "firing",
+                "labels": {
+                    "alertname": "KubernetesPodNotHealthy",
+                    "alert_scope": "k8s",
+                    "namespace": "monitoring",
+                    "k8s_namespace": "kkpp",
+                    "pod": "service-batch-29689980-46j66",
+                    "node": "k8s-worker-cicd-a",
+                    "phase": "Pending",
+                    "severity": "warning",
+                },
+                "annotations": {
+                    "summary": (
+                        "Pod service-batch-29689980-46j66 has been Pending "
+                        "for more than 10 minutes"
+                    ),
+                },
+                "fingerprint": "k8s-pod-not-healthy-001",
+            }
+        ],
+    }
+
+    result = plan_from_payload(payload)
+
+    names = tool_names(result)
+    pod_logs_plan = next(tool for tool in result.planned_tools if tool.tool_name == "get_pod_logs")
+    rollout_plan = next(
+        tool for tool in result.planned_tools if tool.tool_name == "get_rollout_status"
+    )
+    loki_plan = next(
+        tool for tool in result.planned_tools if tool.tool_name == "query_multi_cluster_loki"
+    )
+
+    assert_dry_run_read_only_plan(result)
+    assert result.intent == "pod_crashloop"
+    assert result.capability == "pod_crashloop_analysis"
+    assert result.alert is not None
+    assert result.alert.namespace == "kkpp"
+    assert result.alert.service_name == "service-batch"
+    assert result.alert.workload == "service-batch"
+    assert result.incident_key == (
+        "alertmanager:kubernetespodnothealthy:unknown-cluster:"
+        "kkpp:service-batch:warning"
+    )
+    assert pod_logs_plan.request_payload == {
+        "namespace": "kkpp",
+        "pod_name": "service-batch-29689980-46j66",
+        "tail_lines": 200,
+    }
+    assert rollout_plan.request_payload == {
+        "namespace": "kkpp",
+        "deployment_name": "service-batch",
+        "source": "onprem",
+    }
+    assert loki_plan.request_payload["query"].startswith('{namespace="kkpp"}')
+    assert "get_k8s_events" in names
+    assert "get_cloudfront_origin_mapping" not in names
+
+
+def test_alertmanager_sre_agent_dry_run_checkout_500_tool_plan() -> None:
+    payload = build_firing_payload(
+        alertname="Checkout5xxHigh",
+        service="service-catalog",
+        namespace="service-catalog",
+        cluster="aws-eks",
+        summary="checkout endpoint returns HTTP 500 from the catalog API",
+    )
+
+    result = plan_from_payload(payload)
+
+    names = tool_names(result)
+    assert_dry_run_read_only_plan(result)
+    assert_common_rca_context_tools(result)
+    assert result.intent == "checkout_500"
+    assert result.capability == "checkout_500_analysis"
+    assert "get_alb_target_health" in names
+    assert "get_cloudfront_origin_mapping" in names
+    assert "get_cloudfront_distribution_status" in names
+    assert "get_rollout_status" in names
+
+
+def test_alertmanager_sre_agent_dry_run_sqs_publish_failure_tool_plan() -> None:
+    payload = build_firing_payload(
+        alertname="SqsPublishFailure",
+        service="service-catalog",
+        namespace="service-catalog",
+        summary="service-catalog failed to sendMessage to SQS",
+    )
+
+    result = plan_from_payload(payload)
+
+    names = tool_names(result)
+    assert_dry_run_read_only_plan(result)
+    assert_common_rca_context_tools(result)
+    assert result.intent == "sqs_publish_failure"
+    assert result.capability == "sqs_publish_failure_analysis"
+    assert "get_sqs_queue_attributes" in names
+    assert "get_sqs_dlq_attributes" in names
+
+
+def test_alertmanager_sre_agent_maps_sqs_dlq_to_consume_failure() -> None:
+    payload = {
+        "status": "firing",
+        "commonLabels": {"cluster": "aws-eks", "namespace": "service-payment"},
+        "alerts": [
+            {
+                "status": "firing",
+                "labels": {
+                    "alertname": "SqsDLQMessagesVisible",
+                    "service": "service-payment",
+                    "queue": "credit-payment-requested-dlq.fifo",
+                    "severity": "warning",
+                },
+                "annotations": {
+                    "summary": "SQS DLQ has visible messages",
+                },
+            }
+        ],
+    }
+
+    result = plan_from_payload(payload)
+
+    names = tool_names(result)
+    assert_dry_run_read_only_plan(result)
+    assert_common_rca_context_tools(result)
+    assert result.intent == "sqs_consume_failure"
+    assert result.capability == "sqs_consume_failure_analysis"
+    assert "get_sqs_queue_attributes" in names
+    assert "get_sqs_dlq_attributes" in names
+
+
+def test_alertmanager_sre_agent_dry_run_pin_event_missing_tool_plan() -> None:
+    payload = build_firing_payload(
+        alertname="PinVerificationEventMissing",
+        service="service-payment",
+        namespace="default",
+        summary="PIN verification completed but downstream event was not observed",
+    )
+
+    result = plan_from_payload(payload)
+
+    names = tool_names(result)
+    assert_dry_run_read_only_plan(result)
+    assert_common_rca_context_tools(result)
+    assert result.intent == "pin_verification_missing"
+    assert result.capability == "pin_verification_missing_analysis"
+    assert "get_sqs_queue_attributes" in names
+    assert "get_sqs_dlq_attributes" in names
+
+
+def test_alertmanager_sre_agent_dry_run_cloudfront_alb_eks_routing_tool_plan() -> None:
+    payload = build_firing_payload(
+        alertname="ALBTargetUnhealthy",
+        service="service-catalog",
+        namespace="service-catalog",
+        cluster="aws-eks",
+        summary="CloudFront to ALB to EKS target health is unhealthy",
+    )
+
+    result = plan_from_payload(payload)
+
+    names = tool_names(result)
+    assert_dry_run_read_only_plan(result)
+    assert_common_rca_context_tools(result)
+    assert result.intent == "routing_failure"
+    assert result.capability == "edge_routing_analysis"
+    assert "get_alb_target_health" in names
+    assert "get_cloudfront_origin_mapping" in names
+    assert "get_cloudfront_distribution_status" in names
+
+
+def test_alertmanager_sre_agent_dry_run_cloudfront_alb_onprem_routing_tool_plan() -> None:
+    payload = build_firing_payload(
+        alertname="OnpremMetalLBRoutingFailure",
+        service="service-payment",
+        namespace="kkpp",
+        cluster="onprem",
+        summary="CloudFront to ALB to on-prem MetalLB routing failed",
+        extra_labels={"deployment": "service-payment"},
+    )
+
+    result = plan_from_payload(payload)
+
+    names = tool_names(result)
+    assert_dry_run_read_only_plan(result)
+    assert_common_rca_context_tools(result)
+    assert result.intent == "routing_failure"
+    assert result.capability == "edge_routing_analysis"
+    assert "get_aws_vpn_tunnel_status" in names
+    assert "get_cloudfront_origin_mapping" in names
+    assert "get_cloudfront_distribution_status" in names
+    assert "get_alb_target_health" not in names
+    rollout = next(tool for tool in result.planned_tools if tool.tool_name == "get_rollout_status")
+    assert rollout.request_payload == {
+        "namespace": "kkpp",
+        "deployment_name": "service-payment",
+        "source": "onprem",
+    }
+
+
+def test_alertmanager_sre_agent_dry_run_vpn_tunnel_tool_plan() -> None:
+    payload = build_firing_payload(
+        alertname="VpnTunnelStateDegraded",
+        service="aws-vpn",
+        namespace="monitoring",
+        cluster="onprem",
+        severity="warning",
+        summary="Synthetic VPN tunnel state degraded check",
+    )
+
+    result = plan_from_payload(payload)
+
+    names = tool_names(result)
+    assert_dry_run_read_only_plan(result)
+    assert_common_rca_context_tools(result)
+    assert result.intent == "routing_failure"
+    assert result.capability == "edge_routing_analysis"
+    assert "get_aws_vpn_tunnel_status" in names
+
+
+def test_alertmanager_sre_agent_dry_run_db_hikaricp_tool_plan() -> None:
+    payload = build_firing_payload(
+        alertname="HikariPoolExhausted",
+        service="service-payment",
+        namespace="default",
+        summary="HikariCP connection pool is exhausted and PostgreSQL connections time out",
+    )
+
+    result = plan_from_payload(payload)
+
+    names = tool_names(result)
+    assert_dry_run_read_only_plan(result)
+    assert_common_rca_context_tools(result)
+    assert result.intent == "db_hikaricp_issue"
+    assert result.capability == "db_connection_analysis"
+    assert "get_rollout_status" in names
+    assert "query_multi_cluster_prometheus" in names
+    assert "query_multi_cluster_loki" in names
+    assert "get_service_trace_summary" in names
+
+
+def test_alertmanager_sre_agent_dry_run_postgres_saturation_tool_plan() -> None:
+    payload = {
+        "receiver": "aiops-platform",
+        "status": "firing",
+        "alerts": [
+            {
+                "status": "firing",
+                "labels": {
+                    "alertname": "PostgreSQLConnectionSaturationHigh",
+                    "alert_scope": "postgres",
+                    "namespace": "monitoring",
+                    "category": "postgresql",
+                    "component": "database",
+                    "db_host": "192.168.100.23",
+                    "db_role": "primary",
+                    "severity": "warning",
+                },
+                "annotations": {
+                    "summary": (
+                        "primary DB host connection usage exceeded "
+                        "80% of max_connections"
+                    ),
+                },
+                "fingerprint": "postgres-connection-saturation-001",
+            }
+        ],
+    }
+
+    result = plan_from_payload(payload)
+
+    names = tool_names(result)
+    prometheus_plan = next(
+        tool for tool in result.planned_tools if tool.tool_name == "query_multi_cluster_prometheus"
+    )
+    loki_plan = next(
+        tool for tool in result.planned_tools if tool.tool_name == "query_multi_cluster_loki"
+    )
+    assert_dry_run_read_only_plan(result)
+    assert_common_rca_context_tools(result)
+    assert result.intent == "db_hikaricp_issue"
+    assert result.capability == "db_connection_analysis"
+    assert result.alert is not None
+    assert result.alert.service_name == "postgresql"
+    assert result.incident_key == (
+        "alertmanager:postgresqlconnectionsaturationhigh:unknown-cluster:"
+        "monitoring:postgresql:warning"
+    )
+    assert "pg_stat_activity_count" in prometheus_plan.request_payload["query"]
+    assert "pg_settings_max_connections" in prometheus_plan.request_payload["query"]
+    assert loki_plan.request_payload["query"].startswith('{namespace="monitoring"}')
+    assert "get_cloudfront_origin_mapping" not in names
+    assert "get_alb_target_health" not in names
+
+
+def test_alertmanager_sre_agent_skips_resolved_payload() -> None:
+    payload = {
+        **POD_CRASH_PAYLOAD,
+        "status": "resolved",
+        "alerts": [{**POD_CRASH_PAYLOAD["alerts"][0], "status": "resolved"}],
+    }
+
+    result = plan_from_payload(payload)
+
+    assert result.status == "SKIPPED"
+    assert result.planned_tools == []
+    assert result.skipped_reason is not None
+
+
+def test_alertmanager_sre_webhook_api_returns_dry_run_plan() -> None:
+    client = TestClient(create_app())
+
+    response = client.post("/infra-rca/alertmanager/webhook", json=POD_CRASH_PAYLOAD)
+
+    assert response.status_code == 200
+    result = response.json()
+    assert result["dry_run"] is True
+    assert result["status"] == "PLANNED"
+    assert result["intent"] == "pod_crashloop"
+    assert {tool["tool_name"] for tool in result["planned_tools"]} >= {
+        "get_k8s_pods",
+        "get_k8s_events",
+    }
+
+
+def test_manual_inspection_builds_synthetic_routing_plan() -> None:
+    service = AlertmanagerSreAgentService(
+        now_provider=lambda: datetime(2026, 6, 16, 6, 30, tzinfo=UTC),
+    )
+
+    result = service.handle_manual_inspection(
+        AlertmanagerSreInspectionRequest(
+            inspection_type="routing",
+            cluster="onprem",
+            namespace="kkpp",
+            service="service-payment",
+        ),
+        execute=False,
+        notify=False,
+    )
+
+    assert result.trigger_type == "MANUAL_INSPECTION"
+    assert result.dry_run is True
+    assert result.status == "PLANNED"
+    assert result.receiver == "aiops-sre-manual-inspection"
+    assert result.actor == "manual-inspection"
+    assert result.alert is not None
+    assert result.alert.alert_name == "SyntheticRoutingInspection"
+    assert result.alert.starts_at == "2026-06-16T06:30:00Z"
+    assert result.incident_key == (
+        "alertmanager:syntheticroutinginspection:onprem:kkpp:service-payment:info"
+    )
+    assert result.intent == "routing_failure"
+    assert result.capability == "edge_routing_analysis"
+
+
+def test_manual_inspection_api_is_exposed_under_external_prefix() -> None:
+    client = TestClient(create_app())
+
+    response = client.post(
+        "/api/v1/infra-rca/inspection/run?execute=false&notify=false",
+        json={
+            "inspection_type": "kubernetes_pod",
+            "cluster": "onprem",
+            "namespace": "kkpp",
+            "service": "service-admin",
+            "pod": "service-admin-7fd97fc67d-m2mpf",
+        },
+    )
+
+    assert response.status_code == 200
+    result = response.json()
+    assert result["trigger_type"] == "MANUAL_INSPECTION"
+    assert result["dry_run"] is True
+    assert result["status"] == "PLANNED"
+    assert result["alert"]["alert_name"] == "SyntheticKubernetesPodInspection"
+    assert result["alert"]["service_name"] == "service-admin"
+    assert result["alert"]["pod"] == "service-admin-7fd97fc67d-m2mpf"
+    assert result["intent"] == "pod_crashloop"
+
+
+def test_external_alertmanager_sre_webhook_api_is_exposed() -> None:
+    client = TestClient(create_app())
+
+    response = client.post(
+        "/api/v1/infra-rca/alertmanager/webhook",
+        json=POD_CRASH_PAYLOAD,
+    )
+
+    assert response.status_code == 200
+    assert response.json()["trigger_type"] == "ALERTMANAGER"
+
+
+class FakeReadOnlyDispatcher:
+    def __init__(self) -> None:
+        self.plans: list[AgentToolPlan] = []
+
+    def execute(self, plan: AgentToolPlan) -> AgentToolExecutionResult:
+        self.plans.append(plan)
+        tool = resolve_registered_tool(
+            server_name=plan.server_name,
+            tool_name=plan.tool_name,
+        )
+        return build_tool_result(
+            tool=tool,
+            request_payload=plan.request_payload,
+            response_payload={
+                "ok": True,
+                "tool_name": plan.tool_name,
+            },
+            call_status=McpToolCallStatus.SUCCESS,
+            execution_policy=McpExecutionPolicy.ALLOWED,
+        )
+
+
+class FakeNotificationService:
+    def __init__(self) -> None:
+        self.notifications: list[NotificationOutboxResult] = []
+        self.status_updates: list[dict[str, object]] = []
+        self.rca_runs: list[dict[str, object]] = []
+
+    def create_notification(self, **kwargs: object) -> NotificationOutboxResult:
+        notification = NotificationOutboxResult(
+            notification_id=f"notification-{len(self.notifications) + 1}",
+            channel=str(kwargs.get("channel") or "").upper(),
+            recipient=kwargs.get("recipient"),
+            notification_status="PENDING",
+            payload=kwargs.get("payload") or {},
+            related_table=kwargs.get("related_table"),
+            related_public_id=kwargs.get("related_public_id"),
+            idempotency_key=kwargs.get("idempotency_key"),
+            attempts=0,
+            created_at="2026-06-12T01:20:01",
+        )
+        self.notifications.append(notification)
+        return notification
+
+    def update_notification_status(
+        self,
+        notification_id: str,
+        *,
+        status: str,
+        last_error: str | None = None,
+    ) -> NotificationOutboxResult:
+        self.status_updates.append(
+            {
+                "notification_id": notification_id,
+                "status": status,
+                "last_error": last_error,
+            }
+        )
+        notification = next(
+            item
+            for item in self.notifications
+            if item.notification_id == notification_id
+        )
+        return notification.model_copy(
+            update={"notification_status": status, "last_error": last_error}
+        )
+
+    def run_rca_completion(self, **kwargs: object) -> LlmRunResult:
+        self.rca_runs.append(kwargs)
+        return LlmRunResult(
+            llm_run_id="llm-run-1",
+            provider="fake",
+            model="fake-rca",
+            prompt_version_id="prompt-1",
+            prompt_key="rca.infra.v1",
+            run_status="SUCCESS",
+            masked_input=kwargs,
+            masked_output={
+                "answer": (
+                    "Summary\n"
+                    "- Synthetic RCA analysis completed.\n\n"
+                    "Probable Root Cause\n"
+                    "- The failing boundary is the simulated routing path."
+                )
+            },
+            output_schema={"type": "object"},
+            validation_errors=[],
+            latency_ms=1,
+            created_at="2026-06-12T01:20:02",
+        )
+
+
+class FakeEmailSender:
+    def __init__(self) -> None:
+        self.sent_messages: list[dict[str, str]] = []
+
+    def send_html(self, *, recipient: str, subject: str, html_body: str) -> None:
+        self.sent_messages.append(
+            {
+                "recipient": recipient,
+                "subject": subject,
+                "html_body": html_body,
+            }
+        )
+
+
+class FakeSlackSender:
+    def __init__(self) -> None:
+        self.sent_messages: list[dict[str, str | None]] = []
+
+    def send_text(
+        self,
+        *,
+        webhook_url: str,
+        text: str,
+        channel: str | None = None,
+    ) -> None:
+        self.sent_messages.append(
+            {
+                "webhook_url": webhook_url,
+                "text": text,
+                "channel": channel,
+            }
+        )
+
+
+class FakeInspectionAgentService:
+    def __init__(self, result: AlertmanagerSrePlanResult) -> None:
+        self.result = result
+        self.inspection_calls: list[dict[str, object]] = []
+        self.analysis_calls: list[AlertmanagerSrePlanResult] = []
+
+    def handle_manual_inspection(self, request, **kwargs):
+        self.inspection_calls.append({"request": request, **kwargs})
+        return self.result
+
+    def analyze_collected_result(self, result, **kwargs):
+        self.analysis_calls.append(result)
+        return result.model_copy(update={"status": "ANALYZED"})
+
+
+def build_inspection_result(*, boundary_status: str) -> AlertmanagerSrePlanResult:
+    return AlertmanagerSrePlanResult(
+        trigger_type="MANUAL_INSPECTION",
+        dry_run=False,
+        status="COLLECTED",
+        incident_key=(
+            "alertmanager:syntheticcurrentstateinspection:onprem:"
+            "kkpp:service-payment:info"
+        ),
+        alert=AlertmanagerSreAlertContext(
+            alert_name="SyntheticCurrentStateInspection",
+            status="firing",
+            severity="info",
+            cluster="onprem",
+            namespace="kkpp",
+            service_name="service-payment",
+            workload="service-payment",
+            summary="Manual current-state inspection for AIOps SRE Agent",
+        ),
+        context_bundle={
+            "failure_boundary_candidates": [
+                {
+                    "boundary": "dns",
+                    "status": "healthy",
+                    "confidence": "medium",
+                },
+                {
+                    "boundary": "k8s_service",
+                    "status": boundary_status,
+                    "confidence": "medium",
+                },
+            ],
+        },
+    )
+
+
+def test_sre_inspection_watcher_sends_short_summary_for_healthy_status() -> None:
+    slack_sender = FakeSlackSender()
+    agent_service = FakeInspectionAgentService(
+        build_inspection_result(boundary_status="healthy")
+    )
+    watcher = SreInspectionWatcher(
+        agent_service=agent_service,
+        interval_seconds=30,
+        inspection_request=AlertmanagerSreInspectionRequest(
+            inspection_type="current_state",
+            cluster="onprem",
+            namespace="kkpp",
+            service="service-payment",
+        ),
+        slack_sender=slack_sender,
+        app_settings=Settings(
+            RCA_SLACK_WEBHOOK_URL="https://hooks.slack.example/test",
+            RCA_SLACK_CHANNEL="#aiops-alerts",
+        ),
+    )
+
+    result = watcher.run_once()
+
+    assert result.status == "COLLECTED"
+    assert agent_service.analysis_calls == []
+    assert len(slack_sender.sent_messages) == 1
+    assert "정기 상태 점검: 정상" in slack_sender.sent_messages[0]["text"]
+    assert "즉시 조치 필요 항목은 없습니다" in slack_sender.sent_messages[0]["text"]
+
+
+def test_sre_inspection_watcher_runs_llm_for_degraded_status() -> None:
+    slack_sender = FakeSlackSender()
+    agent_service = FakeInspectionAgentService(
+        build_inspection_result(boundary_status="degraded")
+    )
+    watcher = SreInspectionWatcher(
+        agent_service=agent_service,
+        interval_seconds=30,
+        inspection_request=AlertmanagerSreInspectionRequest(
+            inspection_type="current_state",
+            cluster="onprem",
+            namespace="kkpp",
+            service="service-payment",
+        ),
+        slack_sender=slack_sender,
+        app_settings=Settings(
+            RCA_SLACK_WEBHOOK_URL="https://hooks.slack.example/test",
+            RCA_SLACK_CHANNEL="#aiops-alerts",
+        ),
+    )
+
+    result = watcher.run_once()
+
+    assert result.status == "ANALYZED"
+    assert len(agent_service.analysis_calls) == 1
+    assert len(slack_sender.sent_messages) == 1
+    assert "정기 상태 점검: 위험" in slack_sender.sent_messages[0]["text"]
+    assert "LLM RCA 분석을 자동 실행" in slack_sender.sent_messages[0]["text"]
+
+
+def test_sre_inspection_watcher_factory_respects_enabled_flag() -> None:
+    service = AlertmanagerSreAgentService()
+
+    disabled = build_sre_inspection_watcher(
+        agent_service=service,
+        app_settings=Settings(SRE_INSPECTION_WATCHER_ENABLED=False),
+    )
+    enabled = build_sre_inspection_watcher(
+        agent_service=service,
+        app_settings=Settings(
+            SRE_INSPECTION_WATCHER_ENABLED=True,
+            SRE_INSPECTION_WATCHER_INTERVAL_SECONDS=30,
+        ),
+    )
+
+    assert disabled is None
+    assert enabled is not None
+
+
+def test_analysis_notification_idempotency_key_includes_llm_run_id() -> None:
+    base_result = AlertmanagerSrePlanResult(
+        status="ANALYZED",
+        incident_key="alertmanager:onpremmetallbroutingfailure:onprem:kkpp:service-payment:critical",
+        alert=AlertmanagerSreAlertContext(
+            alert_name="OnpremMetalLBRoutingFailure",
+            status="firing",
+            fingerprint="synthetic-aiops-rca-llm-test-001",
+        ),
+    )
+
+    collection_key = build_notification_idempotency_key(
+        result=base_result,
+        channel="SLACK",
+        recipient="#aiops-alerts",
+        stage="sre_collection",
+    )
+    first_analysis_key = build_notification_idempotency_key(
+        result=base_result.model_copy(
+            update={"rca_analysis": {"llm_run_id": "llm-run-1"}}
+        ),
+        channel="SLACK",
+        recipient="#aiops-alerts",
+        stage="sre_analysis",
+    )
+    second_analysis_key = build_notification_idempotency_key(
+        result=base_result.model_copy(
+            update={"rca_analysis": {"llm_run_id": "llm-run-2"}}
+        ),
+        channel="SLACK",
+        recipient="#aiops-alerts",
+        stage="sre_analysis",
+    )
+
+    assert first_analysis_key != second_analysis_key
+    assert collection_key == build_notification_idempotency_key(
+        result=base_result.model_copy(
+            update={"rca_analysis": {"llm_run_id": "llm-run-2"}}
+        ),
+        channel="SLACK",
+        recipient="#aiops-alerts",
+        stage="sre_collection",
+    )
+
+
+def test_rca_llm_snapshot_preserves_topology_facts() -> None:
+    topology_tool = resolve_registered_tool(
+        server_name="infraops-mcp",
+        tool_name="search_topology_knowledge",
+    )
+    topology_result = build_tool_result(
+        tool=topology_tool,
+        request_payload={"query": "service-payment api-payment.dev6.fisa"},
+        response_payload={
+            "source": "topology_knowledge",
+            "query": "service-payment api-payment.dev6.fisa",
+            "matches": [
+                {
+                    "environment": "onprem",
+                    "snapshot_name": (
+                        "aws-onprem-service-payment-routing-topology-snapshot-2026-06-13.md"
+                    ),
+                    "section": "15. Recommended Knowledge Updates",
+                    "score": 6,
+                    "excerpt": (
+                        "`api-payment.dev6.fisa` currently resolves to on-prem "
+                        "MetalLB `10.30.2.100`, not visible CloudFront. "
+                        "`service-payment` is an on-prem `kkpp` workload; it is "
+                        "not an AWS EKS workload in `kkpp-eks`."
+                    ),
+                }
+            ],
+        },
+        call_status=McpToolCallStatus.SUCCESS,
+        execution_policy=McpExecutionPolicy.ALLOWED,
+    )
+    result = AlertmanagerSrePlanResult(
+        status="COLLECTED",
+        executed_tools=[topology_result],
+        context_bundle={"summary_for_llm": {}, "cross_domain": {}},
+    )
+
+    snapshot_payload = build_rca_llm_snapshot_payload(result)
+    serialized = json.dumps(snapshot_payload, ensure_ascii=False)
+
+    assert "aws-onprem-service-payment-routing-topology-snapshot-2026-06-13.md" in serialized
+    assert "api-payment.dev6.fisa" in serialized
+    assert "10.30.2.100" in serialized
+    assert "not visible CloudFront" in serialized
+
+
+def test_rca_llm_snapshot_includes_boundary_analysis_contract() -> None:
+    result = AlertmanagerSrePlanResult(
+        status="COLLECTED",
+        alert=AlertmanagerSreAlertContext(
+            alert_name="SyntheticCurrentStateInspection",
+            status="firing",
+            fingerprint="synthetic-aiops-livecheck-test-001",
+        ),
+        context_bundle={
+            "summary_for_llm": {},
+            "cross_domain": {},
+            "failure_boundary_candidates": [
+                {
+                    "boundary": "dns",
+                    "status": "healthy",
+                    "confidence": "medium",
+                    "reason": "No SERVFAIL marker was found.",
+                },
+                {
+                    "boundary": "onprem_metallb",
+                    "status": "healthy",
+                    "confidence": "high",
+                    "reason": "TCP endpoint was reachable.",
+                    "health_evidence_tools": ["check_onprem_metallb_endpoint"],
+                },
+                {
+                    "boundary": "onprem_ingress",
+                    "status": "healthy",
+                    "confidence": "high",
+                    "reason": "Ingress health endpoint returned 200.",
+                    "health_evidence_tools": ["check_onprem_ingress_route"],
+                },
+                {
+                    "boundary": "k8s_service",
+                    "status": "healthy",
+                    "confidence": "high",
+                    "reason": "Ready endpoints exist.",
+                    "health_evidence_tools": ["get_k8s_service_endpoints"],
+                },
+            ],
+        },
+    )
+
+    snapshot_payload = build_rca_llm_snapshot_payload(result)
+    contract = snapshot_payload["analysis_contract"]
+
+    assert contract["is_synthetic_alert"] is True
+    assert contract["ruled_out_boundaries"] == [
+        "dns",
+        "onprem_metallb",
+        "onprem_ingress",
+        "k8s_service",
+    ]
+    assert contract["candidate_boundaries"] == []
+    assert "do not list healthy boundaries" in " ".join(contract["rules"])
+    assert "current routing-boundary evidence is absent" in contract[
+        "current_state_verdict"
+    ]
+
+
+def test_analysis_notification_prepends_boundary_guardrail_verdict() -> None:
+    result = AlertmanagerSrePlanResult(
+        status="ANALYZED",
+        incident_key="alertmanager:syntheticcurrentstateinspection:onprem:kkpp:service-payment:info",
+        alert=AlertmanagerSreAlertContext(
+            alert_name="SyntheticCurrentStateInspection",
+            status="firing",
+            cluster="onprem",
+            namespace="kkpp",
+            service_name="service-payment",
+            fingerprint="synthetic-aiops-livecheck-test-001",
+        ),
+        context_bundle={
+            "failure_boundary_candidates": [
+                {"boundary": "dns", "status": "healthy", "confidence": "medium"},
+                {
+                    "boundary": "onprem_metallb",
+                    "status": "healthy",
+                    "confidence": "high",
+                },
+                {
+                    "boundary": "onprem_ingress",
+                    "status": "healthy",
+                    "confidence": "high",
+                },
+                {
+                    "boundary": "k8s_service",
+                    "status": "healthy",
+                    "confidence": "high",
+                },
+            ],
+        },
+        rca_analysis={
+            "run_status": "SUCCESS",
+            "answer": (
+                "요약\n"
+                "- 라우팅 실패의 원인으로 DNS, MetalLB, Ingress 문제가 의심됩니다."
+            ),
+        },
+    )
+
+    text = build_analysis_notification_text(result)
+
+    assert "자동 판정" in text
+    assert "synthetic 검증 알림" in text
+    assert "dns, onprem_metallb, onprem_ingress, k8s_service" in text
+    assert "healthy 경계는 원인 후보에서 제외" in text
+    assert "2. 자동 판정" in text
+    assert "3. 핵심 근거" in text
+
+
+def test_rca_llm_snapshot_builds_application_root_cause_candidates() -> None:
+    result = AlertmanagerSrePlanResult(
+        status="COLLECTED",
+        executed_tools=[
+            build_success_result(
+                "query_multi_cluster_loki",
+                {
+                    "results": [
+                        {
+                            "line": (
+                                "HikariPool-1 - Connection is not available, "
+                                "request timed out after 30000ms"
+                            )
+                        }
+                    ]
+                },
+            ),
+            build_success_result(
+                "query_multi_cluster_prometheus",
+                {
+                    "results": [
+                        {
+                            "metric": "hikaricp_connections_pending",
+                            "value": 8,
+                        }
+                    ]
+                },
+            ),
+            build_success_result(
+                "get_service_trace_summary",
+                {
+                    "summary": {
+                        "slow_spans": [
+                            {
+                                "service": "postgres",
+                                "duration_ms": 3200,
+                                "status": "error",
+                            }
+                        ]
+                    }
+                },
+            ),
+            build_success_result(
+                "search_traces",
+                {
+                    "traces": [
+                        {
+                            "trace_id": "trace-predictive-001",
+                            "duration_ms": 1900,
+                            "status": "error",
+                        }
+                    ]
+                },
+            ),
+        ],
+        context_bundle={"summary_for_llm": {}, "cross_domain": {}},
+    )
+
+    snapshot_payload = build_rca_llm_snapshot_payload(result)
+    candidates = snapshot_payload["root_cause_candidates"]
+
+    assert snapshot_payload["application_signals"]["overall_status"] == "degraded"
+    assert candidates[0]["candidate_type"] == "db_hikaricp"
+    assert candidates[0]["confidence"] == "high"
+    assert any(
+        "HikariCP" in evidence or "PostgreSQL" in evidence
+        for evidence in candidates[0]["supporting_evidence"]
+    )
+    assert snapshot_payload["analysis_contract"][
+        "application_root_cause_candidates"
+    ][0]["candidate_type"] == "db_hikaricp"
+
+
+def test_rca_llm_snapshot_prioritizes_postgres_saturation_alert_candidate() -> None:
+    result = AlertmanagerSrePlanResult(
+        status="ANALYZED",
+        incident_key=(
+            "alertmanager:postgresqlconnectionsaturationhigh:unknown-cluster:"
+            "monitoring:postgresql:warning"
+        ),
+        alert=AlertmanagerSreAlertContext(
+            alert_name="PostgreSQLConnectionSaturationHigh",
+            status="firing",
+            namespace="monitoring",
+            service_name="postgresql",
+            severity="warning",
+            summary="primary DB connection usage exceeded 80% of max_connections",
+        ),
+        executed_tools=[
+            build_success_result(
+                "get_service_trace_summary",
+                {
+                    "summary": {
+                        "slow_spans": [
+                            {
+                                "service": "postgres",
+                                "duration_ms": 3200,
+                                "status": "error",
+                            }
+                        ]
+                    }
+                },
+            ),
+            build_success_result(
+                "search_traces",
+                {
+                    "traces": [
+                        {
+                            "trace_id": "trace-001",
+                            "duration_ms": 3400,
+                            "status": "error",
+                        }
+                    ]
+                },
+            ),
+        ],
+        context_bundle={
+            "failure_boundary_candidates": [
+                {"boundary": "dns", "status": "healthy", "confidence": "medium"},
+                {"boundary": "onprem_ingress", "status": "unknown", "confidence": "low"},
+                {"boundary": "k8s_service", "status": "unknown", "confidence": "low"},
+            ],
+        },
+        rca_analysis={
+            "run_status": "SUCCESS",
+            "answer": "Downstream latency or trace error is the likely root cause.",
+        },
+    )
+
+    snapshot_payload = build_rca_llm_snapshot_payload(result)
+    candidates = snapshot_payload["root_cause_candidates"]
+    text = build_analysis_notification_text(result)
+
+    assert snapshot_payload["analysis_contract"]["incident_focus"] == {
+        "category": "postgres_connection_saturation",
+        "primary_domain": "database",
+        "routing_boundaries_are_primary": False,
+        "expected_primary_evidence": [
+            "PostgreSQL current sessions",
+            "PostgreSQL max_connections",
+            "active versus idle sessions",
+            "application HikariCP pool pressure",
+            "recent scale-out or deployment changes",
+        ],
+    }
+    assert candidates[0]["candidate_type"] == "postgres_connection_saturation"
+    assert candidates[0]["confidence"] == "high"
+    assert candidates[1]["candidate_type"] == "trace_latency"
+    assert "PostgreSQL 계열 DB 알림" in text
+    assert "PostgreSQL connection 포화(high)" in text
+
+
+def test_rca_llm_snapshot_prioritizes_predictive_under_prediction_candidate() -> None:
+    result = AlertmanagerSrePlanResult(
+        status="ANALYZED",
+        incident_key=(
+            "alertmanager:predictivescalingunderprediction:onprem:"
+            "kkpp:service-core:critical"
+        ),
+        intent="predictive_scaling_under_prediction",
+        alert=AlertmanagerSreAlertContext(
+            alert_name="PredictiveScalingUnderPrediction",
+            status="firing",
+            cluster="onprem",
+            namespace="kkpp",
+            service_name="service-core",
+            workload="service-core",
+            severity="critical",
+            summary=(
+                "Predictive scaling under-prediction detected: actual RPS "
+                "exceeded GRU forecast for service-core"
+            ),
+            description=(
+                "actual_rps=165.18, predicted_rps=20.53, "
+                "deviation_percent=704.49, adjusted_pods=2"
+            ),
+        ),
+        executed_tools=[
+            build_success_result(
+                "get_service_trace_summary",
+                {
+                    "summary": {
+                        "slow_spans": [
+                            {
+                                "service": "service-core",
+                                "duration_ms": 1800,
+                                "status": "error",
+                            }
+                        ]
+                    }
+                },
+            ),
+            build_success_result(
+                "search_traces",
+                {
+                    "traces": [
+                        {
+                            "trace_id": "trace-predictive-001",
+                            "duration_ms": 1900,
+                            "status": "error",
+                        }
+                    ]
+                },
+            ),
+        ],
+        context_bundle={
+            "failure_boundary_candidates": [
+                {"boundary": "dns", "status": "healthy", "confidence": "medium"},
+                {
+                    "boundary": "onprem_ingress",
+                    "status": "healthy",
+                    "confidence": "medium",
+                },
+                {
+                    "boundary": "k8s_service",
+                    "status": "healthy",
+                    "confidence": "medium",
+                },
+            ],
+        },
+        rca_analysis={
+            "run_status": "SUCCESS",
+            "answer": "Trace latency is the likely root cause.",
+        },
+    )
+
+    snapshot_payload = build_rca_llm_snapshot_payload(result)
+    candidates = snapshot_payload["root_cause_candidates"]
+    text = build_analysis_notification_text(result)
+
+    assert snapshot_payload["analysis_contract"]["incident_focus"] == {
+        "category": "predictive_scaling_under_prediction",
+        "primary_domain": "predictive_scaling",
+        "routing_boundaries_are_primary": False,
+        "expected_primary_evidence": [
+            "actual RPS versus GRU predicted RPS",
+            "RPS deviation percent",
+            "KEDA adjusted_pods",
+            "current and desired replicas",
+            "prediction freshness, target_time, and model version",
+        ],
+    }
+    assert candidates[0]["candidate_type"] == "predictive_under_prediction"
+    assert candidates[0]["confidence"] == "high"
+    assert candidates[1]["candidate_type"] == "trace_latency"
+    assert "예측형 스케일링 알림" in text
+    assert "트래픽 예측 과소 / 실제 RPS 급증(high)" in text
+    assert "실제 RPS와 GRU 예측 RPS 편차를 확인합니다." in text
+
+
+def test_rca_llm_snapshot_prioritizes_kubernetes_pod_health_candidate() -> None:
+    result = AlertmanagerSrePlanResult(
+        status="ANALYZED",
+        incident_key=(
+            "alertmanager:kubernetespodnothealthy:unknown-cluster:"
+            "kkpp:service-batch:warning"
+        ),
+        alert=AlertmanagerSreAlertContext(
+            alert_name="KubernetesPodNotHealthy",
+            status="firing",
+            namespace="kkpp",
+            service_name="service-batch",
+            workload="service-batch",
+            pod="service-batch-29689980-46j66",
+            severity="warning",
+            summary="Pod service-batch-29689980-46j66 is Pending",
+        ),
+        executed_tools=[
+            build_success_result(
+                "get_service_trace_summary",
+                {
+                    "summary": {
+                        "slow_spans": [
+                            {
+                                "service": "postgres",
+                                "duration_ms": 3200,
+                                "status": "error",
+                            }
+                        ]
+                    }
+                },
+            ),
+            build_success_result(
+                "search_traces",
+                {
+                    "traces": [
+                        {
+                            "trace_id": "trace-001",
+                            "duration_ms": 3400,
+                            "status": "error",
+                        }
+                    ]
+                },
+            ),
+        ],
+        context_bundle={
+            "failure_boundary_candidates": [
+                {"boundary": "dns", "status": "healthy", "confidence": "medium"},
+                {"boundary": "onprem_ingress", "status": "unknown", "confidence": "low"},
+                {"boundary": "k8s_service", "status": "unknown", "confidence": "low"},
+            ],
+        },
+        rca_analysis={
+            "run_status": "SUCCESS",
+            "answer": "Downstream latency or trace error is the likely root cause.",
+        },
+    )
+
+    snapshot_payload = build_rca_llm_snapshot_payload(result)
+    candidates = snapshot_payload["root_cause_candidates"]
+    text = build_analysis_notification_text(result)
+
+    assert snapshot_payload["analysis_contract"]["incident_focus"] == {
+        "category": "kubernetes_pod_health",
+        "primary_domain": "kubernetes",
+        "routing_boundaries_are_primary": False,
+        "expected_primary_evidence": [
+            "pod phase and container waiting reason",
+            "Kubernetes warning events",
+            "image pull and registry credentials",
+            "ConfigMap/Secret mount references",
+            "node scheduling and resource pressure",
+        ],
+    }
+    assert candidates[0]["candidate_type"] == "pod_waiting_state"
+    assert candidates[0]["confidence"] == "high"
+    assert candidates[1]["candidate_type"] == "trace_latency"
+    assert "Kubernetes Pod 상태 알림" in text
+    assert "Pod Pending/Waiting 상태(high)" in text
+
+
+def test_rca_llm_snapshot_filters_query_only_and_low_confidence_candidates() -> None:
+    result = AlertmanagerSrePlanResult(
+        status="COLLECTED",
+        executed_tools=[
+            build_success_result(
+                "query_multi_cluster_loki",
+                {
+                    "query": "sqs consumer dlq backlog high",
+                    "results": [],
+                },
+            ),
+            build_success_result(
+                "get_recent_deployments",
+                {
+                    "items": [
+                        {
+                            "deployment": "service-payment",
+                            "status": "deployed",
+                            "image": "service-payment:v1",
+                        }
+                    ]
+                },
+            ),
+            build_success_result(
+                "query_multi_cluster_prometheus",
+                {
+                    "results": [
+                        {
+                            "metric": "hikaricp_connections_pending",
+                            "value": 0,
+                        }
+                    ]
+                },
+            ),
+        ],
+        context_bundle={"summary_for_llm": {}, "cross_domain": {}},
+    )
+
+    snapshot_payload = build_rca_llm_snapshot_payload(result)
+
+    assert snapshot_payload["root_cause_candidates"] == []
+    assert snapshot_payload["analysis_contract"][
+        "application_root_cause_candidates"
+    ] == []
+
+
+def test_analysis_notification_prioritizes_app_candidates_after_healthy_routing() -> None:
+    result = AlertmanagerSrePlanResult(
+        status="ANALYZED",
+        incident_key="alertmanager:syntheticcurrentstateinspection:onprem:kkpp:service-payment:info",
+        alert=AlertmanagerSreAlertContext(
+            alert_name="SyntheticCurrentStateInspection",
+            status="firing",
+            cluster="onprem",
+            namespace="kkpp",
+            service_name="service-payment",
+            fingerprint="synthetic-aiops-livecheck-test-001",
+        ),
+        executed_tools=[
+            build_success_result(
+                "query_multi_cluster_loki",
+                {
+                    "results": [
+                        {
+                            "line": (
+                                "service-payment HikariPool timeout: "
+                                "Connection is not available"
+                            )
+                        }
+                    ]
+                },
+            ),
+            build_success_result(
+                "query_multi_cluster_prometheus",
+                {
+                    "results": [
+                        {
+                            "metric": "hikaricp_connections_pending",
+                            "value": 5,
+                        }
+                    ]
+                },
+            ),
+        ],
+        context_bundle={
+            "failure_boundary_candidates": [
+                {"boundary": "dns", "status": "healthy", "confidence": "medium"},
+                {
+                    "boundary": "onprem_metallb",
+                    "status": "healthy",
+                    "confidence": "high",
+                },
+                {
+                    "boundary": "onprem_ingress",
+                    "status": "healthy",
+                    "confidence": "high",
+                },
+                {
+                    "boundary": "k8s_service",
+                    "status": "healthy",
+                    "confidence": "high",
+                },
+            ],
+        },
+        rca_analysis={
+            "run_status": "SUCCESS",
+            "answer": "요약\n- 현재 라우팅 경계는 정상입니다.",
+        },
+    )
+
+    text = build_analysis_notification_text(result)
+
+    assert "우선 원인 후보" in text
+    assert "DB/HikariCP connection pool 압박(high)" in text
+    assert "1순위 후보: DB/HikariCP connection pool 압박" in text
+
+
+def test_analysis_notification_formats_routing_incident_sections() -> None:
+    result = AlertmanagerSrePlanResult(
+        status="ANALYZED",
+        incident_key="alertmanager:onpremmetallbroutingfailure:onprem:kkpp:service-payment:critical",
+        intent="routing_failure",
+        alert=AlertmanagerSreAlertContext(
+            alert_name="OnpremMetalLBRoutingFailure",
+            status="firing",
+            cluster="onprem",
+            namespace="kkpp",
+            service_name="service-payment",
+            severity="critical",
+            summary="MetalLB ingress route failed",
+        ),
+        context_bundle={
+            "failure_boundary_candidates": [
+                {"boundary": "dns", "status": "healthy", "confidence": "medium"},
+                {
+                    "boundary": "onprem_metallb",
+                    "status": "degraded",
+                    "confidence": "high",
+                },
+            ],
+        },
+        rca_analysis={
+            "run_status": "SUCCESS",
+            "answer": json.dumps(
+                {
+                    "요약": "MetalLB 경로에서 장애 후보가 확인되었습니다.",
+                    "관측 근거": "onprem_metallb boundary가 degraded입니다.",
+                    "원인 후보": "MetalLB VIP 또는 ingress endpoint 문제",
+                    "권장 확인/조치": "MetalLB endpoint와 ingress route를 확인하세요.",
+                    "데이터 한계": "추가 애플리케이션 로그는 요약만 포함됩니다.",
+                },
+                ensure_ascii=False,
+            ),
+        },
+    )
+
+    text = build_analysis_notification_text(result)
+
+    assert "1. 요약" in text
+    assert "사고 유형: Routing/Ingress/MetalLB 문제" in text
+    assert "degraded 경계는 우선 확인 대상입니다: onprem_metallb" in text
+    assert "모델 보조 분석" in text
+    assert "요약: MetalLB 경로에서 장애 후보가 확인되었습니다." in text
+
+
+def test_analysis_notification_prioritizes_vpn_tunnel_alert() -> None:
+    result = AlertmanagerSrePlanResult(
+        status="ANALYZED",
+        incident_key="alertmanager:vpntunnelstatedegraded:onprem:monitoring:aws-vpn:warning",
+        intent="routing_failure",
+        alert=AlertmanagerSreAlertContext(
+            alert_name="VpnTunnelStateDegraded",
+            status="firing",
+            cluster="onprem",
+            namespace="monitoring",
+            service_name="aws-vpn",
+            severity="warning",
+            summary="Synthetic VPN tunnel state degraded check",
+        ),
+        context_bundle={
+            "failure_boundary_candidates": [
+                {"boundary": "vpn_route", "status": "degraded", "confidence": "high"},
+                {"boundary": "dns", "status": "healthy", "confidence": "medium"},
+            ],
+        },
+        rca_analysis={
+            "run_status": "SUCCESS",
+            "answer": "VPN tunnel state degraded.",
+        },
+    )
+
+    text = build_analysis_notification_text(result)
+
+    assert "VPN tunnel/connectivity issue" in text
+    assert "VPN tunnel degraded" in text
+    assert "- 1순위 후보: VPN tunnel degraded" in text
+    assert "AWS VPN" in text
+    assert "vpn_route" in text
+
+
+def test_collection_notification_explains_failed_tools() -> None:
+    result = AlertmanagerSrePlanResult(
+        status="COLLECTED",
+        incident_key="alertmanager:kubernetespodnothealthy:unknown-cluster:kkpp:service-batch:warning",
+        intent="pod_crashloop",
+        alert=AlertmanagerSreAlertContext(
+            alert_name="KubernetesPodNotHealthy",
+            status="firing",
+            namespace="kkpp",
+            service_name="service-batch",
+            pod="service-batch-29689980-46j66",
+            severity="warning",
+            summary="Pod service-batch is Pending",
+        ),
+        executed_tools=[
+            build_success_result("get_k8s_events", {"items": []}),
+            build_failed_result("get_pod_logs"),
+            build_failed_result("get_rollout_status"),
+        ],
+        context_bundle={
+            "summary_for_llm": {
+                "available_sections": ["kubernetes", "logs"],
+                "missing_sections": ["traces"],
+            }
+        },
+    )
+
+    text = build_collection_notification_text(result)
+
+    assert "1. 수집 요약" in text
+    assert "3. 미수집/주의" in text
+    assert "pod logs 미수집" in text
+    assert "rollout 상태 미수집" in text
+    assert "missing evidence section: traces" in text
+
+
+def test_alertmanager_sre_agent_execute_collects_read_only_evidence_bundle() -> None:
+    dispatcher = FakeReadOnlyDispatcher()
+    service = AlertmanagerSreAgentService(
+        dispatcher=dispatcher,
+        now_provider=lambda: datetime(2026, 6, 12, 1, 20, tzinfo=UTC),
+    )
+
+    result = service.handle_webhook(
+        AlertmanagerWebhookRequest.model_validate(POD_CRASH_PAYLOAD),
+        execute=True,
+    )
+
+    executed_tool_names = [plan.tool_name for plan in dispatcher.plans]
+    assert result.dry_run is False
+    assert result.status == "COLLECTED"
+    assert result.incident_window is not None
+    assert result.incident_window.anchor_time == "2026-06-12T01:00:00Z"
+    assert result.incident_window.start == "2026-06-12T00:45:00Z"
+    assert result.incident_window.end == "2026-06-12T01:20:00Z"
+    assert "create_rca_snapshot" == executed_tool_names[-1]
+    assert result.context_bundle is not None
+    assert result.context_bundle["incident_window"] == result.incident_window.model_dump(
+        mode="json"
+    )
+    assert result.context_bundle["alertmanager"]["incident_key"] == result.incident_key
+    assert result.rca_snapshot is not None
+    assert any(
+        plan.tool_name == "query_multi_cluster_loki"
+        and plan.request_payload["start"] == "2026-06-12T00:45:00Z"
+        and plan.request_payload["end"] == "2026-06-12T01:20:00Z"
+        for plan in dispatcher.plans
+    )
+    assert any(
+        plan.tool_name == "get_service_trace_summary"
+        and plan.request_payload["start"] == "1781225100"
+        and plan.request_payload["end"] == "1781227200"
+        for plan in dispatcher.plans
+    )
+    assert any(
+        plan.tool_name == "query_multi_cluster_prometheus"
+        and plan.request_payload["time"] == "2026-06-12T01:20:00Z"
+        for plan in dispatcher.plans
+    )
+    rca_plan = dispatcher.plans[-1]
+    assert rca_plan.tool_name == "create_rca_snapshot"
+    assert rca_plan.request_payload["incident_key"] == result.incident_key
+    assert rca_plan.request_payload["source"] == "onprem"
+    assert rca_plan.request_payload["context_bundle"]["schema_version"] == (
+        "incident_context_bundle.v1"
+    )
+
+
+def test_alertmanager_sre_webhook_execute_query_uses_collection_mode() -> None:
+    app = create_app()
+    app.state.alertmanager_sre_agent_service = AlertmanagerSreAgentService(
+        dispatcher=FakeReadOnlyDispatcher(),
+        now_provider=lambda: datetime(2026, 6, 12, 1, 20, tzinfo=UTC),
+    )
+    client = TestClient(app)
+
+    response = client.post(
+        "/infra-rca/alertmanager/webhook?execute=true",
+        json=POD_CRASH_PAYLOAD,
+    )
+
+    assert response.status_code == 200
+    result = response.json()
+    assert result["dry_run"] is False
+    assert result["status"] == "COLLECTED"
+    assert result["incident_window"]["start"] == "2026-06-12T00:45:00Z"
+    assert result["executed_tools"]
+
+
+def test_alertmanager_sre_agent_execute_notify_sends_slack_only() -> None:
+    dispatcher = FakeReadOnlyDispatcher()
+    notification_service = FakeNotificationService()
+    email_sender = FakeEmailSender()
+    slack_sender = FakeSlackSender()
+    service = AlertmanagerSreAgentService(
+        dispatcher=dispatcher,
+        now_provider=lambda: datetime(2026, 6, 12, 1, 20, tzinfo=UTC),
+        llmops_service=notification_service,
+        email_sender=email_sender,
+        slack_sender=slack_sender,
+        app_settings=Settings(
+            RCA_EMAIL_RECIPIENTS="ops@example.com",
+            RCA_SLACK_WEBHOOK_URL="https://hooks.slack.com/services/test",
+            RCA_SLACK_CHANNEL="#sre-alerts",
+        ),
+    )
+
+    result = service.handle_webhook(
+        AlertmanagerWebhookRequest.model_validate(POD_CRASH_PAYLOAD),
+        execute=True,
+        notify=True,
+    )
+
+    assert [item.status for item in result.notification_results] == [
+        "SENT",
+        "SENT",
+    ]
+    assert [item.channel for item in result.notification_results] == [
+        "SLACK",
+        "SLACK",
+    ]
+    assert result.status == "ANALYZED"
+    assert result.rca_analysis is not None
+    assert result.rca_analysis["run_status"] == "SUCCESS"
+    assert email_sender.sent_messages == []
+    assert "raw logs" in slack_sender.sent_messages[0]["text"].lower()
+    assert "Synthetic RCA analysis completed" in slack_sender.sent_messages[1]["text"]
+    assert slack_sender.sent_messages[0]["channel"] == "#sre-alerts"
+    assert [item.channel for item in notification_service.notifications] == [
+        "SLACK",
+        "SLACK",
+    ]
+    assert all(
+        update["status"] == "SENT"
+        for update in notification_service.status_updates
+    )
+    assert "hooks.slack.com" not in str(notification_service.notifications[0].payload)
+    assert notification_service.rca_runs
+    llm_input = notification_service.rca_runs[0]
+    assert len(json.dumps(llm_input, ensure_ascii=False, default=str)) < 70000
+    assert "context_bundle" not in json.dumps(
+        llm_input["evidence"],
+        ensure_ascii=False,
+        default=str,
+    )
+
+
+def test_alertmanager_sre_webhook_execute_notify_query_sends_notifications() -> None:
+    notification_service = FakeNotificationService()
+    email_sender = FakeEmailSender()
+    slack_sender = FakeSlackSender()
+    app = create_app()
+    app.state.alertmanager_sre_agent_service = AlertmanagerSreAgentService(
+        dispatcher=FakeReadOnlyDispatcher(),
+        now_provider=lambda: datetime(2026, 6, 12, 1, 20, tzinfo=UTC),
+        llmops_service=notification_service,
+        email_sender=email_sender,
+        slack_sender=slack_sender,
+        app_settings=Settings(
+            RCA_EMAIL_RECIPIENTS="ops@example.com",
+            RCA_SLACK_WEBHOOK_URL="https://hooks.slack.com/services/test",
+        ),
+    )
+    client = TestClient(app)
+
+    response = client.post(
+        "/infra-rca/alertmanager/webhook?execute=true&notify=true",
+        json=POD_CRASH_PAYLOAD,
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["status"] == "ANALYZED"
+    assert [item["status"] for item in body["notification_results"]] == [
+        "SENT",
+        "SENT",
+    ]
+    assert [item["channel"] for item in body["notification_results"]] == [
+        "SLACK",
+        "SLACK",
+    ]
+    assert email_sender.sent_messages == []
+    assert body["rca_analysis"]["run_status"] == "SUCCESS"

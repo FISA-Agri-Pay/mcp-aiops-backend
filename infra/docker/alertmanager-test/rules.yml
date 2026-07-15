@@ -1,0 +1,15 @@
+groups:
+  - name: aiops-test
+    rules:
+      - alert: HighCPUUsage
+        expr: vector(1)
+        for: 10s
+        labels:
+          severity: critical
+          namespace: default
+          service: api
+          workload: api
+        annotations:
+          summary: High CPU usage detected
+          description: Test alert for the aiops-platform Alertmanager RCA webhook.
+

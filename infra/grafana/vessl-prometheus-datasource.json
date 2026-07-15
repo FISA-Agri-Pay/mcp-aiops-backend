@@ -1,0 +1,12 @@
+{
+  "name": "VESSL Prometheus",
+  "type": "prometheus",
+  "uid": "vessl-prometheus",
+  "url": "http://vessl-prometheus.monitoring.svc.cluster.local:9090",
+  "access": "proxy",
+  "isDefault": false,
+  "jsonData": {
+    "httpMethod": "POST",
+    "timeInterval": "15s"
+  }
+}

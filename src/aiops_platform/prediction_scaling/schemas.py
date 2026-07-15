@@ -1,0 +1,239 @@
+from typing import Any, Literal
+
+from pydantic import BaseModel, Field
+
+
+class ModelVersionResult(BaseModel):
+    model_version_id: str
+    service_name: str
+    model_name: str
+    version: str
+    status: Literal["ACTIVE", "CANDIDATE", "ARCHIVED"]
+    deployed_at: str
+    description: str
+
+
+class ModelVersionListResult(BaseModel):
+    service_name: str | None = None
+    limit: int
+    items: list[ModelVersionResult]
+
+
+class PredictionRunResult(BaseModel):
+    prediction_run_id: str
+    model_version_id: str
+    service_name: str
+    namespace: str
+    workload: str
+    status: Literal["SUCCEEDED", "RUNNING", "FAILED"]
+    metric_name: str
+    horizon_minutes: int
+    started_at: str
+    completed_at: str | None = None
+
+
+class PredictionRunListResult(BaseModel):
+    model_version_id: str | None = None
+    status: Literal["SUCCEEDED", "RUNNING", "FAILED"] | None = None
+    limit: int
+    items: list[PredictionRunResult]
+
+
+class PredictionMetricPoint(BaseModel):
+    prediction_run_id: str
+    metric_name: str
+    target_timestamp: str
+    predicted_value: float
+    unit: str
+    confidence_lower: float
+    confidence_upper: float
+
+
+class PredictionMetricResult(BaseModel):
+    prediction_run_id: str
+    model_version_id: str
+    metric_name: str | None = None
+    items: list[PredictionMetricPoint]
+
+
+class LatestPredictionResult(BaseModel):
+    metric_name: str
+    namespace: str
+    workload: str
+    prediction_run_id: str
+    target_timestamp: str
+    predicted_value: float
+    unit: str
+    confidence_lower: float
+    confidence_upper: float
+
+
+class ActualMetricItem(BaseModel):
+    metric_name: str
+    namespace: str
+    workload: str
+    observed_at: str
+    actual_value: float
+    unit: str
+
+
+class ActualMetricResult(BaseModel):
+    metric_name: str
+    namespace: str | None = None
+    workload: str | None = None
+    limit: int
+    items: list[ActualMetricItem]
+
+
+class PredictionErrorItem(BaseModel):
+    prediction_run_id: str
+    metric_name: str
+    target_timestamp: str
+    predicted_value: float
+    actual_value: float
+    absolute_error: float
+    percentage_error: float
+
+
+class PredictionErrorResult(BaseModel):
+    prediction_run_id: str
+    limit: int
+    items: list[PredictionErrorItem]
+
+
+class PredictionErrorMetricsResult(BaseModel):
+    prediction_run_id: str
+    metric_name: str
+    sample_count: int
+    mean_absolute_error: float
+    mean_absolute_percentage_error: float
+    root_mean_squared_error: float
+
+
+class ScalingEventItem(BaseModel):
+    scaling_event_id: str
+    namespace: str
+    workload: str
+    event_type: Literal["SCALE_UP", "SCALE_DOWN", "NOOP"]
+    trigger_source: Literal["PREDICTION", "HPA", "KEDA", "MANUAL"]
+    occurred_at: str
+    previous_replicas: int
+    desired_replicas: int
+    reason: str
+    related_prediction_run_id: str | None = None
+
+
+class ScalingEventResult(BaseModel):
+    namespace: str | None = None
+    workload: str | None = None
+    limit: int
+    items: list[ScalingEventItem]
+
+
+class ScalingSummaryResult(BaseModel):
+    namespace: str | None = None
+    workload: str | None = None
+    total_events: int
+    prediction_driven_events: int
+    latest_desired_replicas: int | None = None
+    max_desired_replicas: int | None = None
+    recommendation: str
+
+
+class PredictiveMetricValue(BaseModel):
+    metric_name: str
+    namespace: str
+    service_name: str
+    predicted_value: float
+    target_time: str
+    model_version: str
+    created_at: str
+
+
+class PredictiveScalingStatusItem(BaseModel):
+    namespace: str
+    service: str
+    short_service: str
+    deployment: str
+    scaled_object: str | None = None
+    hpa: str | None = None
+    model_version: str | None = None
+    target_time: str | None = None
+    created_at: str | None = None
+    predicted_rps: float | None = None
+    actual_rps: float | None = None
+    rps_deviation: float | None = None
+    rps_deviation_percent: float | None = None
+    prediction_match_status: Literal[
+        "matched",
+        "under_predicted",
+        "over_predicted",
+        "unknown",
+    ] = "unknown"
+    predicted_pods: float | None = None
+    base_pods: float | None = None
+    extra_demand: float | None = None
+    allocation_score: float | None = None
+    onprem_adjusted_pods: float | None = None
+    current_replicas: int | None = None
+    desired_replicas: int | None = None
+    max_replicas: int | None = None
+    scale_gap: float | None = None
+    scaling_track_status: Literal[
+        "tracking",
+        "lagging",
+        "overprovisioned",
+        "unknown",
+    ] = "unknown"
+    scaling_active: bool | None = None
+    scaling_limited: bool | None = None
+    prediction_freshness: Literal["fresh", "stale", "missing", "unknown"]
+    risk_level: Literal["low", "medium", "high"]
+    summary: str
+    evidence: dict[str, Any] = Field(default_factory=dict)
+
+
+class PredictiveScalingStatusResult(BaseModel):
+    namespace: str
+    service: str | None = None
+    horizon_minutes: int
+    generated_at: str
+    items: list[PredictiveScalingStatusItem]
+    summary: str
+
+
+class PredictiveScalingSlackAgentResult(BaseModel):
+    status: Literal["NOTIFIED", "SKIPPED", "DRY_RUN", "FAILED"]
+    namespace: str
+    service: str | None = None
+    horizon_minutes: int
+    generated_at: str
+    min_risk: Literal["low", "medium", "high"]
+    evaluated_services: list[str]
+    notifiable_services: list[str]
+    notification_sent: bool
+    channel: str | None = None
+    message: str | None = None
+    skipped_reason: str | None = None
+    error_message: str | None = None
+    rca_triggered_services: list[str] = Field(default_factory=list)
+    predictive_status: PredictiveScalingStatusResult
+
+
+class PredictionSnapshotResult(BaseModel):
+    snapshot_id: str
+    prediction_run_id: str
+    model_version_id: str
+    generated_at: str
+    metrics: list[PredictionMetricPoint]
+    error_metrics: PredictionErrorMetricsResult
+
+
+class ScalingAnalysisSnapshotResult(BaseModel):
+    snapshot_id: str
+    namespace: str | None = None
+    workload: str | None = None
+    generated_at: str
+    summary: ScalingSummaryResult
+    events: list[ScalingEventItem]
+    evidence: dict[str, Any] = Field(default_factory=dict)

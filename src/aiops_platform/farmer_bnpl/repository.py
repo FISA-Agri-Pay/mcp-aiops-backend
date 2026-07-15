@@ -1,0 +1,486 @@
+from __future__ import annotations
+
+from collections.abc import Iterator
+from contextlib import contextmanager
+from decimal import Decimal
+from typing import Protocol
+from uuid import UUID
+
+from sqlalchemy import text
+from sqlalchemy.orm import Session
+
+from aiops_platform.core.database import SessionLocal
+from aiops_platform.farmer_bnpl.schemas import (
+    FarmerProfileResult,
+    InterestDueResult,
+    LatestOrderDeliveryStatusResult,
+    OverdueStatusResult,
+    ProductResult,
+    RepaymentScheduleItem,
+    UserCreditLimitResult,
+)
+
+
+class FarmerBnplRepository(Protocol):
+    def get_user_credit_limit(self, user_id: str) -> UserCreditLimitResult | None:
+        pass
+
+    def get_farmer_profile(self, user_id: str) -> FarmerProfileResult | None:
+        pass
+
+    def list_repayment_schedule(self, user_id: str) -> list[RepaymentScheduleItem]:
+        pass
+
+    def get_interest_due(self, user_id: str) -> InterestDueResult | None:
+        pass
+
+    def get_overdue_status(self, user_id: str) -> OverdueStatusResult | None:
+        pass
+
+    def get_latest_order_delivery_status(
+        self,
+        user_id: str,
+    ) -> LatestOrderDeliveryStatusResult | None:
+        pass
+
+    def list_products(
+        self,
+        *,
+        query: str | None = None,
+        category: str | None = None,
+        limit: int = 20,
+    ) -> list[ProductResult]:
+        pass
+
+    def get_product(self, product_id: str) -> ProductResult | None:
+        pass
+
+
+class SqlFarmerBnplRepository:
+    def __init__(self, session: Session | None = None) -> None:
+        self._session = session
+
+    def get_user_credit_limit(self, user_id: str) -> UserCreditLimitResult | None:
+        if not is_uuid(user_id):
+            return None
+        query = text(
+            """
+            select
+                public_id::text as credit_limit_id,
+                total_limit,
+                used_amount,
+                status
+            from core.credit_limits
+            where user_public_id = cast(:user_id as uuid)
+            order by created_at desc
+            limit 1
+            """
+        )
+        with self._session_scope() as session:
+            row = session.execute(query, {"user_id": user_id}).mappings().first()
+        if row is None:
+            return None
+        total_limit = to_int(row["total_limit"])
+        used_amount = to_int(row["used_amount"])
+        return UserCreditLimitResult(
+            user_id=user_id,
+            credit_limit_id=row["credit_limit_id"],
+            total_limit=total_limit,
+            used_amount=used_amount,
+            available_limit=max(total_limit - used_amount, 0),
+            status=map_credit_limit_status(row["status"]),
+        )
+
+    def get_farmer_profile(self, user_id: str) -> FarmerProfileResult | None:
+        if not is_uuid(user_id):
+            return None
+        farmer_profile_columns = self._fetch_core_table_columns("farmer_profiles")
+        farmer_profile_join = build_farmer_profile_join(farmer_profile_columns)
+        query = text(
+            f"""
+            select
+                u.name as display_name,
+                coalesce(nullif(fp.farm_address, ''), nullif(u.address, ''), 'UNKNOWN') as region,
+                coalesce(fp.main_crop, cl.crop_type_snapshot, 'UNKNOWN') as main_crop,
+                case
+                    when fp.id is not null then 'ACTIVE'
+                    when cl.public_id is not null then 'READY_FOR_REVIEW'
+                    else 'INCOMPLETE'
+                end as profile_status
+            from core.users u
+            {farmer_profile_join}
+            left join core.credit_limits cl on cl.user_public_id = u.public_id
+            where u.public_id = cast(:user_id as uuid)
+            order by cl.created_at desc nulls last
+            limit 1
+            """
+        )
+        with self._session_scope() as session:
+            row = session.execute(query, {"user_id": user_id}).mappings().first()
+        if row is None:
+            return None
+        return FarmerProfileResult(
+            user_id=user_id,
+            display_name=row["display_name"],
+            region=row["region"],
+            main_crop=str(row["main_crop"]).lower(),
+            profile_status=row["profile_status"],
+        )
+
+    def list_repayment_schedule(self, user_id: str) -> list[RepaymentScheduleItem]:
+        if not is_uuid(user_id):
+            return []
+        query = text(
+            """
+            with limits as (
+                select public_id
+                from core.credit_limits
+                where user_public_id = cast(:user_id as uuid)
+            ),
+            principal as (
+                select
+                    due_date,
+                    principal_amount - amount_paid as principal_due,
+                    0::numeric as interest_due,
+                    case
+                        when status = 'OVERDUE' then 4
+                        when status in ('PARTIAL', 'DUE', 'UPCOMING') then 2
+                        when status = 'PAID' then 1
+                        else 0
+                    end as status_priority
+                from core.principal_repayment_ledger
+                where credit_limit_public_id in (select public_id from limits)
+            ),
+            interest as (
+                select
+                    due_date,
+                    0::numeric as principal_due,
+                    interest_amount - amount_paid as interest_due,
+                    case
+                        when status = 'OVERDUE' then 4
+                        when status in ('PARTIAL', 'DUE', 'UPCOMING') then 2
+                        when status = 'PAID' then 1
+                        else 0
+                    end as status_priority
+                from core.interest_ledger
+                where credit_limit_public_id in (select public_id from limits)
+            )
+            select
+                due_date::text as due_date,
+                sum(principal_due) as principal_due,
+                sum(interest_due) as interest_due,
+                case max(status_priority)
+                    when 4 then 'OVERDUE'
+                    when 1 then 'PAID'
+                    else 'UPCOMING'
+                end as status
+            from (
+                select * from principal
+                union all
+                select * from interest
+            ) entries
+            group by due_date
+            order by due_date
+            """
+        )
+        with self._session_scope() as session:
+            rows = session.execute(query, {"user_id": user_id}).mappings().all()
+        return [
+            RepaymentScheduleItem(
+                installment_no=index + 1,
+                due_date=row["due_date"],
+                principal_due=to_int(row["principal_due"]),
+                interest_due=to_int(row["interest_due"]),
+                status=map_repayment_status(row["status"]),
+            )
+            for index, row in enumerate(rows)
+        ]
+
+    def get_interest_due(self, user_id: str) -> InterestDueResult | None:
+        if not is_uuid(user_id):
+            return None
+        query = text(
+            """
+            select
+                il.due_date::text as due_date,
+                il.interest_amount - il.amount_paid as interest_due
+            from core.interest_ledger il
+            join core.credit_limits cl on cl.public_id = il.credit_limit_public_id
+            where cl.user_public_id = cast(:user_id as uuid)
+              and il.status <> 'PAID'
+            order by il.due_date
+            limit 1
+            """
+        )
+        with self._session_scope() as session:
+            row = session.execute(query, {"user_id": user_id}).mappings().first()
+        if row is None:
+            return None
+        return InterestDueResult(
+            user_id=user_id,
+            due_date=row["due_date"],
+            interest_due=to_int(row["interest_due"]),
+        )
+
+    def get_overdue_status(self, user_id: str) -> OverdueStatusResult | None:
+        if not is_uuid(user_id):
+            return None
+        query = text(
+            """
+            select
+                coalesce(sum(overdue_amount), 0) as overdue_amount,
+                coalesce(max(overdue_days), 0) as days_overdue
+            from core.loan_overdue_ledger
+            where user_public_id = cast(:user_id as uuid)
+              and resolved_at is null
+            """
+        )
+        with self._session_scope() as session:
+            row = session.execute(query, {"user_id": user_id}).mappings().first()
+        if row is None:
+            return None
+        overdue_amount = to_int(row["overdue_amount"])
+        days_overdue = int(row["days_overdue"] or 0)
+        return OverdueStatusResult(
+            user_id=user_id,
+            is_overdue=overdue_amount > 0,
+            overdue_amount=overdue_amount,
+            days_overdue=days_overdue,
+        )
+
+    def get_latest_order_delivery_status(
+        self,
+        user_id: str,
+    ) -> LatestOrderDeliveryStatusResult | None:
+        if not is_uuid(user_id):
+            return None
+        query = text(
+            """
+            select
+                public_id::text as order_id,
+                order_status,
+                delivery_status,
+                total_amount,
+                ordered_at::text as ordered_at
+            from core.orders
+            where user_public_id = cast(:user_id as uuid)
+            order by ordered_at desc nulls last, created_at desc
+            limit 1
+            """
+        )
+        with self._session_scope() as session:
+            row = session.execute(query, {"user_id": user_id}).mappings().first()
+        if row is None:
+            return None
+        return LatestOrderDeliveryStatusResult(
+            user_id=user_id,
+            order_id=row["order_id"],
+            item_name="최근 주문",
+            order_status=str(row["order_status"]),
+            delivery_status=str(row["delivery_status"]),
+            total_amount=to_int(row["total_amount"]),
+            ordered_at=row["ordered_at"],
+        )
+
+    def list_products(
+        self,
+        *,
+        query: str | None = None,
+        category: str | None = None,
+        limit: int = 20,
+    ) -> list[ProductResult]:
+        category_values = expand_category_aliases(category)
+        params: dict[str, object] = {
+            "query": query.lower().strip() if query else None,
+            "limit": limit,
+        }
+        if category_values:
+            category_placeholders = []
+            for index, value in enumerate(category_values):
+                key = f"category_{index}"
+                category_placeholders.append(f":{key}")
+                params[key] = value
+            category_clause = f"lower(c.name) in ({', '.join(category_placeholders)})"
+        else:
+            category_clause = "true"
+        keyword_values = material_keywords_for_category(category)
+        if keyword_values:
+            keyword_clauses = []
+            for index, value in enumerate(keyword_values):
+                key = f"material_keyword_{index}"
+                keyword_clauses.append(
+                    f"(lower(p.name) like '%' || :{key} || '%' "
+                    f"or lower(coalesce(p.description, '')) like '%' || :{key} || '%')"
+                )
+                params[key] = value
+            material_clause = f"and ({' or '.join(keyword_clauses)})"
+        else:
+            material_clause = ""
+        sql = f"""
+            select
+                p.public_id::text as product_id,
+                p.name,
+                coalesce(c.name, 'uncategorized') as category,
+                p.price as unit_price,
+                coalesce(c.name, 'catalog') as vendor,
+                p.stock_quantity,
+                p.status
+            from catalog.products p
+            left join catalog.categories c on c.public_id = p.category_public_id
+            where {category_clause}
+              and (
+                  cast(:query as text) is null
+                  or lower(p.name) like '%' || cast(:query as text) || '%'
+                  or lower(coalesce(p.description, '')) like '%' || cast(:query as text) || '%'
+                  or lower(coalesce(c.name, '')) like '%' || cast(:query as text) || '%'
+            )
+              {material_clause}
+            order by p.price asc, p.created_at desc
+            limit :limit
+        """
+        with self._session_scope() as session:
+            rows = session.execute(text(sql), params).mappings().all()
+        return [build_product(row) for row in rows]
+
+    def get_product(self, product_id: str) -> ProductResult | None:
+        if not is_uuid(product_id):
+            return None
+        query = text(
+            """
+            select
+                p.public_id::text as product_id,
+                p.name,
+                coalesce(c.name, 'uncategorized') as category,
+                p.price as unit_price,
+                coalesce(c.name, 'catalog') as vendor,
+                p.stock_quantity,
+                p.status
+            from catalog.products p
+            left join catalog.categories c on c.public_id = p.category_public_id
+            where p.public_id = cast(:product_id as uuid)
+            limit 1
+            """
+        )
+        with self._session_scope() as session:
+            row = session.execute(query, {"product_id": product_id}).mappings().first()
+        if row is None:
+            return None
+        return build_product(row)
+
+    def _fetch_core_table_columns(self, table_name: str) -> set[str]:
+        query = text(
+            """
+            select column_name
+            from information_schema.columns
+            where table_schema = 'core'
+              and table_name = :table_name
+            """
+        )
+        with self._session_scope() as session:
+            return {
+                str(row[0])
+                for row in session.execute(query, {"table_name": table_name}).all()
+            }
+
+    @contextmanager
+    def _session_scope(self) -> Iterator[Session]:
+        if self._session is not None:
+            yield self._session
+            return
+        with SessionLocal() as session:
+            yield session
+
+
+def build_product(row) -> ProductResult:
+    return ProductResult(
+        product_id=row["product_id"],
+        name=row["name"],
+        category=str(row["category"]).lower(),
+        unit_price=to_int(row["unit_price"]),
+        vendor=row["vendor"],
+        stock_status=map_stock_status(row["status"], int(row["stock_quantity"] or 0)),
+    )
+
+
+CATEGORY_ALIASES = {
+    "fertilizer": ("fertilizer", "비료/자재"),
+    "비료": ("fertilizer", "비료/자재"),
+    "농자재": ("fertilizer", "비료/자재", "씨앗/모종", "영농 서비스"),
+    "seed": ("seed", "씨앗/모종"),
+    "씨앗": ("seed", "씨앗/모종"),
+    "모종": ("seed", "씨앗/모종"),
+    "pesticide": ("pesticide", "비료/자재"),
+    "농약": ("pesticide", "비료/자재"),
+    "material": ("material", "비료/자재"),
+}
+
+
+def expand_category_aliases(category: str | None) -> list[str]:
+    if not category:
+        return []
+    normalized = category.lower().strip()
+    aliases = CATEGORY_ALIASES.get(normalized, (normalized,))
+    deduplicated = []
+    seen = set()
+    for value in aliases:
+        lowered = value.lower().strip()
+        if lowered in seen:
+            continue
+        seen.add(lowered)
+        deduplicated.append(lowered)
+    return deduplicated
+
+
+def material_keywords_for_category(category: str | None) -> list[str]:
+    if not category:
+        return []
+    normalized = category.lower().strip()
+    if normalized in {"fertilizer", "비료"}:
+        return ["fertilizer", "비료", "유기질", "요소", "복합"]
+    if normalized in {"pesticide", "농약"}:
+        return ["pesticide", "농약", "제초제", "살균", "살충"]
+    return []
+
+
+def build_farmer_profile_join(columns: set[str]) -> str:
+    if "user_public_id" in columns:
+        return "left join core.farmer_profiles fp on fp.user_public_id = u.public_id"
+    if "user_id" in columns:
+        return "left join core.farmer_profiles fp on fp.user_id = u.id"
+    return "left join core.farmer_profiles fp on false"
+
+
+def map_credit_limit_status(value: str) -> str:
+    if value == "SUSPENDED":
+        return "SUSPENDED"
+    if value == "ACTIVE":
+        return "ACTIVE"
+    return "PENDING"
+
+
+def map_repayment_status(value: str) -> str:
+    if value == "PAID":
+        return "PAID"
+    if value == "OVERDUE":
+        return "OVERDUE"
+    return "UPCOMING"
+
+
+def map_stock_status(status: str, stock_quantity: int) -> str:
+    if status == "SOLD_OUT" or stock_quantity <= 0:
+        return "OUT_OF_STOCK"
+    if stock_quantity <= 10:
+        return "LOW_STOCK"
+    return "IN_STOCK"
+
+
+def to_int(value: Decimal | int | float | None) -> int:
+    return int(value or 0)
+
+
+def is_uuid(value: str) -> bool:
+    try:
+        UUID(str(value))
+    except (TypeError, ValueError):
+        return False
+    return True

@@ -1,0 +1,3032 @@
+import logging
+from collections.abc import Callable, Sequence
+from time import perf_counter
+from typing import Any
+
+from fastmcp import FastMCP
+from fastmcp.exceptions import NotFoundError
+
+from aiops_platform.admin_riskops.service import AdminRiskOpsService
+from aiops_platform.core.config import settings
+from aiops_platform.farm_advisory.service import FarmAdvisoryService
+from aiops_platform.farmer_bnpl.service import FarmerBnplService
+from aiops_platform.infraops.service import InfraOpsService
+from aiops_platform.mcp.audit import McpToolAuditService, elapsed_ms
+from aiops_platform.mcp.policy import resolve_tool_policy
+from aiops_platform.mcp.registry import (
+    BATCH_TOOL_NAMES,
+    ELK_TOOL_NAMES,
+    KAFKA_TOOL_NAMES,
+    list_mcp_servers,
+    list_mcp_tools,
+)
+from aiops_platform.mcp.schemas import (
+    McpExecutionPolicy,
+    McpToolCallStatus,
+    McpToolExecutionContext,
+    McpToolMetadata,
+    McpToolPermission,
+)
+from aiops_platform.prediction_scaling.service import PredictionScalingService
+from aiops_platform.topology_knowledge.service import TopologyKnowledgeService
+
+MCP_TRANSPORT_MOUNT_PATH = "/mcp-server"
+MCP_TRANSPORT_PATH = "/mcp"
+logger = logging.getLogger(__name__)
+
+
+def _permission_from_query(permission: str | None) -> McpToolPermission | None:
+    if permission is None:
+        return None
+    return McpToolPermission(permission)
+
+
+def _resolve_registered_tool(server_name: str | None, tool_name: str) -> McpToolMetadata:
+    matches = [
+        tool
+        for tool in list_mcp_tools(server_name=server_name)
+        if tool.tool_name == tool_name
+    ]
+    if not matches:
+        raise ValueError("MCP tool is not registered.")
+    if len(matches) > 1:
+        raise ValueError("server_name is required for duplicated tool names.")
+    return matches[0]
+
+
+def _policy_response(tool: McpToolMetadata) -> dict[str, Any]:
+    permission = McpToolPermission(tool.tool_permission)
+    policy = resolve_tool_policy(permission)
+    return {
+        "server_name": tool.server_name,
+        "tool_name": tool.tool_name,
+        "tool_permission": policy.tool_permission,
+        "confirmation_policy": policy.confirmation_policy,
+        "execution_policy": policy.execution_policy,
+        "call_status": policy.call_status,
+    }
+
+
+def _policy_preview_response(
+    tool: McpToolMetadata,
+    preview_payload: dict[str, Any],
+) -> dict[str, Any]:
+    policy = resolve_tool_policy(McpToolPermission(tool.tool_permission))
+    return {
+        **_policy_response(tool),
+        "will_execute": False,
+        "requires_approval": (
+            McpExecutionPolicy(policy.execution_policy)
+            == McpExecutionPolicy.BLOCKED_UNTIL_APPROVED
+        ),
+        "is_blocked": (
+            McpExecutionPolicy(policy.execution_policy) == McpExecutionPolicy.BLOCKED
+        ),
+        "preview": preview_payload,
+    }
+
+
+def _record_tool_audit(
+    *,
+    audit_service: McpToolAuditService | None,
+    tool: McpToolMetadata,
+    request_payload: dict[str, Any],
+    response_payload: dict[str, Any] | list[Any] | None,
+    call_status: McpToolCallStatus,
+    started_at: float,
+    last_error: str | None = None,
+) -> None:
+    if audit_service is None:
+        return
+
+    permission = McpToolPermission(tool.tool_permission)
+    try:
+        audit_service.record_tool_call(
+            context=McpToolExecutionContext(
+                server_name=tool.server_name,
+                tool_name=tool.tool_name,
+                request_payload=request_payload,
+            ),
+            permission=permission,
+            response_payload=response_payload,
+            call_status=call_status,
+            latency_ms=elapsed_ms(started_at),
+            last_error=last_error,
+        )
+    except Exception:
+        logger.exception("Failed to record MCP tool audit log.")
+
+
+def create_mcp_server(
+    audit_service: McpToolAuditService | None = None,
+    infraops_service: InfraOpsService | None = None,
+    farmer_bnpl_service: FarmerBnplService | None = None,
+    farm_advisory_service: FarmAdvisoryService | None = None,
+    admin_riskops_service: AdminRiskOpsService | None = None,
+    prediction_scaling_service: PredictionScalingService | None = None,
+    topology_knowledge_service: TopologyKnowledgeService | None = None,
+) -> FastMCP:
+    farmer_bnpl = farmer_bnpl_service or FarmerBnplService()
+    farm_advisory = farm_advisory_service or FarmAdvisoryService()
+    admin_riskops = admin_riskops_service or AdminRiskOpsService()
+    prediction_scaling = prediction_scaling_service or PredictionScalingService()
+    infraops = infraops_service or InfraOpsService.from_settings()
+    topology_knowledge = topology_knowledge_service or TopologyKnowledgeService.from_settings()
+    mcp = FastMCP(
+        name="aiops-platform-mcp",
+        instructions="Use the registry tools to discover allowed AIOps MCP capabilities.",
+        on_duplicate_tools="error",
+    )
+
+    @mcp.tool(
+        name="list_mcp_servers",
+        description="List registered AIOps MCP servers from the curated registry.",
+        tags={"registry", "read"},
+        annotations={"readOnlyHint": True, "openWorldHint": False},
+    )
+    def list_servers_tool() -> list[dict[str, Any]]:
+        return [server.model_dump(mode="json") for server in list_mcp_servers()]
+
+    @mcp.tool(
+        name="list_mcp_tools",
+        description="List registered AIOps MCP tools, optionally filtered by server or permission.",
+        tags={"registry", "read"},
+        annotations={"readOnlyHint": True, "openWorldHint": False},
+    )
+    def list_tools_tool(
+        server_name: str | None = None,
+        permission: str | None = None,
+    ) -> list[dict[str, Any]]:
+        return [
+            tool.model_dump(mode="json")
+            for tool in list_mcp_tools(
+                server_name=server_name,
+                permission=_permission_from_query(permission),
+            )
+        ]
+
+    @mcp.tool(
+        name="get_mcp_tool_policy",
+        description="Resolve the confirmation and execution policy for a registered MCP tool.",
+        tags={"registry", "policy", "read"},
+        annotations={"readOnlyHint": True, "openWorldHint": False},
+    )
+    def get_tool_policy_tool(
+        tool_name: str,
+        server_name: str | None = None,
+    ) -> dict[str, Any]:
+        tool = _resolve_registered_tool(server_name=server_name, tool_name=tool_name)
+        return _policy_response(tool)
+
+    @mcp.tool(
+        name="preview_mcp_tool_execution",
+        description="Preview policy and audit status for a registered MCP tool execution.",
+        tags={"registry", "policy", "audit", "read"},
+        annotations={"readOnlyHint": True, "openWorldHint": False},
+    )
+    def preview_tool_execution(
+        tool_name: str,
+        server_name: str,
+        request_payload: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        started_at = perf_counter()
+        tool = _resolve_registered_tool(server_name=server_name, tool_name=tool_name)
+        permission = McpToolPermission(tool.tool_permission)
+        policy = resolve_tool_policy(permission)
+        response = {
+            **_policy_response(tool),
+            "will_execute": (
+                McpExecutionPolicy(policy.execution_policy) == McpExecutionPolicy.ALLOWED
+            ),
+        }
+
+        if audit_service is not None:
+            _record_tool_audit(
+                audit_service=audit_service,
+                tool=tool,
+                request_payload=request_payload or {},
+                response_payload=response,
+                call_status=McpToolCallStatus(policy.call_status),
+                started_at=started_at,
+            )
+
+        return response
+
+    def call_farmer_bnpl_tool(
+        *,
+        tool_name: str,
+        request_payload: dict[str, Any],
+        operation: Callable[[], Any],
+    ) -> dict[str, Any]:
+        started_at = perf_counter()
+        tool = _resolve_registered_tool("farmer-bnpl-mcp", tool_name)
+        permission = McpToolPermission(tool.tool_permission)
+        policy = resolve_tool_policy(permission)
+
+        try:
+            result_payload = operation().model_dump(mode="json")
+            if McpExecutionPolicy(policy.execution_policy) == McpExecutionPolicy.ALLOWED:
+                response = result_payload
+            else:
+                response = _policy_preview_response(tool, result_payload)
+        except Exception as exc:
+            _record_tool_audit(
+                audit_service=audit_service,
+                tool=tool,
+                request_payload=request_payload,
+                response_payload=None,
+                call_status=McpToolCallStatus.FAILED,
+                started_at=started_at,
+                last_error=str(exc),
+            )
+            raise
+
+        _record_tool_audit(
+            audit_service=audit_service,
+            tool=tool,
+            request_payload=request_payload,
+            response_payload=response,
+            call_status=McpToolCallStatus(policy.call_status),
+            started_at=started_at,
+        )
+        return response
+
+    @mcp.tool(
+        name="start_credit_application",
+        description="Create a dry-run BNPL credit application draft for a farmer.",
+        tags={"farmer-bnpl", "credit", "write", "preview"},
+        annotations={"readOnlyHint": True, "openWorldHint": False},
+    )
+    def start_credit_application_tool(
+        user_id: str,
+        requested_amount: int,
+        crop_type: str | None = None,
+        season: str | None = None,
+    ) -> dict[str, Any]:
+        request_payload = {
+            "user_id": user_id,
+            "requested_amount": requested_amount,
+            "crop_type": crop_type,
+            "season": season,
+        }
+        return call_farmer_bnpl_tool(
+            tool_name="start_credit_application",
+            request_payload=request_payload,
+            operation=lambda: farmer_bnpl.start_credit_application(**request_payload),
+        )
+
+    @mcp.tool(
+        name="save_farmland_info",
+        description="Prepare a farmer farmland information draft.",
+        tags={"farmer-bnpl", "profile", "write", "preview"},
+        annotations={"readOnlyHint": True, "openWorldHint": False},
+    )
+    def save_farmland_info_tool(
+        user_id: str,
+        location: str,
+        area_hectare: float,
+        ownership_type: str,
+    ) -> dict[str, Any]:
+        request_payload = {
+            "user_id": user_id,
+            "location": location,
+            "area_hectare": area_hectare,
+            "ownership_type": ownership_type,
+        }
+        return call_farmer_bnpl_tool(
+            tool_name="save_farmland_info",
+            request_payload=request_payload,
+            operation=lambda: farmer_bnpl.save_farmland_info(**request_payload),
+        )
+
+    @mcp.tool(
+        name="save_crop_info",
+        description="Prepare a farmer crop information draft.",
+        tags={"farmer-bnpl", "profile", "write", "preview"},
+        annotations={"readOnlyHint": True, "openWorldHint": False},
+    )
+    def save_crop_info_tool(
+        user_id: str,
+        crop_type: str,
+        expected_yield_kg: int | None = None,
+        expected_revenue: int | None = None,
+    ) -> dict[str, Any]:
+        request_payload = {
+            "user_id": user_id,
+            "crop_type": crop_type,
+            "expected_yield_kg": expected_yield_kg,
+            "expected_revenue": expected_revenue,
+        }
+        return call_farmer_bnpl_tool(
+            tool_name="save_crop_info",
+            request_payload=request_payload,
+            operation=lambda: farmer_bnpl.save_crop_info(**request_payload),
+        )
+
+    @mcp.tool(
+        name="save_insurance_info",
+        description="Prepare a farmer crop insurance information draft.",
+        tags={"farmer-bnpl", "profile", "insurance", "write", "preview"},
+        annotations={"readOnlyHint": True, "openWorldHint": False},
+    )
+    def save_insurance_info_tool(
+        user_id: str,
+        provider: str,
+        policy_number: str | None = None,
+        coverage_amount: int | None = None,
+    ) -> dict[str, Any]:
+        request_payload = {
+            "user_id": user_id,
+            "provider": provider,
+            "policy_number": policy_number,
+            "coverage_amount": coverage_amount,
+        }
+        return call_farmer_bnpl_tool(
+            tool_name="save_insurance_info",
+            request_payload=request_payload,
+            operation=lambda: farmer_bnpl.save_insurance_info(**request_payload),
+        )
+
+    @mcp.tool(
+        name="get_required_documents",
+        description="List required documents for a farmer BNPL credit application.",
+        tags={"farmer-bnpl", "credit", "documents", "read"},
+        annotations={"readOnlyHint": True, "openWorldHint": False},
+    )
+    def get_required_documents_tool(
+        user_id: str,
+        application_type: str = "credit_application",
+    ) -> dict[str, Any]:
+        request_payload = {"user_id": user_id, "application_type": application_type}
+        return call_farmer_bnpl_tool(
+            tool_name="get_required_documents",
+            request_payload=request_payload,
+            operation=lambda: farmer_bnpl.get_required_documents(**request_payload),
+        )
+
+    @mcp.tool(
+        name="submit_credit_documents",
+        description="Prepare a credit document submission draft.",
+        tags={"farmer-bnpl", "credit", "documents", "write", "preview"},
+        annotations={"readOnlyHint": True, "openWorldHint": False},
+    )
+    def submit_credit_documents_tool(
+        user_id: str,
+        application_id: str,
+        document_types: list[str],
+    ) -> dict[str, Any]:
+        request_payload = {
+            "user_id": user_id,
+            "application_id": application_id,
+            "document_types": document_types,
+        }
+        return call_farmer_bnpl_tool(
+            tool_name="submit_credit_documents",
+            request_payload=request_payload,
+            operation=lambda: farmer_bnpl.submit_credit_documents(**request_payload),
+        )
+
+    @mcp.tool(
+        name="get_credit_limit_status",
+        description="Read the skeleton credit limit review status.",
+        tags={"farmer-bnpl", "credit", "read"},
+        annotations={"readOnlyHint": True, "openWorldHint": False},
+    )
+    def get_credit_limit_status_tool(
+        user_id: str,
+        application_id: str | None = None,
+    ) -> dict[str, Any]:
+        request_payload = {"user_id": user_id, "application_id": application_id}
+        return call_farmer_bnpl_tool(
+            tool_name="get_credit_limit_status",
+            request_payload=request_payload,
+            operation=lambda: farmer_bnpl.get_credit_limit_status(**request_payload),
+        )
+
+    @mcp.tool(
+        name="get_user_credit_limit",
+        description="Read the user's skeleton BNPL credit limit.",
+        tags={"farmer-bnpl", "credit", "read"},
+        annotations={"readOnlyHint": True, "openWorldHint": False},
+    )
+    def get_user_credit_limit_tool(user_id: str) -> dict[str, Any]:
+        request_payload = {"user_id": user_id}
+        return call_farmer_bnpl_tool(
+            tool_name="get_user_credit_limit",
+            request_payload=request_payload,
+            operation=lambda: farmer_bnpl.get_user_credit_limit(**request_payload),
+        )
+
+    @mcp.tool(
+        name="get_farmer_profile",
+        description="Read the farmer profile summary used by the BNPL chatbot.",
+        tags={"farmer-bnpl", "profile", "read"},
+        annotations={"readOnlyHint": True, "openWorldHint": False},
+    )
+    def get_farmer_profile_tool(user_id: str) -> dict[str, Any]:
+        request_payload = {"user_id": user_id}
+        return call_farmer_bnpl_tool(
+            tool_name="get_farmer_profile",
+            request_payload=request_payload,
+            operation=lambda: farmer_bnpl.get_farmer_profile(**request_payload),
+        )
+
+    @mcp.tool(
+        name="get_repayment_schedule",
+        description="Read the user's skeleton BNPL repayment schedule.",
+        tags={"farmer-bnpl", "repayment", "read"},
+        annotations={"readOnlyHint": True, "openWorldHint": False},
+    )
+    def get_repayment_schedule_tool(user_id: str) -> dict[str, Any]:
+        request_payload = {"user_id": user_id}
+        return call_farmer_bnpl_tool(
+            tool_name="get_repayment_schedule",
+            request_payload=request_payload,
+            operation=lambda: farmer_bnpl.get_repayment_schedule(**request_payload),
+        )
+
+    @mcp.tool(
+        name="get_interest_due",
+        description="Read the next BNPL interest due amount.",
+        tags={"farmer-bnpl", "repayment", "read"},
+        annotations={"readOnlyHint": True, "openWorldHint": False},
+    )
+    def get_interest_due_tool(user_id: str) -> dict[str, Any]:
+        request_payload = {"user_id": user_id}
+        return call_farmer_bnpl_tool(
+            tool_name="get_interest_due",
+            request_payload=request_payload,
+            operation=lambda: farmer_bnpl.get_interest_due(**request_payload),
+        )
+
+    @mcp.tool(
+        name="get_overdue_status",
+        description="Read the user's skeleton overdue status.",
+        tags={"farmer-bnpl", "repayment", "read"},
+        annotations={"readOnlyHint": True, "openWorldHint": False},
+    )
+    def get_overdue_status_tool(user_id: str) -> dict[str, Any]:
+        request_payload = {"user_id": user_id}
+        return call_farmer_bnpl_tool(
+            tool_name="get_overdue_status",
+            request_payload=request_payload,
+            operation=lambda: farmer_bnpl.get_overdue_status(**request_payload),
+        )
+
+    @mcp.tool(
+        name="get_latest_order_delivery_status",
+        description="Read the farmer's latest order delivery status.",
+        tags={"farmer-bnpl", "orders", "delivery", "read"},
+        annotations={"readOnlyHint": True, "openWorldHint": False},
+    )
+    def get_latest_order_delivery_status_tool(user_id: str) -> dict[str, Any]:
+        request_payload = {"user_id": user_id}
+        return call_farmer_bnpl_tool(
+            tool_name="get_latest_order_delivery_status",
+            request_payload=request_payload,
+            operation=lambda: farmer_bnpl.get_latest_order_delivery_status(**request_payload),
+        )
+
+    @mcp.tool(
+        name="search_products",
+        description="Search the skeleton agricultural input catalog.",
+        tags={"farmer-bnpl", "products", "read"},
+        annotations={"readOnlyHint": True, "openWorldHint": False},
+    )
+    def search_products_tool(
+        query: str | None = None,
+        category: str | None = None,
+        limit: int = 20,
+    ) -> dict[str, Any]:
+        request_payload = {"query": query, "category": category, "limit": limit}
+        return call_farmer_bnpl_tool(
+            tool_name="search_products",
+            request_payload=request_payload,
+            operation=lambda: farmer_bnpl.search_products(**request_payload),
+        )
+
+    @mcp.tool(
+        name="search_lowest_price_fertilizer",
+        description="Search the lowest-priced fertilizer items in the skeleton catalog.",
+        tags={"farmer-bnpl", "products", "fertilizer", "read"},
+        annotations={"readOnlyHint": True, "openWorldHint": False},
+    )
+    def search_lowest_price_fertilizer_tool(limit: int = 5) -> dict[str, Any]:
+        request_payload = {"limit": limit}
+        return call_farmer_bnpl_tool(
+            tool_name="search_lowest_price_fertilizer",
+            request_payload=request_payload,
+            operation=lambda: farmer_bnpl.search_lowest_price_fertilizer(**request_payload),
+        )
+
+    @mcp.tool(
+        name="get_product_detail",
+        description="Read a skeleton agricultural input product detail.",
+        tags={"farmer-bnpl", "products", "read"},
+        annotations={"readOnlyHint": True, "openWorldHint": False},
+    )
+    def get_product_detail_tool(product_id: str) -> dict[str, Any]:
+        request_payload = {"product_id": product_id}
+        return call_farmer_bnpl_tool(
+            tool_name="get_product_detail",
+            request_payload=request_payload,
+            operation=lambda: farmer_bnpl.get_product_detail(**request_payload),
+        )
+
+    @mcp.tool(
+        name="calculate_cart_total",
+        description="Calculate a skeleton cart total for BNPL eligibility checks.",
+        tags={"farmer-bnpl", "cart", "read"},
+        annotations={"readOnlyHint": True, "openWorldHint": False},
+    )
+    def calculate_cart_total_tool(items: list[dict[str, Any]]) -> dict[str, Any]:
+        request_payload = {"items": items}
+        return call_farmer_bnpl_tool(
+            tool_name="calculate_cart_total",
+            request_payload=request_payload,
+            operation=lambda: farmer_bnpl.calculate_cart_total(**request_payload),
+        )
+
+    @mcp.tool(
+        name="prepare_bnpl_checkout_payload",
+        description="Prepare a dry-run BNPL checkout payload from cart items.",
+        tags={"farmer-bnpl", "checkout", "read"},
+        annotations={"readOnlyHint": True, "openWorldHint": False},
+    )
+    def prepare_bnpl_checkout_payload_tool(
+        user_id: str,
+        items: list[dict[str, Any]],
+        credit_limit_id: str | None = None,
+    ) -> dict[str, Any]:
+        request_payload = {
+            "user_id": user_id,
+            "items": items,
+            "credit_limit_id": credit_limit_id,
+        }
+        return call_farmer_bnpl_tool(
+            tool_name="prepare_bnpl_checkout_payload",
+            request_payload=request_payload,
+            operation=lambda: farmer_bnpl.prepare_bnpl_checkout_payload(**request_payload),
+        )
+
+    @mcp.tool(
+        name="create_checkout_intent",
+        description="Create a dry-run checkout intent that still requires user confirmation.",
+        tags={"farmer-bnpl", "checkout", "write", "preview"},
+        annotations={"readOnlyHint": True, "openWorldHint": False},
+    )
+    def create_checkout_intent_tool(
+        user_id: str,
+        items: list[dict[str, Any]],
+    ) -> dict[str, Any]:
+        request_payload = {"user_id": user_id, "items": items}
+        return call_farmer_bnpl_tool(
+            tool_name="create_checkout_intent",
+            request_payload=request_payload,
+            operation=lambda: farmer_bnpl.create_checkout_intent(**request_payload),
+        )
+
+    @mcp.tool(
+        name="add_cart_item",
+        description="Prepare a cart item add draft.",
+        tags={"farmer-bnpl", "cart", "write", "preview"},
+        annotations={"readOnlyHint": True, "openWorldHint": False},
+    )
+    def add_cart_item_tool(
+        user_id: str,
+        product_id: str,
+        quantity: int,
+    ) -> dict[str, Any]:
+        request_payload = {
+            "user_id": user_id,
+            "product_id": product_id,
+            "quantity": quantity,
+        }
+        return call_farmer_bnpl_tool(
+            tool_name="add_cart_item",
+            request_payload=request_payload,
+            operation=lambda: farmer_bnpl.add_cart_item(**request_payload),
+        )
+
+    @mcp.tool(
+        name="update_cart_item",
+        description="Prepare a cart item quantity update draft.",
+        tags={"farmer-bnpl", "cart", "write", "preview"},
+        annotations={"readOnlyHint": True, "openWorldHint": False},
+    )
+    def update_cart_item_tool(
+        user_id: str,
+        product_id: str,
+        quantity: int,
+    ) -> dict[str, Any]:
+        request_payload = {
+            "user_id": user_id,
+            "product_id": product_id,
+            "quantity": quantity,
+        }
+        return call_farmer_bnpl_tool(
+            tool_name="update_cart_item",
+            request_payload=request_payload,
+            operation=lambda: farmer_bnpl.update_cart_item(**request_payload),
+        )
+
+    @mcp.tool(
+        name="create_bnpl_checkout",
+        description="Prepare the final BNPL checkout action that requires user confirmation.",
+        tags={"farmer-bnpl", "checkout", "user-confirmed-write", "preview"},
+        annotations={"readOnlyHint": True, "openWorldHint": False},
+    )
+    def create_bnpl_checkout_tool(
+        user_id: str,
+        checkout_intent_id: str,
+        confirmation_token: str | None = None,
+    ) -> dict[str, Any]:
+        request_payload = {
+            "user_id": user_id,
+            "checkout_intent_id": checkout_intent_id,
+            "confirmation_token": confirmation_token,
+        }
+        return call_farmer_bnpl_tool(
+            tool_name="create_bnpl_checkout",
+            request_payload=request_payload,
+            operation=lambda: farmer_bnpl.create_bnpl_checkout(**request_payload),
+        )
+
+    def call_farm_advisory_tool(
+        *,
+        tool_name: str,
+        request_payload: dict[str, Any],
+        operation: Callable[[], Any],
+    ) -> dict[str, Any]:
+        started_at = perf_counter()
+        tool = _resolve_registered_tool("farm-advisory-mcp", tool_name)
+
+        try:
+            result = operation().model_dump(mode="json")
+        except Exception as exc:
+            _record_tool_audit(
+                audit_service=audit_service,
+                tool=tool,
+                request_payload=request_payload,
+                response_payload=None,
+                call_status=McpToolCallStatus.FAILED,
+                started_at=started_at,
+                last_error=str(exc),
+            )
+            raise
+
+        _record_tool_audit(
+            audit_service=audit_service,
+            tool=tool,
+            request_payload=request_payload,
+            response_payload=result,
+            call_status=McpToolCallStatus.SUCCESS,
+            started_at=started_at,
+        )
+        return result
+
+    @mcp.tool(
+        name="get_crop_calendar",
+        description="Read a crop calendar for the farmer advisory chatbot.",
+        tags={"farm-advisory", "crop", "calendar", "read"},
+        annotations={"readOnlyHint": True, "openWorldHint": False},
+    )
+    def get_crop_calendar_tool(
+        crop_type: str,
+        region: str | None = None,
+        season: str | None = None,
+    ) -> dict[str, Any]:
+        request_payload = {"crop_type": crop_type, "region": region, "season": season}
+        return call_farm_advisory_tool(
+            tool_name="get_crop_calendar",
+            request_payload=request_payload,
+            operation=lambda: farm_advisory.get_crop_calendar(**request_payload),
+        )
+
+    @mcp.tool(
+        name="recommend_farming_materials",
+        description="Recommend farm input materials and BNPL-ready product ids.",
+        tags={"farm-advisory", "materials", "products", "read"},
+        annotations={"readOnlyHint": True, "openWorldHint": False},
+    )
+    def recommend_farming_materials_tool(
+        crop_type: str,
+        area_hectare: float,
+        region: str | None = None,
+        season: str | None = None,
+    ) -> dict[str, Any]:
+        request_payload = {
+            "crop_type": crop_type,
+            "area_hectare": area_hectare,
+            "region": region,
+            "season": season,
+        }
+        return call_farm_advisory_tool(
+            tool_name="recommend_farming_materials",
+            request_payload=request_payload,
+            operation=lambda: farm_advisory.recommend_farming_materials(**request_payload),
+        )
+
+    @mcp.tool(
+        name="recommend_fertilizer_requirements",
+        description="Recommend fertilizer nutrient requirements and product ids.",
+        tags={"farm-advisory", "fertilizer", "read"},
+        annotations={"readOnlyHint": True, "openWorldHint": False},
+    )
+    def recommend_fertilizer_requirements_tool(
+        crop_type: str,
+        area_hectare: float,
+        soil_type: str | None = None,
+    ) -> dict[str, Any]:
+        request_payload = {
+            "crop_type": crop_type,
+            "area_hectare": area_hectare,
+            "soil_type": soil_type,
+        }
+        return call_farm_advisory_tool(
+            tool_name="recommend_fertilizer_requirements",
+            request_payload=request_payload,
+            operation=lambda: farm_advisory.recommend_fertilizer_requirements(
+                **request_payload,
+            ),
+        )
+
+    @mcp.tool(
+        name="rank_material_options",
+        description="Rank agricultural material options from the skeleton BNPL catalog.",
+        tags={"farm-advisory", "materials", "ranking", "read"},
+        annotations={"readOnlyHint": True, "openWorldHint": False},
+    )
+    def rank_material_options_tool(
+        crop_type: str,
+        material_type: str,
+        budget: int | None = None,
+    ) -> dict[str, Any]:
+        request_payload = {
+            "crop_type": crop_type,
+            "material_type": material_type,
+            "budget": budget,
+        }
+        return call_farm_advisory_tool(
+            tool_name="rank_material_options",
+            request_payload=request_payload,
+            operation=lambda: farm_advisory.rank_material_options(**request_payload),
+        )
+
+    @mcp.tool(
+        name="recommend_product_bundle",
+        description="Recommend a BNPL-ready farm input product bundle.",
+        tags={"farm-advisory", "products", "bundle", "bnpl", "read"},
+        annotations={"readOnlyHint": True, "openWorldHint": False},
+    )
+    def recommend_product_bundle_tool(
+        crop_type: str,
+        area_hectare: float,
+        budget: int | None = None,
+    ) -> dict[str, Any]:
+        request_payload = {
+            "crop_type": crop_type,
+            "area_hectare": area_hectare,
+            "budget": budget,
+        }
+        return call_farm_advisory_tool(
+            tool_name="recommend_product_bundle",
+            request_payload=request_payload,
+            operation=lambda: farm_advisory.recommend_product_bundle(**request_payload),
+        )
+
+    @mcp.tool(
+        name="get_weather_risk",
+        description="Return skeleton weather risk guidance for a crop and region.",
+        tags={"farm-advisory", "weather", "risk", "read"},
+        annotations={"readOnlyHint": True, "openWorldHint": False},
+    )
+    def get_weather_risk_tool(
+        crop_type: str,
+        region: str,
+        forecast_days: int = 7,
+    ) -> dict[str, Any]:
+        request_payload = {
+            "crop_type": crop_type,
+            "region": region,
+            "forecast_days": forecast_days,
+        }
+        return call_farm_advisory_tool(
+            tool_name="get_weather_risk",
+            request_payload=request_payload,
+            operation=lambda: farm_advisory.get_weather_risk(**request_payload),
+        )
+
+    @mcp.tool(
+        name="triage_crop_disease",
+        description="Triage crop symptoms as advisory decision-support.",
+        tags={"farm-advisory", "disease", "triage", "read"},
+        annotations={"readOnlyHint": True, "openWorldHint": False},
+    )
+    def triage_crop_disease_tool(
+        crop_type: str,
+        symptoms: list[str],
+        severity: str = "medium",
+    ) -> dict[str, Any]:
+        request_payload = {
+            "crop_type": crop_type,
+            "symptoms": symptoms,
+            "severity": severity,
+        }
+        return call_farm_advisory_tool(
+            tool_name="triage_crop_disease",
+            request_payload=request_payload,
+            operation=lambda: farm_advisory.triage_crop_disease(**request_payload),
+        )
+
+    @mcp.tool(
+        name="simulate_crop_income",
+        description="Simulate crop income and net income with skeleton assumptions.",
+        tags={"farm-advisory", "income", "simulation", "read"},
+        annotations={"readOnlyHint": True, "openWorldHint": False},
+    )
+    def simulate_crop_income_tool(
+        crop_type: str,
+        area_hectare: float,
+        expected_yield_kg_per_hectare: int | None = None,
+        expected_price_per_kg: int | None = None,
+        estimated_input_cost: int | None = None,
+    ) -> dict[str, Any]:
+        request_payload = {
+            "crop_type": crop_type,
+            "area_hectare": area_hectare,
+            "expected_yield_kg_per_hectare": expected_yield_kg_per_hectare,
+            "expected_price_per_kg": expected_price_per_kg,
+            "estimated_input_cost": estimated_input_cost,
+        }
+        return call_farm_advisory_tool(
+            tool_name="simulate_crop_income",
+            request_payload=request_payload,
+            operation=lambda: farm_advisory.simulate_crop_income(**request_payload),
+        )
+
+    @mcp.tool(
+        name="simulate_season_cashflow",
+        description="Simulate season cashflow and suggested BNPL amount.",
+        tags={"farm-advisory", "cashflow", "bnpl", "simulation", "read"},
+        annotations={"readOnlyHint": True, "openWorldHint": False},
+    )
+    def simulate_season_cashflow_tool(
+        crop_type: str,
+        area_hectare: float,
+        starting_cash: int = 0,
+        bnpl_limit: int = 3_000_000,
+    ) -> dict[str, Any]:
+        request_payload = {
+            "crop_type": crop_type,
+            "area_hectare": area_hectare,
+            "starting_cash": starting_cash,
+            "bnpl_limit": bnpl_limit,
+        }
+        return call_farm_advisory_tool(
+            tool_name="simulate_season_cashflow",
+            request_payload=request_payload,
+            operation=lambda: farm_advisory.simulate_season_cashflow(**request_payload),
+        )
+
+    @mcp.tool(
+        name="translate_finance_terms_for_farmer",
+        description="Translate BNPL finance terms into plain farmer-facing language.",
+        tags={"farm-advisory", "finance", "education", "read"},
+        annotations={"readOnlyHint": True, "openWorldHint": False},
+    )
+    def translate_finance_terms_for_farmer_tool(term: str) -> dict[str, Any]:
+        request_payload = {"term": term}
+        return call_farm_advisory_tool(
+            tool_name="translate_finance_terms_for_farmer",
+            request_payload=request_payload,
+            operation=lambda: farm_advisory.translate_finance_terms_for_farmer(
+                **request_payload,
+            ),
+        )
+
+    def call_admin_riskops_tool(
+        *,
+        tool_name: str,
+        request_payload: dict[str, Any],
+        operation: Callable[[], Any],
+    ) -> dict[str, Any]:
+        started_at = perf_counter()
+        tool = _resolve_registered_tool("admin-riskops-mcp", tool_name)
+        permission = McpToolPermission(tool.tool_permission)
+        policy = resolve_tool_policy(permission)
+
+        try:
+            result_payload = operation().model_dump(mode="json")
+            if McpExecutionPolicy(policy.execution_policy) == McpExecutionPolicy.ALLOWED:
+                response = result_payload
+            else:
+                response = _policy_preview_response(tool, result_payload)
+        except Exception as exc:
+            _record_tool_audit(
+                audit_service=audit_service,
+                tool=tool,
+                request_payload=request_payload,
+                response_payload=None,
+                call_status=McpToolCallStatus.FAILED,
+                started_at=started_at,
+                last_error=str(exc),
+            )
+            raise
+
+        _record_tool_audit(
+            audit_service=audit_service,
+            tool=tool,
+            request_payload=request_payload,
+            response_payload=response,
+            call_status=McpToolCallStatus(policy.call_status),
+            started_at=started_at,
+        )
+        return response
+
+    @mcp.tool(
+        name="get_credit_review_queue",
+        description="Read the admin credit review queue.",
+        tags={"admin-riskops", "credit-review", "read"},
+        annotations={"readOnlyHint": True, "openWorldHint": False},
+    )
+    def get_credit_review_queue_tool(
+        status_filter: str | None = None,
+        limit: int = 20,
+    ) -> dict[str, Any]:
+        request_payload = {"status_filter": status_filter, "limit": limit}
+        return call_admin_riskops_tool(
+            tool_name="get_credit_review_queue",
+            request_payload=request_payload,
+            operation=lambda: admin_riskops.get_credit_review_queue(**request_payload),
+        )
+
+    @mcp.tool(
+        name="get_credit_review_detail",
+        description="Read a credit review detail for admin RiskOps.",
+        tags={"admin-riskops", "credit-review", "read"},
+        annotations={"readOnlyHint": True, "openWorldHint": False},
+    )
+    def get_credit_review_detail_tool(application_id: str) -> dict[str, Any]:
+        request_payload = {"application_id": application_id}
+        return call_admin_riskops_tool(
+            tool_name="get_credit_review_detail",
+            request_payload=request_payload,
+            operation=lambda: admin_riskops.get_credit_review_detail(**request_payload),
+        )
+
+    @mcp.tool(
+        name="summarize_credit_risk",
+        description="Summarize credit risk for a BNPL user.",
+        tags={"admin-riskops", "credit-risk", "read"},
+        annotations={"readOnlyHint": True, "openWorldHint": False},
+    )
+    def summarize_credit_risk_tool(user_id: str) -> dict[str, Any]:
+        request_payload = {"user_id": user_id}
+        return call_admin_riskops_tool(
+            tool_name="summarize_credit_risk",
+            request_payload=request_payload,
+            operation=lambda: admin_riskops.summarize_credit_risk(**request_payload),
+        )
+
+    @mcp.tool(
+        name="get_bnpl_summary",
+        description="Read the admin BNPL portfolio summary.",
+        tags={"admin-riskops", "bnpl", "summary", "read"},
+        annotations={"readOnlyHint": True, "openWorldHint": False},
+    )
+    def get_bnpl_summary_tool() -> dict[str, Any]:
+        return call_admin_riskops_tool(
+            tool_name="get_bnpl_summary",
+            request_payload={},
+            operation=admin_riskops.get_bnpl_summary,
+        )
+
+    @mcp.tool(
+        name="search_bnpl_users",
+        description="Search BNPL users for admin RiskOps.",
+        tags={"admin-riskops", "bnpl", "users", "read"},
+        annotations={"readOnlyHint": True, "openWorldHint": False},
+    )
+    def search_bnpl_users_tool(
+        query: str | None = None,
+        limit: int = 20,
+    ) -> dict[str, Any]:
+        request_payload = {"query": query, "limit": limit}
+        return call_admin_riskops_tool(
+            tool_name="search_bnpl_users",
+            request_payload=request_payload,
+            operation=lambda: admin_riskops.search_bnpl_users(**request_payload),
+        )
+
+    @mcp.tool(
+        name="get_overdue_summary",
+        description="Read an overdue BNPL portfolio summary.",
+        tags={"admin-riskops", "overdue", "summary", "read"},
+        annotations={"readOnlyHint": True, "openWorldHint": False},
+    )
+    def get_overdue_summary_tool() -> dict[str, Any]:
+        return call_admin_riskops_tool(
+            tool_name="get_overdue_summary",
+            request_payload={},
+            operation=admin_riskops.get_overdue_summary,
+        )
+
+    @mcp.tool(
+        name="search_overdue_users",
+        description="Search overdue BNPL users.",
+        tags={"admin-riskops", "overdue", "users", "read"},
+        annotations={"readOnlyHint": True, "openWorldHint": False},
+    )
+    def search_overdue_users_tool(
+        query: str | None = None,
+        min_days_overdue: int = 1,
+        limit: int = 20,
+    ) -> dict[str, Any]:
+        request_payload = {
+            "query": query,
+            "min_days_overdue": min_days_overdue,
+            "limit": limit,
+        }
+        return call_admin_riskops_tool(
+            tool_name="search_overdue_users",
+            request_payload=request_payload,
+            operation=lambda: admin_riskops.search_overdue_users(**request_payload),
+        )
+
+    @mcp.tool(
+        name="get_bss_score_history",
+        description="Read BSS score history for a BNPL user.",
+        tags={"admin-riskops", "bss", "read"},
+        annotations={"readOnlyHint": True, "openWorldHint": False},
+    )
+    def get_bss_score_history_tool(user_id: str) -> dict[str, Any]:
+        request_payload = {"user_id": user_id}
+        return call_admin_riskops_tool(
+            tool_name="get_bss_score_history",
+            request_payload=request_payload,
+            operation=lambda: admin_riskops.get_bss_score_history(**request_payload),
+        )
+
+    @mcp.tool(
+        name="simulate_disaster_credit_risk",
+        description="Simulate disaster impact on BNPL credit risk.",
+        tags={"admin-riskops", "disaster", "simulation", "read"},
+        annotations={"readOnlyHint": True, "openWorldHint": False},
+    )
+    def simulate_disaster_credit_risk_tool(
+        region: str,
+        disaster_type: str,
+        affected_crop: str | None = None,
+    ) -> dict[str, Any]:
+        request_payload = {
+            "region": region,
+            "disaster_type": disaster_type,
+            "affected_crop": affected_crop,
+        }
+        return call_admin_riskops_tool(
+            tool_name="simulate_disaster_credit_risk",
+            request_payload=request_payload,
+            operation=lambda: admin_riskops.simulate_disaster_credit_risk(
+                **request_payload,
+            ),
+        )
+
+    @mcp.tool(
+        name="create_risk_analysis_snapshot",
+        description="Create a read-only admin RiskOps analysis snapshot.",
+        tags={"admin-riskops", "snapshot", "read"},
+        annotations={"readOnlyHint": True, "openWorldHint": False},
+    )
+    def create_risk_analysis_snapshot_tool(
+        target_type: str,
+        target_id: str,
+    ) -> dict[str, Any]:
+        request_payload = {"target_type": target_type, "target_id": target_id}
+        return call_admin_riskops_tool(
+            tool_name="create_risk_analysis_snapshot",
+            request_payload=request_payload,
+            operation=lambda: admin_riskops.create_risk_analysis_snapshot(
+                **request_payload,
+            ),
+        )
+
+    @mcp.tool(
+        name="send_repayment_alert",
+        description="Preview a repayment alert without sending it.",
+        tags={"admin-riskops", "alert", "write", "preview"},
+        annotations={"readOnlyHint": True, "openWorldHint": False},
+    )
+    def send_repayment_alert_tool(
+        user_id: str,
+        channel: str = "SMS",
+    ) -> dict[str, Any]:
+        request_payload = {"user_id": user_id, "channel": channel}
+        return call_admin_riskops_tool(
+            tool_name="send_repayment_alert",
+            request_payload=request_payload,
+            operation=lambda: admin_riskops.send_repayment_alert(**request_payload),
+        )
+
+    @mcp.tool(
+        name="send_overdue_alerts",
+        description="Preview bulk overdue alerts without sending them.",
+        tags={"admin-riskops", "alert", "overdue", "write", "preview"},
+        annotations={"readOnlyHint": True, "openWorldHint": False},
+    )
+    def send_overdue_alerts_tool(
+        min_days_overdue: int = 1,
+        channel: str = "SMS",
+    ) -> dict[str, Any]:
+        request_payload = {"min_days_overdue": min_days_overdue, "channel": channel}
+        return call_admin_riskops_tool(
+            tool_name="send_overdue_alerts",
+            request_payload=request_payload,
+            operation=lambda: admin_riskops.send_overdue_alerts(**request_payload),
+        )
+
+    def call_prediction_scaling_tool(
+        *,
+        tool_name: str,
+        request_payload: dict[str, Any],
+        operation: Callable[[], Any],
+    ) -> dict[str, Any]:
+        started_at = perf_counter()
+        tool = _resolve_registered_tool("prediction-scaling-mcp", tool_name)
+
+        try:
+            result = operation().model_dump(mode="json")
+        except Exception as exc:
+            _record_tool_audit(
+                audit_service=audit_service,
+                tool=tool,
+                request_payload=request_payload,
+                response_payload=None,
+                call_status=McpToolCallStatus.FAILED,
+                started_at=started_at,
+                last_error=str(exc),
+            )
+            raise
+
+        _record_tool_audit(
+            audit_service=audit_service,
+            tool=tool,
+            request_payload=request_payload,
+            response_payload=result,
+            call_status=McpToolCallStatus.SUCCESS,
+            started_at=started_at,
+        )
+        return result
+
+    @mcp.tool(
+        name="get_model_versions",
+        description="Read prediction model versions available for autoscaling analysis.",
+        tags={"prediction-scaling", "model", "read"},
+        annotations={"readOnlyHint": True, "openWorldHint": False},
+    )
+    def get_model_versions_tool(
+        service_name: str | None = None,
+        limit: int = 20,
+    ) -> dict[str, Any]:
+        request_payload = {"service_name": service_name, "limit": limit}
+        return call_prediction_scaling_tool(
+            tool_name="get_model_versions",
+            request_payload=request_payload,
+            operation=lambda: prediction_scaling.get_model_versions(**request_payload),
+        )
+
+    @mcp.tool(
+        name="get_prediction_runs",
+        description="Read prediction execution runs for a model version or status.",
+        tags={"prediction-scaling", "prediction", "run", "read"},
+        annotations={"readOnlyHint": True, "openWorldHint": False},
+    )
+    def get_prediction_runs_tool(
+        model_version_id: str | None = None,
+        status: str | None = None,
+        limit: int = 20,
+    ) -> dict[str, Any]:
+        request_payload = {
+            "model_version_id": model_version_id,
+            "status": status,
+            "limit": limit,
+        }
+        return call_prediction_scaling_tool(
+            tool_name="get_prediction_runs",
+            request_payload=request_payload,
+            operation=lambda: prediction_scaling.get_prediction_runs(**request_payload),
+        )
+
+    @mcp.tool(
+        name="get_prediction_metrics",
+        description="Read predicted metric points for a prediction run.",
+        tags={"prediction-scaling", "prediction", "metrics", "read"},
+        annotations={"readOnlyHint": True, "openWorldHint": False},
+    )
+    def get_prediction_metrics_tool(
+        prediction_run_id: str,
+        metric_name: str | None = None,
+    ) -> dict[str, Any]:
+        request_payload = {
+            "prediction_run_id": prediction_run_id,
+            "metric_name": metric_name,
+        }
+        return call_prediction_scaling_tool(
+            tool_name="get_prediction_metrics",
+            request_payload=request_payload,
+            operation=lambda: prediction_scaling.get_prediction_metrics(
+                **request_payload,
+            ),
+        )
+
+    @mcp.tool(
+        name="get_latest_prediction",
+        description="Read the latest prediction for a metric, namespace, and workload.",
+        tags={"prediction-scaling", "prediction", "latest", "read"},
+        annotations={"readOnlyHint": True, "openWorldHint": False},
+    )
+    def get_latest_prediction_tool(
+        metric_name: str,
+        namespace: str | None = None,
+        workload: str | None = None,
+    ) -> dict[str, Any]:
+        request_payload = {
+            "metric_name": metric_name,
+            "namespace": namespace,
+            "workload": workload,
+        }
+        return call_prediction_scaling_tool(
+            tool_name="get_latest_prediction",
+            request_payload=request_payload,
+            operation=lambda: prediction_scaling.get_latest_prediction(**request_payload),
+        )
+
+    @mcp.tool(
+        name="get_actual_metrics",
+        description="Read actual observed metrics for prediction comparison.",
+        tags={"prediction-scaling", "actual", "metrics", "read"},
+        annotations={"readOnlyHint": True, "openWorldHint": False},
+    )
+    def get_actual_metrics_tool(
+        metric_name: str,
+        namespace: str | None = None,
+        workload: str | None = None,
+        limit: int = 20,
+    ) -> dict[str, Any]:
+        request_payload = {
+            "metric_name": metric_name,
+            "namespace": namespace,
+            "workload": workload,
+            "limit": limit,
+        }
+        return call_prediction_scaling_tool(
+            tool_name="get_actual_metrics",
+            request_payload=request_payload,
+            operation=lambda: prediction_scaling.get_actual_metrics(**request_payload),
+        )
+
+    @mcp.tool(
+        name="get_prediction_errors",
+        description="Read prediction error points by comparing predicted and actual metrics.",
+        tags={"prediction-scaling", "prediction", "error", "read"},
+        annotations={"readOnlyHint": True, "openWorldHint": False},
+    )
+    def get_prediction_errors_tool(
+        prediction_run_id: str,
+        limit: int = 20,
+    ) -> dict[str, Any]:
+        request_payload = {"prediction_run_id": prediction_run_id, "limit": limit}
+        return call_prediction_scaling_tool(
+            tool_name="get_prediction_errors",
+            request_payload=request_payload,
+            operation=lambda: prediction_scaling.get_prediction_errors(**request_payload),
+        )
+
+    @mcp.tool(
+        name="get_prediction_error_metrics",
+        description="Read aggregate prediction error metrics for a prediction run.",
+        tags={"prediction-scaling", "prediction", "error", "metrics", "read"},
+        annotations={"readOnlyHint": True, "openWorldHint": False},
+    )
+    def get_prediction_error_metrics_tool(prediction_run_id: str) -> dict[str, Any]:
+        request_payload = {"prediction_run_id": prediction_run_id}
+        return call_prediction_scaling_tool(
+            tool_name="get_prediction_error_metrics",
+            request_payload=request_payload,
+            operation=lambda: prediction_scaling.get_prediction_error_metrics(
+                **request_payload,
+            ),
+        )
+
+    @mcp.tool(
+        name="get_scaling_events",
+        description="Read autoscaling events for prediction and HPA/KEDA analysis.",
+        tags={"prediction-scaling", "scaling", "events", "read"},
+        annotations={"readOnlyHint": True, "openWorldHint": False},
+    )
+    def get_scaling_events_tool(
+        namespace: str | None = None,
+        workload: str | None = None,
+        limit: int = 20,
+    ) -> dict[str, Any]:
+        request_payload = {"namespace": namespace, "workload": workload, "limit": limit}
+        return call_prediction_scaling_tool(
+            tool_name="get_scaling_events",
+            request_payload=request_payload,
+            operation=lambda: prediction_scaling.get_scaling_events(**request_payload),
+        )
+
+    @mcp.tool(
+        name="get_scaling_summary",
+        description="Summarize autoscaling event evidence for a namespace and workload.",
+        tags={"prediction-scaling", "scaling", "summary", "read"},
+        annotations={"readOnlyHint": True, "openWorldHint": False},
+    )
+    def get_scaling_summary_tool(
+        namespace: str | None = None,
+        workload: str | None = None,
+    ) -> dict[str, Any]:
+        request_payload = {"namespace": namespace, "workload": workload}
+        return call_prediction_scaling_tool(
+            tool_name="get_scaling_summary",
+            request_payload=request_payload,
+            operation=lambda: prediction_scaling.get_scaling_summary(**request_payload),
+        )
+
+    @mcp.tool(
+        name="get_predictive_scaling_status",
+        description=(
+            "Read GRU prediction, KEDA, HPA, and Deployment evidence to assess "
+            "predictive scaling status."
+        ),
+        tags={"prediction-scaling", "scaling", "keda", "hpa", "read"},
+        annotations={"readOnlyHint": True, "openWorldHint": False},
+    )
+    def get_predictive_scaling_status_tool(
+        namespace: str | None = "kkpp",
+        service: str | None = None,
+        horizon_minutes: int = 180,
+        include_keda: bool = True,
+        include_hpa: bool = True,
+    ) -> dict[str, Any]:
+        request_payload = {
+            "namespace": namespace,
+            "service": service,
+            "horizon_minutes": horizon_minutes,
+            "include_keda": include_keda,
+            "include_hpa": include_hpa,
+        }
+        return call_prediction_scaling_tool(
+            tool_name="get_predictive_scaling_status",
+            request_payload=request_payload,
+            operation=lambda: prediction_scaling.get_predictive_scaling_status(
+                **request_payload,
+            ),
+        )
+
+    @mcp.tool(
+        name="create_prediction_snapshot",
+        description="Create a read-only prediction evidence snapshot.",
+        tags={"prediction-scaling", "prediction", "snapshot", "read"},
+        annotations={"readOnlyHint": True, "openWorldHint": False},
+    )
+    def create_prediction_snapshot_tool(prediction_run_id: str) -> dict[str, Any]:
+        request_payload = {"prediction_run_id": prediction_run_id}
+        return call_prediction_scaling_tool(
+            tool_name="create_prediction_snapshot",
+            request_payload=request_payload,
+            operation=lambda: prediction_scaling.create_prediction_snapshot(
+                **request_payload,
+            ),
+        )
+
+    @mcp.tool(
+        name="create_scaling_analysis_snapshot",
+        description="Create a read-only autoscaling analysis snapshot.",
+        tags={"prediction-scaling", "scaling", "snapshot", "read"},
+        annotations={"readOnlyHint": True, "openWorldHint": False},
+    )
+    def create_scaling_analysis_snapshot_tool(
+        namespace: str | None = None,
+        workload: str | None = None,
+    ) -> dict[str, Any]:
+        request_payload = {"namespace": namespace, "workload": workload}
+        return call_prediction_scaling_tool(
+            tool_name="create_scaling_analysis_snapshot",
+            request_payload=request_payload,
+            operation=lambda: prediction_scaling.create_scaling_analysis_snapshot(
+                **request_payload,
+            ),
+        )
+
+    def call_infraops_read_tool(
+        *,
+        tool_name: str,
+        request_payload: dict[str, Any],
+        operation: Callable[[], Any],
+    ) -> dict[str, Any]:
+        started_at = perf_counter()
+        tool = _resolve_registered_tool("infraops-mcp", tool_name)
+
+        try:
+            operation_result = operation()
+            result = (
+                operation_result.model_dump(mode="json")
+                if hasattr(operation_result, "model_dump")
+                else operation_result
+            )
+        except Exception as exc:
+            _record_tool_audit(
+                audit_service=audit_service,
+                tool=tool,
+                request_payload=request_payload,
+                response_payload=None,
+                call_status=McpToolCallStatus.FAILED,
+                started_at=started_at,
+                last_error=str(exc),
+            )
+            raise
+
+        _record_tool_audit(
+            audit_service=audit_service,
+            tool=tool,
+            request_payload=request_payload,
+            response_payload=result,
+            call_status=McpToolCallStatus.SUCCESS,
+            started_at=started_at,
+        )
+        return result
+
+    @mcp.tool(
+        name="get_topology_snapshot",
+        description="Read stored on-prem/AWS topology snapshots for SRE analysis.",
+        tags={"infraops", "topology", "knowledge", "read"},
+        annotations={"readOnlyHint": True, "openWorldHint": False},
+    )
+    def get_topology_snapshot_tool(
+        environment: str = "all",
+        detail: str = "summary",
+        masking_level: str = "secrets_only",
+    ) -> dict[str, Any]:
+        request_payload = {
+            "environment": environment,
+            "detail": detail,
+            "masking_level": masking_level,
+        }
+        return call_infraops_read_tool(
+            tool_name="get_topology_snapshot",
+            request_payload=request_payload,
+            operation=lambda: topology_knowledge.get_topology_snapshot(**request_payload),
+        )
+
+    @mcp.tool(
+        name="search_topology_knowledge",
+        description="Search stored topology knowledge snapshots by keyword.",
+        tags={"infraops", "topology", "knowledge", "search", "read"},
+        annotations={"readOnlyHint": True, "openWorldHint": False},
+    )
+    def search_topology_knowledge_tool(
+        query: str,
+        environment: str = "all",
+        limit: int = 5,
+        masking_level: str = "secrets_only",
+    ) -> dict[str, Any]:
+        request_payload = {
+            "query": query,
+            "environment": environment,
+            "limit": limit,
+            "masking_level": masking_level,
+        }
+        return call_infraops_read_tool(
+            tool_name="search_topology_knowledge",
+            request_payload=request_payload,
+            operation=lambda: topology_knowledge.search_topology_knowledge(
+                **request_payload,
+            ),
+        )
+
+    @mcp.tool(
+        name="get_service_routing_path",
+        description="Read known routing paths for a service from topology knowledge.",
+        tags={"infraops", "topology", "routing", "knowledge", "read"},
+        annotations={"readOnlyHint": True, "openWorldHint": False},
+    )
+    def get_service_routing_path_tool(
+        service: str,
+        environment: str = "all",
+        masking_level: str = "secrets_only",
+    ) -> dict[str, Any]:
+        request_payload = {
+            "service": service,
+            "environment": environment,
+            "masking_level": masking_level,
+        }
+        return call_infraops_read_tool(
+            tool_name="get_service_routing_path",
+            request_payload=request_payload,
+            operation=lambda: topology_knowledge.get_service_routing_path(
+                **request_payload,
+            ),
+        )
+
+    @mcp.tool(
+        name="get_service_dependency_map",
+        description="Read known service dependencies from topology knowledge.",
+        tags={"infraops", "topology", "dependencies", "knowledge", "read"},
+        annotations={"readOnlyHint": True, "openWorldHint": False},
+    )
+    def get_service_dependency_map_tool(
+        service: str,
+        environment: str = "all",
+        masking_level: str = "secrets_only",
+    ) -> dict[str, Any]:
+        request_payload = {
+            "service": service,
+            "environment": environment,
+            "masking_level": masking_level,
+        }
+        return call_infraops_read_tool(
+            tool_name="get_service_dependency_map",
+            request_payload=request_payload,
+            operation=lambda: topology_knowledge.get_service_dependency_map(
+                **request_payload,
+            ),
+        )
+
+    @mcp.tool(
+        name="query_prometheus",
+        description="Run an instant PromQL query through infraops-mcp.",
+        tags={"infraops", "prometheus", "read"},
+        annotations={"readOnlyHint": True, "openWorldHint": False},
+    )
+    def query_prometheus_tool(query: str, time: str | None = None) -> dict[str, Any]:
+        started_at = perf_counter()
+        tool = _resolve_registered_tool("infraops-mcp", "query_prometheus")
+        request_payload = {"query": query, "time": time}
+
+        try:
+            result = infraops.query_prometheus(query=query, time=time).model_dump(mode="json")
+        except Exception as exc:
+            _record_tool_audit(
+                audit_service=audit_service,
+                tool=tool,
+                request_payload=request_payload,
+                response_payload=None,
+                call_status=McpToolCallStatus.FAILED,
+                started_at=started_at,
+                last_error=str(exc),
+            )
+            raise
+
+        _record_tool_audit(
+            audit_service=audit_service,
+            tool=tool,
+            request_payload=request_payload,
+            response_payload=result,
+            call_status=McpToolCallStatus.SUCCESS,
+            started_at=started_at,
+        )
+        return result
+
+    @mcp.tool(
+        name="query_loki",
+        description="Run a Loki query_range log query through infraops-mcp.",
+        tags={"infraops", "loki", "logs", "read"},
+        annotations={"readOnlyHint": True, "openWorldHint": False},
+    )
+    def query_loki_tool(
+        query: str,
+        start: str | None = None,
+        end: str | None = None,
+        limit: int = 100,
+    ) -> dict[str, Any]:
+        started_at = perf_counter()
+        tool = _resolve_registered_tool("infraops-mcp", "query_loki")
+        request_payload = {"query": query, "start": start, "end": end, "limit": limit}
+
+        try:
+            result = infraops.query_loki(
+                query=query,
+                start=start,
+                end=end,
+                limit=limit,
+            ).model_dump(mode="json")
+        except Exception as exc:
+            _record_tool_audit(
+                audit_service=audit_service,
+                tool=tool,
+                request_payload=request_payload,
+                response_payload=None,
+                call_status=McpToolCallStatus.FAILED,
+                started_at=started_at,
+                last_error=str(exc),
+            )
+            raise
+
+        _record_tool_audit(
+            audit_service=audit_service,
+            tool=tool,
+            request_payload=request_payload,
+            response_payload=result,
+            call_status=McpToolCallStatus.SUCCESS,
+            started_at=started_at,
+        )
+        return result
+
+    @mcp.tool(
+        name="query_multi_cluster_prometheus",
+        description="Run an instant PromQL query against each configured Prometheus source.",
+        tags={"infraops", "prometheus", "multi-cluster", "read"},
+        annotations={"readOnlyHint": True, "openWorldHint": False},
+    )
+    def query_multi_cluster_prometheus_tool(
+        query: str,
+        time: str | None = None,
+    ) -> dict[str, Any]:
+        started_at = perf_counter()
+        tool = _resolve_registered_tool("infraops-mcp", "query_multi_cluster_prometheus")
+        request_payload = {"query": query, "time": time}
+
+        try:
+            result = infraops.query_multi_cluster_prometheus(
+                query=query,
+                time=time,
+            ).model_dump(mode="json")
+        except Exception as exc:
+            _record_tool_audit(
+                audit_service=audit_service,
+                tool=tool,
+                request_payload=request_payload,
+                response_payload=None,
+                call_status=McpToolCallStatus.FAILED,
+                started_at=started_at,
+                last_error=str(exc),
+            )
+            raise
+
+        _record_tool_audit(
+            audit_service=audit_service,
+            tool=tool,
+            request_payload=request_payload,
+            response_payload=result,
+            call_status=McpToolCallStatus.SUCCESS,
+            started_at=started_at,
+        )
+        return result
+
+    @mcp.tool(
+        name="query_multi_cluster_loki",
+        description="Run a Loki query_range log query against each configured Loki source.",
+        tags={"infraops", "loki", "logs", "multi-cluster", "read"},
+        annotations={"readOnlyHint": True, "openWorldHint": False},
+    )
+    def query_multi_cluster_loki_tool(
+        query: str,
+        start: str | None = None,
+        end: str | None = None,
+        limit: int = 100,
+    ) -> dict[str, Any]:
+        started_at = perf_counter()
+        tool = _resolve_registered_tool("infraops-mcp", "query_multi_cluster_loki")
+        request_payload = {"query": query, "start": start, "end": end, "limit": limit}
+
+        try:
+            result = infraops.query_multi_cluster_loki(
+                query=query,
+                start=start,
+                end=end,
+                limit=limit,
+            ).model_dump(mode="json")
+        except Exception as exc:
+            _record_tool_audit(
+                audit_service=audit_service,
+                tool=tool,
+                request_payload=request_payload,
+                response_payload=None,
+                call_status=McpToolCallStatus.FAILED,
+                started_at=started_at,
+                last_error=str(exc),
+            )
+            raise
+
+        _record_tool_audit(
+            audit_service=audit_service,
+            tool=tool,
+            request_payload=request_payload,
+            response_payload=result,
+            call_status=McpToolCallStatus.SUCCESS,
+            started_at=started_at,
+        )
+        return result
+
+    @mcp.tool(
+        name="search_traces",
+        description="Search Tempo traces by TraceQL or service/operation filters.",
+        tags={"infraops", "tempo", "tracing", "read"},
+        annotations={"readOnlyHint": True, "openWorldHint": False},
+    )
+    def search_traces_tool(
+        traceql: str | None = None,
+        service_name: str | None = None,
+        operation_name: str | None = None,
+        start: str | None = None,
+        end: str | None = None,
+        min_duration: str | None = None,
+        max_duration: str | None = None,
+        limit: int = 20,
+    ) -> dict[str, Any]:
+        request_payload = {
+            "traceql": traceql,
+            "service_name": service_name,
+            "operation_name": operation_name,
+            "start": start,
+            "end": end,
+            "min_duration": min_duration,
+            "max_duration": max_duration,
+            "limit": limit,
+        }
+        return call_infraops_read_tool(
+            tool_name="search_traces",
+            request_payload=request_payload,
+            operation=lambda: infraops.search_traces(**request_payload),
+        )
+
+    @mcp.tool(
+        name="get_trace_by_id",
+        description="Read a Tempo trace by trace id.",
+        tags={"infraops", "tempo", "tracing", "read"},
+        annotations={"readOnlyHint": True, "openWorldHint": False},
+    )
+    def get_trace_by_id_tool(trace_id: str) -> dict[str, Any]:
+        request_payload = {"trace_id": trace_id}
+        return call_infraops_read_tool(
+            tool_name="get_trace_by_id",
+            request_payload=request_payload,
+            operation=lambda: infraops.get_trace_by_id(**request_payload),
+        )
+
+    @mcp.tool(
+        name="get_service_trace_summary",
+        description="Read a summarized Tempo trace view for one service.",
+        tags={"infraops", "tempo", "tracing", "summary", "read"},
+        annotations={"readOnlyHint": True, "openWorldHint": False},
+    )
+    def get_service_trace_summary_tool(
+        service_name: str,
+        start: str | None = None,
+        end: str | None = None,
+        limit: int = 100,
+    ) -> dict[str, Any]:
+        request_payload = {
+            "service_name": service_name,
+            "start": start,
+            "end": end,
+            "limit": limit,
+        }
+        return call_infraops_read_tool(
+            tool_name="get_service_trace_summary",
+            request_payload=request_payload,
+            operation=lambda: infraops.get_service_trace_summary(**request_payload),
+        )
+
+    @mcp.tool(
+        name="get_trace_error_spans",
+        description="Read only error spans from a Tempo trace by trace id.",
+        tags={"infraops", "tempo", "tracing", "errors", "read"},
+        annotations={"readOnlyHint": True, "openWorldHint": False},
+    )
+    def get_trace_error_spans_tool(trace_id: str) -> dict[str, Any]:
+        request_payload = {"trace_id": trace_id}
+        return call_infraops_read_tool(
+            tool_name="get_trace_error_spans",
+            request_payload=request_payload,
+            operation=lambda: infraops.get_trace_error_spans(**request_payload),
+        )
+
+    @mcp.tool(
+        name="get_k8s_pods",
+        description="Read Kubernetes pods from an allowlisted namespace through infraops-mcp.",
+        tags={"infraops", "kubernetes", "read"},
+        annotations={"readOnlyHint": True, "openWorldHint": False},
+    )
+    def get_k8s_pods_tool(
+        namespace: str | None = None,
+        source: str | None = None,
+    ) -> dict[str, Any]:
+        started_at = perf_counter()
+        tool = _resolve_registered_tool("infraops-mcp", "get_k8s_pods")
+        request_payload = {"namespace": namespace, "source": source}
+
+        try:
+            result = infraops.get_k8s_pods(namespace=namespace, source=source).model_dump(
+                mode="json"
+            )
+        except Exception as exc:
+            _record_tool_audit(
+                audit_service=audit_service,
+                tool=tool,
+                request_payload=request_payload,
+                response_payload=None,
+                call_status=McpToolCallStatus.FAILED,
+                started_at=started_at,
+                last_error=str(exc),
+            )
+            raise
+
+        _record_tool_audit(
+            audit_service=audit_service,
+            tool=tool,
+            request_payload=request_payload,
+            response_payload=result,
+            call_status=McpToolCallStatus.SUCCESS,
+            started_at=started_at,
+        )
+        return result
+
+    @mcp.tool(
+        name="get_k8s_events",
+        description="Read Kubernetes events from an allowlisted namespace through infraops-mcp.",
+        tags={"infraops", "kubernetes", "read"},
+        annotations={"readOnlyHint": True, "openWorldHint": False},
+    )
+    def get_k8s_events_tool(
+        namespace: str | None = None,
+        source: str | None = None,
+    ) -> dict[str, Any]:
+        started_at = perf_counter()
+        tool = _resolve_registered_tool("infraops-mcp", "get_k8s_events")
+        request_payload = {"namespace": namespace, "source": source}
+
+        try:
+            result = infraops.get_k8s_events(namespace=namespace, source=source).model_dump(
+                mode="json"
+            )
+        except Exception as exc:
+            _record_tool_audit(
+                audit_service=audit_service,
+                tool=tool,
+                request_payload=request_payload,
+                response_payload=None,
+                call_status=McpToolCallStatus.FAILED,
+                started_at=started_at,
+                last_error=str(exc),
+            )
+            raise
+
+        _record_tool_audit(
+            audit_service=audit_service,
+            tool=tool,
+            request_payload=request_payload,
+            response_payload=result,
+            call_status=McpToolCallStatus.SUCCESS,
+            started_at=started_at,
+        )
+        return result
+
+    @mcp.tool(
+        name="get_k8s_deployments",
+        description="Read Kubernetes deployments from an allowlisted namespace.",
+        tags={"infraops", "kubernetes", "read"},
+        annotations={"readOnlyHint": True, "openWorldHint": False},
+    )
+    def get_k8s_deployments_tool(
+        namespace: str | None = None,
+        source: str | None = None,
+    ) -> dict[str, Any]:
+        started_at = perf_counter()
+        tool = _resolve_registered_tool("infraops-mcp", "get_k8s_deployments")
+        request_payload = {"namespace": namespace, "source": source}
+
+        try:
+            result = infraops.get_k8s_deployments(
+                namespace=namespace,
+                source=source,
+            ).model_dump(mode="json")
+        except Exception as exc:
+            _record_tool_audit(
+                audit_service=audit_service,
+                tool=tool,
+                request_payload=request_payload,
+                response_payload=None,
+                call_status=McpToolCallStatus.FAILED,
+                started_at=started_at,
+                last_error=str(exc),
+            )
+            raise
+
+        _record_tool_audit(
+            audit_service=audit_service,
+            tool=tool,
+            request_payload=request_payload,
+            response_payload=result,
+            call_status=McpToolCallStatus.SUCCESS,
+            started_at=started_at,
+        )
+        return result
+
+    @mcp.tool(
+        name="get_k8s_hpa",
+        description="Read Kubernetes HPA objects from an allowlisted namespace.",
+        tags={"infraops", "kubernetes", "read"},
+        annotations={"readOnlyHint": True, "openWorldHint": False},
+    )
+    def get_k8s_hpa_tool(
+        namespace: str | None = None,
+        source: str | None = None,
+    ) -> dict[str, Any]:
+        started_at = perf_counter()
+        tool = _resolve_registered_tool("infraops-mcp", "get_k8s_hpa")
+        request_payload = {"namespace": namespace, "source": source}
+
+        try:
+            result = infraops.get_k8s_hpa(namespace=namespace, source=source).model_dump(
+                mode="json"
+            )
+        except Exception as exc:
+            _record_tool_audit(
+                audit_service=audit_service,
+                tool=tool,
+                request_payload=request_payload,
+                response_payload=None,
+                call_status=McpToolCallStatus.FAILED,
+                started_at=started_at,
+                last_error=str(exc),
+            )
+            raise
+
+        _record_tool_audit(
+            audit_service=audit_service,
+            tool=tool,
+            request_payload=request_payload,
+            response_payload=result,
+            call_status=McpToolCallStatus.SUCCESS,
+            started_at=started_at,
+        )
+        return result
+
+    @mcp.tool(
+        name="get_k8s_service_endpoints",
+        description="Read Kubernetes service and endpoint readiness summary.",
+        tags={"infraops", "kubernetes", "service", "endpoints", "read"},
+        annotations={"readOnlyHint": True, "openWorldHint": False},
+    )
+    def get_k8s_service_endpoints_tool(
+        service_name: str,
+        namespace: str | None = None,
+        source: str | None = None,
+    ) -> dict[str, Any]:
+        request_payload = {
+            "service_name": service_name,
+            "namespace": namespace,
+            "source": source,
+        }
+        return call_infraops_read_tool(
+            tool_name="get_k8s_service_endpoints",
+            request_payload=request_payload,
+            operation=lambda: infraops.get_k8s_service_endpoints(**request_payload),
+        )
+
+    @mcp.tool(
+        name="get_k8s_ingress_backend_mapping",
+        description="Read Kubernetes ingress host/path to service backend mapping.",
+        tags={"infraops", "kubernetes", "ingress", "read"},
+        annotations={"readOnlyHint": True, "openWorldHint": False},
+    )
+    def get_k8s_ingress_backend_mapping_tool(
+        namespace: str | None = None,
+        source: str | None = None,
+        host: str | None = None,
+        path: str | None = None,
+        service_name: str | None = None,
+    ) -> dict[str, Any]:
+        request_payload = {
+            "namespace": namespace,
+            "source": source,
+            "host": host,
+            "path": path,
+            "service_name": service_name,
+        }
+        return call_infraops_read_tool(
+            tool_name="get_k8s_ingress_backend_mapping",
+            request_payload=request_payload,
+            operation=lambda: infraops.get_k8s_ingress_backend_mapping(**request_payload),
+        )
+
+    @mcp.tool(
+        name="get_pod_logs",
+        description="Read recent logs for a Kubernetes pod from an allowlisted namespace.",
+        tags={"infraops", "kubernetes", "logs", "read"},
+        annotations={"readOnlyHint": True, "openWorldHint": False},
+    )
+    def get_pod_logs_tool(
+        pod_name: str,
+        namespace: str | None = None,
+        container: str | None = None,
+        since_seconds: int | None = None,
+        tail_lines: int = 200,
+        source: str | None = None,
+    ) -> dict[str, Any]:
+        request_payload = {
+            "pod_name": pod_name,
+            "namespace": namespace,
+            "container": container,
+            "since_seconds": since_seconds,
+            "tail_lines": tail_lines,
+            "source": source,
+        }
+        return call_infraops_read_tool(
+            tool_name="get_pod_logs",
+            request_payload=request_payload,
+            operation=lambda: infraops.get_pod_logs(**request_payload),
+        )
+
+    @mcp.tool(
+        name="get_rollout_status",
+        description="Read computed rollout status for a Kubernetes deployment.",
+        tags={"infraops", "kubernetes", "deployment", "read"},
+        annotations={"readOnlyHint": True, "openWorldHint": False},
+    )
+    def get_rollout_status_tool(
+        deployment_name: str,
+        namespace: str | None = None,
+        source: str | None = None,
+    ) -> dict[str, Any]:
+        request_payload = {
+            "deployment_name": deployment_name,
+            "namespace": namespace,
+            "source": source,
+        }
+        return call_infraops_read_tool(
+            tool_name="get_rollout_status",
+            request_payload=request_payload,
+            operation=lambda: infraops.get_rollout_status(**request_payload),
+        )
+
+    @mcp.tool(
+        name="check_onprem_metallb_endpoint",
+        description="Check TCP reachability to the on-prem MetalLB ingress endpoint.",
+        tags={"infraops", "onprem", "metallb", "network", "read"},
+        annotations={"readOnlyHint": True, "openWorldHint": False},
+    )
+    def check_onprem_metallb_endpoint_tool(
+        address: str = "10.30.2.100",
+        port: int = 80,
+        timeout_seconds: float = 3.0,
+    ) -> dict[str, Any]:
+        request_payload = {
+            "address": address,
+            "port": port,
+            "timeout_seconds": timeout_seconds,
+        }
+        return call_infraops_read_tool(
+            tool_name="check_onprem_metallb_endpoint",
+            request_payload=request_payload,
+            operation=lambda: infraops.check_onprem_metallb_endpoint(**request_payload),
+        )
+
+    @mcp.tool(
+        name="check_onprem_ingress_route",
+        description="Check HTTP routing through the on-prem ingress endpoint with Host header.",
+        tags={"infraops", "onprem", "ingress", "http", "read"},
+        annotations={"readOnlyHint": True, "openWorldHint": False},
+    )
+    def check_onprem_ingress_route_tool(
+        endpoint: str = "http://10.30.2.100",
+        host_header: str | None = None,
+        path: str = "/actuator/health",
+        expected_status_min: int = 200,
+        expected_status_max: int = 399,
+        timeout_seconds: float = 5.0,
+    ) -> dict[str, Any]:
+        request_payload = {
+            "endpoint": endpoint,
+            "host_header": host_header,
+            "path": path,
+            "expected_status_min": expected_status_min,
+            "expected_status_max": expected_status_max,
+            "timeout_seconds": timeout_seconds,
+        }
+        return call_infraops_read_tool(
+            tool_name="check_onprem_ingress_route",
+            request_payload=request_payload,
+            operation=lambda: infraops.check_onprem_ingress_route(**request_payload),
+        )
+
+    @mcp.tool(
+        name="get_alertmanager_alerts",
+        description="Read Alertmanager alerts for incident triage.",
+        tags={"infraops", "alertmanager", "alerts", "read"},
+        annotations={"readOnlyHint": True, "openWorldHint": False},
+    )
+    def get_alertmanager_alerts_tool(
+        active_only: bool = True,
+        receiver: str | None = None,
+        alertname: str | None = None,
+        severity: str | None = None,
+        limit: int = 100,
+    ) -> dict[str, Any]:
+        request_payload = {
+            "active_only": active_only,
+            "receiver": receiver,
+            "alertname": alertname,
+            "severity": severity,
+            "limit": limit,
+        }
+        return call_infraops_read_tool(
+            tool_name="get_alertmanager_alerts",
+            request_payload=request_payload,
+            operation=lambda: infraops.get_alertmanager_alerts(**request_payload),
+        )
+
+    @mcp.tool(
+        name="get_sqs_queue_attributes",
+        description="Read AWS SQS queue attributes through the configured ops read proxy.",
+        tags={"infraops", "aws", "sqs", "read"},
+        annotations={"readOnlyHint": True, "openWorldHint": False},
+    )
+    def get_sqs_queue_attributes_tool(
+        queue_name: str | None = None,
+        queue_url: str | None = None,
+        region: str | None = None,
+    ) -> dict[str, Any]:
+        request_payload = {
+            "queue_name": queue_name,
+            "queue_url": queue_url,
+            "region": region,
+        }
+        return call_infraops_read_tool(
+            tool_name="get_sqs_queue_attributes",
+            request_payload=request_payload,
+            operation=lambda: infraops.get_sqs_queue_attributes(**request_payload),
+        )
+
+    @mcp.tool(
+        name="get_sqs_dlq_attributes",
+        description="Read AWS SQS DLQ attributes through the configured ops read proxy.",
+        tags={"infraops", "aws", "sqs", "dlq", "read"},
+        annotations={"readOnlyHint": True, "openWorldHint": False},
+    )
+    def get_sqs_dlq_attributes_tool(
+        queue_name: str | None = None,
+        queue_url: str | None = None,
+        region: str | None = None,
+    ) -> dict[str, Any]:
+        request_payload = {
+            "queue_name": queue_name,
+            "queue_url": queue_url,
+            "region": region,
+        }
+        return call_infraops_read_tool(
+            tool_name="get_sqs_dlq_attributes",
+            request_payload=request_payload,
+            operation=lambda: infraops.get_sqs_dlq_attributes(**request_payload),
+        )
+
+    @mcp.tool(
+        name="get_alb_target_health",
+        description="Read AWS ALB target health through the configured ops read proxy.",
+        tags={"infraops", "aws", "alb", "read"},
+        annotations={"readOnlyHint": True, "openWorldHint": False},
+    )
+    def get_alb_target_health_tool(
+        target_group_arn: str | None = None,
+        target_group_name: str | None = None,
+        load_balancer_name: str | None = None,
+        region: str | None = None,
+    ) -> dict[str, Any]:
+        request_payload = {
+            "target_group_arn": target_group_arn,
+            "target_group_name": target_group_name,
+            "load_balancer_name": load_balancer_name,
+            "region": region,
+        }
+        return call_infraops_read_tool(
+            tool_name="get_alb_target_health",
+            request_payload=request_payload,
+            operation=lambda: infraops.get_alb_target_health(**request_payload),
+        )
+
+    @mcp.tool(
+        name="get_cloudfront_origin_mapping",
+        description="Read CloudFront origin mapping through the configured ops read proxy.",
+        tags={"infraops", "aws", "cloudfront", "read"},
+        annotations={"readOnlyHint": True, "openWorldHint": False},
+    )
+    def get_cloudfront_origin_mapping_tool(
+        distribution_id: str | None = None,
+        domain_name: str | None = None,
+    ) -> dict[str, Any]:
+        request_payload = {
+            "distribution_id": distribution_id,
+            "domain_name": domain_name,
+        }
+        return call_infraops_read_tool(
+            tool_name="get_cloudfront_origin_mapping",
+            request_payload=request_payload,
+            operation=lambda: infraops.get_cloudfront_origin_mapping(**request_payload),
+        )
+
+    @mcp.tool(
+        name="get_cloudfront_distribution_status",
+        description="Read CloudFront distribution status through the configured ops read proxy.",
+        tags={"infraops", "aws", "cloudfront", "read"},
+        annotations={"readOnlyHint": True, "openWorldHint": False},
+    )
+    def get_cloudfront_distribution_status_tool(
+        distribution_id: str | None = None,
+    ) -> dict[str, Any]:
+        request_payload = {"distribution_id": distribution_id}
+        return call_infraops_read_tool(
+            tool_name="get_cloudfront_distribution_status",
+            request_payload=request_payload,
+            operation=lambda: infraops.get_cloudfront_distribution_status(
+                **request_payload,
+            ),
+        )
+
+    @mcp.tool(
+        name="get_aws_vpn_tunnel_status",
+        description=(
+            "Read AWS Site-to-Site VPN tunnel state through CloudWatch/EC2 "
+            "or the configured ops read proxy."
+        ),
+        tags={"infraops", "aws", "vpn", "cloudwatch", "read"},
+        annotations={"readOnlyHint": True, "openWorldHint": False},
+    )
+    def get_aws_vpn_tunnel_status_tool(
+        vpn_id: str | None = None,
+        region: str | None = None,
+        tunnel_ip_address: str | None = None,
+    ) -> dict[str, Any]:
+        request_payload = {
+            "vpn_id": vpn_id,
+            "region": region,
+            "tunnel_ip_address": tunnel_ip_address,
+        }
+        return call_infraops_read_tool(
+            tool_name="get_aws_vpn_tunnel_status",
+            request_payload=request_payload,
+            operation=lambda: infraops.get_aws_vpn_tunnel_status(**request_payload),
+        )
+
+    @mcp.tool(
+        name="get_argocd_application_status",
+        description="Read ArgoCD application status through the configured read API.",
+        tags={"infraops", "argocd", "gitops", "read"},
+        annotations={"readOnlyHint": True, "openWorldHint": False},
+    )
+    def get_argocd_application_status_tool(
+        application_name: str,
+        project: str | None = None,
+    ) -> dict[str, Any]:
+        request_payload = {"application_name": application_name, "project": project}
+        return call_infraops_read_tool(
+            tool_name="get_argocd_application_status",
+            request_payload=request_payload,
+            operation=lambda: infraops.get_argocd_application_status(**request_payload),
+        )
+
+    @mcp.tool(
+        name="get_current_image_tags",
+        description="Read current container image tags from Kubernetes deployments.",
+        tags={"infraops", "kubernetes", "deployment", "image", "read"},
+        annotations={"readOnlyHint": True, "openWorldHint": False},
+    )
+    def get_current_image_tags_tool(
+        namespace: str | None = None,
+        deployment_name: str | None = None,
+        source: str | None = None,
+    ) -> dict[str, Any]:
+        request_payload = {
+            "namespace": namespace,
+            "deployment_name": deployment_name,
+            "source": source,
+        }
+        return call_infraops_read_tool(
+            tool_name="get_current_image_tags",
+            request_payload=request_payload,
+            operation=lambda: infraops.get_current_image_tags(**request_payload),
+        )
+
+    @mcp.tool(
+        name="get_recent_deployments",
+        description="Read recently created Kubernetes deployments from an allowlisted namespace.",
+        tags={"infraops", "kubernetes", "deployment", "read"},
+        annotations={"readOnlyHint": True, "openWorldHint": False},
+    )
+    def get_recent_deployments_tool(
+        namespace: str | None = None,
+        source: str | None = None,
+        limit: int = 20,
+    ) -> dict[str, Any]:
+        request_payload = {"namespace": namespace, "source": source, "limit": limit}
+        return call_infraops_read_tool(
+            tool_name="get_recent_deployments",
+            request_payload=request_payload,
+            operation=lambda: infraops.get_recent_deployments(**request_payload),
+        )
+
+    @mcp.tool(
+        name="get_kafka_consumer_lag",
+        description="Read Kafka consumer group lag through infraops-mcp.",
+        tags={"infraops", "kafka", "read"},
+        annotations={"readOnlyHint": True, "openWorldHint": False},
+    )
+    def get_kafka_consumer_lag_tool(
+        consumer_group: str,
+        topic: str | None = None,
+    ) -> dict[str, Any]:
+        started_at = perf_counter()
+        tool = _resolve_registered_tool("infraops-mcp", "get_kafka_consumer_lag")
+        request_payload = {"consumer_group": consumer_group, "topic": topic}
+
+        try:
+            result = infraops.get_kafka_consumer_lag(
+                consumer_group=consumer_group,
+                topic=topic,
+            ).model_dump(mode="json")
+        except Exception as exc:
+            _record_tool_audit(
+                audit_service=audit_service,
+                tool=tool,
+                request_payload=request_payload,
+                response_payload=None,
+                call_status=McpToolCallStatus.FAILED,
+                started_at=started_at,
+                last_error=str(exc),
+            )
+            raise
+
+        _record_tool_audit(
+            audit_service=audit_service,
+            tool=tool,
+            request_payload=request_payload,
+            response_payload=result,
+            call_status=McpToolCallStatus.SUCCESS,
+            started_at=started_at,
+        )
+        return result
+
+    @mcp.tool(
+        name="get_batch_run_status",
+        description="Read batch run status through infraops-mcp.",
+        tags={"infraops", "batch", "read"},
+        annotations={"readOnlyHint": True, "openWorldHint": False},
+    )
+    def get_batch_run_status_tool(job_name: str | None = None) -> dict[str, Any]:
+        started_at = perf_counter()
+        tool = _resolve_registered_tool("infraops-mcp", "get_batch_run_status")
+        request_payload = {"job_name": job_name}
+
+        try:
+            result = infraops.get_batch_run_status(job_name=job_name).model_dump(mode="json")
+        except Exception as exc:
+            _record_tool_audit(
+                audit_service=audit_service,
+                tool=tool,
+                request_payload=request_payload,
+                response_payload=None,
+                call_status=McpToolCallStatus.FAILED,
+                started_at=started_at,
+                last_error=str(exc),
+            )
+            raise
+
+        _record_tool_audit(
+            audit_service=audit_service,
+            tool=tool,
+            request_payload=request_payload,
+            response_payload=result,
+            call_status=McpToolCallStatus.SUCCESS,
+            started_at=started_at,
+        )
+        return result
+
+    @mcp.tool(
+        name="scale_deployment",
+        description="Preview a Kubernetes deployment scale request without executing it.",
+        tags={"infraops", "kubernetes", "ops-write", "preview"},
+        annotations={"readOnlyHint": True, "openWorldHint": False},
+    )
+    def scale_deployment_tool(
+        deployment_name: str,
+        replicas: int,
+        namespace: str | None = None,
+    ) -> dict[str, Any]:
+        started_at = perf_counter()
+        tool = _resolve_registered_tool("infraops-mcp", "scale_deployment")
+        request_payload = {
+            "deployment_name": deployment_name,
+            "replicas": replicas,
+            "namespace": namespace,
+        }
+
+        try:
+            preview = infraops.preview_scale_deployment(
+                deployment_name=deployment_name,
+                replicas=replicas,
+                namespace=namespace,
+            ).model_dump(mode="json")
+            response = _policy_preview_response(tool, preview)
+        except Exception as exc:
+            _record_tool_audit(
+                audit_service=audit_service,
+                tool=tool,
+                request_payload=request_payload,
+                response_payload=None,
+                call_status=McpToolCallStatus.FAILED,
+                started_at=started_at,
+                last_error=str(exc),
+            )
+            raise
+
+        _record_tool_audit(
+            audit_service=audit_service,
+            tool=tool,
+            request_payload=request_payload,
+            response_payload=response,
+            call_status=McpToolCallStatus.APPROVAL_REQUIRED,
+            started_at=started_at,
+        )
+        return response
+
+    @mcp.tool(
+        name="restart_pod",
+        description="Preview a Kubernetes pod restart request without executing it.",
+        tags={"infraops", "kubernetes", "ops-write", "preview"},
+        annotations={"readOnlyHint": True, "openWorldHint": False},
+    )
+    def restart_pod_tool(
+        pod_name: str,
+        namespace: str | None = None,
+    ) -> dict[str, Any]:
+        started_at = perf_counter()
+        tool = _resolve_registered_tool("infraops-mcp", "restart_pod")
+        request_payload = {"pod_name": pod_name, "namespace": namespace}
+
+        try:
+            preview = infraops.preview_restart_pod(
+                pod_name=pod_name,
+                namespace=namespace,
+            ).model_dump(mode="json")
+            response = _policy_preview_response(tool, preview)
+        except Exception as exc:
+            _record_tool_audit(
+                audit_service=audit_service,
+                tool=tool,
+                request_payload=request_payload,
+                response_payload=None,
+                call_status=McpToolCallStatus.FAILED,
+                started_at=started_at,
+                last_error=str(exc),
+            )
+            raise
+
+        _record_tool_audit(
+            audit_service=audit_service,
+            tool=tool,
+            request_payload=request_payload,
+            response_payload=response,
+            call_status=McpToolCallStatus.APPROVAL_REQUIRED,
+            started_at=started_at,
+        )
+        return response
+
+    @mcp.tool(
+        name="delete_pod",
+        description="Return the blocked policy preview for a Kubernetes pod delete request.",
+        tags={"infraops", "kubernetes", "destructive", "blocked"},
+        annotations={"readOnlyHint": True, "openWorldHint": False},
+    )
+    def delete_pod_tool(
+        pod_name: str,
+        namespace: str | None = None,
+    ) -> dict[str, Any]:
+        started_at = perf_counter()
+        tool = _resolve_registered_tool("infraops-mcp", "delete_pod")
+        request_payload = {"pod_name": pod_name, "namespace": namespace}
+
+        try:
+            preview = infraops.preview_delete_pod(
+                pod_name=pod_name,
+                namespace=namespace,
+            ).model_dump(mode="json")
+            response = _policy_preview_response(tool, preview)
+        except Exception as exc:
+            _record_tool_audit(
+                audit_service=audit_service,
+                tool=tool,
+                request_payload=request_payload,
+                response_payload=None,
+                call_status=McpToolCallStatus.FAILED,
+                started_at=started_at,
+                last_error=str(exc),
+            )
+            raise
+
+        _record_tool_audit(
+            audit_service=audit_service,
+            tool=tool,
+            request_payload=request_payload,
+            response_payload=response,
+            call_status=McpToolCallStatus.BLOCKED,
+            started_at=started_at,
+        )
+        return response
+
+    @mcp.tool(
+        name="run_kubectl_exec",
+        description="Return the blocked policy preview for a Kubernetes exec request.",
+        tags={"infraops", "kubernetes", "destructive", "blocked"},
+        annotations={"readOnlyHint": True, "openWorldHint": False},
+    )
+    def run_kubectl_exec_tool(
+        pod_name: str,
+        command: list[str],
+        namespace: str | None = None,
+    ) -> dict[str, Any]:
+        started_at = perf_counter()
+        tool = _resolve_registered_tool("infraops-mcp", "run_kubectl_exec")
+        request_payload = {
+            "pod_name": pod_name,
+            "command": command,
+            "namespace": namespace,
+        }
+
+        try:
+            preview = infraops.preview_kubectl_exec(
+                pod_name=pod_name,
+                command=command,
+                namespace=namespace,
+            ).model_dump(mode="json")
+            response = _policy_preview_response(tool, preview)
+        except Exception as exc:
+            _record_tool_audit(
+                audit_service=audit_service,
+                tool=tool,
+                request_payload=request_payload,
+                response_payload=None,
+                call_status=McpToolCallStatus.FAILED,
+                started_at=started_at,
+                last_error=str(exc),
+            )
+            raise
+
+        _record_tool_audit(
+            audit_service=audit_service,
+            tool=tool,
+            request_payload=request_payload,
+            response_payload=response,
+            call_status=McpToolCallStatus.BLOCKED,
+            started_at=started_at,
+        )
+        return response
+
+    @mcp.tool(
+        name="query_elasticsearch",
+        description="Run an allowlisted Elasticsearch search query through infraops-mcp.",
+        tags={"infraops", "elasticsearch", "read"},
+        annotations={"readOnlyHint": True, "openWorldHint": False},
+    )
+    def query_elasticsearch_tool(index_pattern: str, query: dict[str, Any]) -> dict[str, Any]:
+        started_at = perf_counter()
+        tool = _resolve_registered_tool("infraops-mcp", "query_elasticsearch")
+        request_payload = {"index_pattern": index_pattern, "query": query}
+
+        try:
+            result = infraops.query_elasticsearch(
+                index_pattern=index_pattern,
+                query=query,
+            ).model_dump(mode="json")
+        except Exception as exc:
+            _record_tool_audit(
+                audit_service=audit_service,
+                tool=tool,
+                request_payload=request_payload,
+                response_payload=None,
+                call_status=McpToolCallStatus.FAILED,
+                started_at=started_at,
+                last_error=str(exc),
+            )
+            raise
+
+        _record_tool_audit(
+            audit_service=audit_service,
+            tool=tool,
+            request_payload=request_payload,
+            response_payload=result,
+            call_status=McpToolCallStatus.SUCCESS,
+            started_at=started_at,
+        )
+        return result
+
+    @mcp.tool(
+        name="search_elasticsearch_logs",
+        description="Search allowlisted Elasticsearch log indices through infraops-mcp.",
+        tags={"infraops", "elasticsearch", "logs", "read"},
+        annotations={"readOnlyHint": True, "openWorldHint": False},
+    )
+    def search_elasticsearch_logs_tool(
+        query: str,
+        index_pattern: str | None = None,
+        size: int = 10,
+    ) -> dict[str, Any]:
+        started_at = perf_counter()
+        tool = _resolve_registered_tool("infraops-mcp", "search_elasticsearch_logs")
+        request_payload = {"query": query, "index_pattern": index_pattern, "size": size}
+
+        try:
+            result = infraops.search_elasticsearch_logs(
+                query=query,
+                index_pattern=index_pattern,
+                size=size,
+            ).model_dump(mode="json")
+        except Exception as exc:
+            _record_tool_audit(
+                audit_service=audit_service,
+                tool=tool,
+                request_payload=request_payload,
+                response_payload=None,
+                call_status=McpToolCallStatus.FAILED,
+                started_at=started_at,
+                last_error=str(exc),
+            )
+            raise
+
+        _record_tool_audit(
+            audit_service=audit_service,
+            tool=tool,
+            request_payload=request_payload,
+            response_payload=result,
+            call_status=McpToolCallStatus.SUCCESS,
+            started_at=started_at,
+        )
+        return result
+
+    @mcp.tool(
+        name="get_elasticsearch_cluster_health",
+        description="Read Elasticsearch cluster health through infraops-mcp.",
+        tags={"infraops", "elasticsearch", "read"},
+        annotations={"readOnlyHint": True, "openWorldHint": False},
+    )
+    def get_elasticsearch_cluster_health_tool() -> dict[str, Any]:
+        started_at = perf_counter()
+        tool = _resolve_registered_tool("infraops-mcp", "get_elasticsearch_cluster_health")
+
+        try:
+            result = infraops.get_elasticsearch_cluster_health().model_dump(mode="json")
+        except Exception as exc:
+            _record_tool_audit(
+                audit_service=audit_service,
+                tool=tool,
+                request_payload={},
+                response_payload=None,
+                call_status=McpToolCallStatus.FAILED,
+                started_at=started_at,
+                last_error=str(exc),
+            )
+            raise
+
+        _record_tool_audit(
+            audit_service=audit_service,
+            tool=tool,
+            request_payload={},
+            response_payload=result,
+            call_status=McpToolCallStatus.SUCCESS,
+            started_at=started_at,
+        )
+        return result
+
+    @mcp.tool(
+        name="get_elasticsearch_index_health",
+        description="Read allowlisted Elasticsearch index health through infraops-mcp.",
+        tags={"infraops", "elasticsearch", "read"},
+        annotations={"readOnlyHint": True, "openWorldHint": False},
+    )
+    def get_elasticsearch_index_health_tool(index_pattern: str | None = None) -> dict[str, Any]:
+        started_at = perf_counter()
+        tool = _resolve_registered_tool("infraops-mcp", "get_elasticsearch_index_health")
+        request_payload = {"index_pattern": index_pattern}
+
+        try:
+            result = infraops.get_elasticsearch_index_health(
+                index_pattern=index_pattern,
+            ).model_dump(mode="json")
+        except Exception as exc:
+            _record_tool_audit(
+                audit_service=audit_service,
+                tool=tool,
+                request_payload=request_payload,
+                response_payload=None,
+                call_status=McpToolCallStatus.FAILED,
+                started_at=started_at,
+                last_error=str(exc),
+            )
+            raise
+
+        _record_tool_audit(
+            audit_service=audit_service,
+            tool=tool,
+            request_payload=request_payload,
+            response_payload=result,
+            call_status=McpToolCallStatus.SUCCESS,
+            started_at=started_at,
+        )
+        return result
+
+    @mcp.tool(
+        name="get_kibana_saved_objects",
+        description="List Kibana saved objects through infraops-mcp.",
+        tags={"infraops", "kibana", "read"},
+        annotations={"readOnlyHint": True, "openWorldHint": False},
+    )
+    def get_kibana_saved_objects_tool(
+        saved_object_type: str = "dashboard",
+        search: str | None = None,
+        per_page: int = 20,
+    ) -> dict[str, Any]:
+        started_at = perf_counter()
+        tool = _resolve_registered_tool("infraops-mcp", "get_kibana_saved_objects")
+        request_payload = {
+            "saved_object_type": saved_object_type,
+            "search": search,
+            "per_page": per_page,
+        }
+
+        try:
+            result = infraops.get_kibana_saved_objects(
+                saved_object_type=saved_object_type,
+                search=search,
+                per_page=per_page,
+            ).model_dump(mode="json")
+        except Exception as exc:
+            _record_tool_audit(
+                audit_service=audit_service,
+                tool=tool,
+                request_payload=request_payload,
+                response_payload=None,
+                call_status=McpToolCallStatus.FAILED,
+                started_at=started_at,
+                last_error=str(exc),
+            )
+            raise
+
+        _record_tool_audit(
+            audit_service=audit_service,
+            tool=tool,
+            request_payload=request_payload,
+            response_payload=result,
+            call_status=McpToolCallStatus.SUCCESS,
+            started_at=started_at,
+        )
+        return result
+
+    @mcp.tool(
+        name="create_elk_snapshot",
+        description="Create a read-only ELK health snapshot through infraops-mcp.",
+        tags={"infraops", "elasticsearch", "kibana", "snapshot", "read"},
+        annotations={"readOnlyHint": True, "openWorldHint": False},
+    )
+    def create_elk_snapshot_tool(index_pattern: str | None = None) -> dict[str, Any]:
+        started_at = perf_counter()
+        tool = _resolve_registered_tool("infraops-mcp", "create_elk_snapshot")
+        request_payload = {"index_pattern": index_pattern}
+
+        try:
+            result = infraops.create_elk_snapshot(
+                index_pattern=index_pattern,
+            ).model_dump(mode="json")
+        except Exception as exc:
+            _record_tool_audit(
+                audit_service=audit_service,
+                tool=tool,
+                request_payload=request_payload,
+                response_payload=None,
+                call_status=McpToolCallStatus.FAILED,
+                started_at=started_at,
+                last_error=str(exc),
+            )
+            raise
+
+        _record_tool_audit(
+            audit_service=audit_service,
+            tool=tool,
+            request_payload=request_payload,
+            response_payload=result,
+            call_status=McpToolCallStatus.SUCCESS,
+            started_at=started_at,
+        )
+        return result
+
+    @mcp.tool(
+        name="create_rca_snapshot",
+        description="Create a read-only RCA evidence snapshot from infraops sources.",
+        tags={"infraops", "rca", "snapshot", "read"},
+        annotations={"readOnlyHint": True, "openWorldHint": False},
+    )
+    def create_rca_snapshot_tool(
+        incident_key: str | None = None,
+        namespace: str | None = None,
+        source: str | None = None,
+        index_pattern: str | None = None,
+        prometheus_query: str = "up",
+        loki_query: str = '{job=~".+"}',
+        loki_limit: int = 100,
+        kafka_consumer_group: str | None = None,
+        kafka_topic: str | None = None,
+        batch_job_name: str | None = None,
+        context_bundle: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        started_at = perf_counter()
+        tool = _resolve_registered_tool("infraops-mcp", "create_rca_snapshot")
+        request_payload = {
+            "incident_key": incident_key,
+            "namespace": namespace,
+            "index_pattern": index_pattern,
+            "prometheus_query": prometheus_query,
+            "loki_query": loki_query,
+            "loki_limit": loki_limit,
+            "kafka_consumer_group": kafka_consumer_group,
+            "kafka_topic": kafka_topic,
+            "batch_job_name": batch_job_name,
+        }
+        if source is not None:
+            request_payload["source"] = source
+        if context_bundle is not None:
+            request_payload["context_bundle"] = context_bundle
+
+        try:
+            result = infraops.create_rca_snapshot(**request_payload).model_dump(mode="json")
+        except Exception as exc:
+            _record_tool_audit(
+                audit_service=audit_service,
+                tool=tool,
+                request_payload=request_payload,
+                response_payload=None,
+                call_status=McpToolCallStatus.FAILED,
+                started_at=started_at,
+                last_error=str(exc),
+            )
+            raise
+
+        _record_tool_audit(
+            audit_service=audit_service,
+            tool=tool,
+            request_payload=request_payload,
+            response_payload=result,
+            call_status=McpToolCallStatus.SUCCESS,
+            started_at=started_at,
+        )
+        return result
+
+    @mcp.tool(
+        name="aggregate_daily_ops_metrics",
+        description="Aggregate a read-only daily operations metrics summary.",
+        tags={"infraops", "metrics", "report", "read"},
+        annotations={"readOnlyHint": True, "openWorldHint": False},
+    )
+    def aggregate_daily_ops_metrics_tool(
+        report_date: str | None = None,
+        namespace: str | None = None,
+        index_pattern: str | None = None,
+        prometheus_query: str = "up",
+        loki_query: str = '{job=~".+"}',
+        loki_limit: int = 100,
+        kafka_consumer_group: str | None = None,
+        kafka_topic: str | None = None,
+        batch_job_name: str | None = None,
+    ) -> dict[str, Any]:
+        started_at = perf_counter()
+        tool = _resolve_registered_tool("infraops-mcp", "aggregate_daily_ops_metrics")
+        request_payload = {
+            "report_date": report_date,
+            "namespace": namespace,
+            "index_pattern": index_pattern,
+            "prometheus_query": prometheus_query,
+            "loki_query": loki_query,
+            "loki_limit": loki_limit,
+            "kafka_consumer_group": kafka_consumer_group,
+            "kafka_topic": kafka_topic,
+            "batch_job_name": batch_job_name,
+        }
+
+        try:
+            result = infraops.aggregate_daily_ops_metrics(**request_payload).model_dump(
+                mode="json"
+            )
+        except Exception as exc:
+            _record_tool_audit(
+                audit_service=audit_service,
+                tool=tool,
+                request_payload=request_payload,
+                response_payload=None,
+                call_status=McpToolCallStatus.FAILED,
+                started_at=started_at,
+                last_error=str(exc),
+            )
+            raise
+
+        _record_tool_audit(
+            audit_service=audit_service,
+            tool=tool,
+            request_payload=request_payload,
+            response_payload=result,
+            call_status=McpToolCallStatus.SUCCESS,
+            started_at=started_at,
+        )
+        return result
+
+    @mcp.tool(
+        name="search_incidents",
+        description="Search incident records through the infraops read-only interface.",
+        tags={"infraops", "incidents", "read"},
+        annotations={"readOnlyHint": True, "openWorldHint": False},
+    )
+    def search_incidents_tool(query: str | None = None, limit: int = 20) -> dict[str, Any]:
+        started_at = perf_counter()
+        tool = _resolve_registered_tool("infraops-mcp", "search_incidents")
+        request_payload = {"query": query, "limit": limit}
+
+        try:
+            result = infraops.search_incidents(
+                query=query,
+                limit=limit,
+            ).model_dump(mode="json")
+        except Exception as exc:
+            _record_tool_audit(
+                audit_service=audit_service,
+                tool=tool,
+                request_payload=request_payload,
+                response_payload=None,
+                call_status=McpToolCallStatus.FAILED,
+                started_at=started_at,
+                last_error=str(exc),
+            )
+            raise
+
+        _record_tool_audit(
+            audit_service=audit_service,
+            tool=tool,
+            request_payload=request_payload,
+            response_payload=result,
+            call_status=McpToolCallStatus.SUCCESS,
+            started_at=started_at,
+        )
+        return result
+
+    @mcp.tool(
+        name="search_rca_history",
+        description="Search RCA history records through the infraops read-only interface.",
+        tags={"infraops", "rca", "history", "read"},
+        annotations={"readOnlyHint": True, "openWorldHint": False},
+    )
+    def search_rca_history_tool(query: str | None = None, limit: int = 20) -> dict[str, Any]:
+        started_at = perf_counter()
+        tool = _resolve_registered_tool("infraops-mcp", "search_rca_history")
+        request_payload = {"query": query, "limit": limit}
+
+        try:
+            result = infraops.search_rca_history(
+                query=query,
+                limit=limit,
+            ).model_dump(mode="json")
+        except Exception as exc:
+            _record_tool_audit(
+                audit_service=audit_service,
+                tool=tool,
+                request_payload=request_payload,
+                response_payload=None,
+                call_status=McpToolCallStatus.FAILED,
+                started_at=started_at,
+                last_error=str(exc),
+            )
+            raise
+
+        _record_tool_audit(
+            audit_service=audit_service,
+            tool=tool,
+            request_payload=request_payload,
+            response_payload=result,
+            call_status=McpToolCallStatus.SUCCESS,
+            started_at=started_at,
+        )
+        return result
+
+    if not settings.infraops_elk_enabled:
+        _remove_tools_if_registered(mcp, ELK_TOOL_NAMES)
+
+    if not settings.infraops_kafka_enabled:
+        _remove_tools_if_registered(mcp, KAFKA_TOOL_NAMES)
+
+    if not settings.infraops_batch_enabled:
+        _remove_tools_if_registered(mcp, BATCH_TOOL_NAMES)
+
+    return mcp
+
+
+def _remove_tools_if_registered(mcp: FastMCP, tool_names: Sequence[str]) -> None:
+    for tool_name in tool_names:
+        try:
+            mcp.remove_tool(tool_name)
+        except NotFoundError:
+            logger.debug("MCP tool %s was already absent.", tool_name)

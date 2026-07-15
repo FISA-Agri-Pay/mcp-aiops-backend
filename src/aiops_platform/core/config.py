@@ -1,0 +1,350 @@
+from functools import lru_cache
+from uuid import UUID
+
+from pydantic import Field
+from pydantic_settings import BaseSettings, SettingsConfigDict
+
+
+class Settings(BaseSettings):
+    model_config = SettingsConfigDict(
+        env_file=".env",
+        env_file_encoding="utf-8",
+        extra="ignore",
+    )
+
+    app_env: str = Field(default="local", alias="APP_ENV")
+    app_name: str = Field(default="aiops-platform", alias="APP_NAME")
+    app_version: str = Field(default="0.1.0", alias="APP_VERSION")
+    app_timezone: str = Field(default="Asia/Seoul", alias="APP_TIMEZONE")
+    cors_allow_origins: str = Field(default="", alias="CORS_ALLOW_ORIGINS")
+
+    database_url: str = Field(
+        default="postgresql+psycopg://kkpp:kkpp@localhost:5432/kkpp",
+        alias="DATABASE_URL",
+    )
+    farmer_bnpl_required_documents: str = Field(
+        default=(
+            "identity_verification,farmer_registration,farmland_document,"
+            "crop_plan,insurance_certificate"
+        ),
+        alias="FARMER_BNPL_REQUIRED_DOCUMENTS",
+    )
+    farm_advisory_default_bnpl_budget: int = Field(
+        default=3_000_000,
+        ge=0,
+        alias="FARM_ADVISORY_DEFAULT_BNPL_BUDGET",
+    )
+    farm_advisory_max_area_hectare: float = Field(
+        default=1000.0,
+        gt=0,
+        alias="FARM_ADVISORY_MAX_AREA_HECTARE",
+    )
+    farmer_bnpl_max_search_limit: int = Field(
+        default=50,
+        ge=1,
+        alias="FARMER_BNPL_MAX_SEARCH_LIMIT",
+    )
+    farmer_bnpl_default_checkout_product_id: UUID = Field(
+        default="10000000-0000-0000-0000-000000000002",
+        alias="FARMER_BNPL_DEFAULT_CHECKOUT_PRODUCT_ID",
+    )
+    farmer_bnpl_default_checkout_quantity: int = Field(
+        default=2,
+        ge=1,
+        alias="FARMER_BNPL_DEFAULT_CHECKOUT_QUANTITY",
+    )
+    admin_riskops_max_search_limit: int = Field(
+        default=100,
+        ge=1,
+        alias="ADMIN_RISKOPS_MAX_SEARCH_LIMIT",
+    )
+    prediction_scaling_max_search_limit: int = Field(
+        default=100,
+        ge=1,
+        alias="PREDICTION_SCALING_MAX_SEARCH_LIMIT",
+    )
+    prediction_scaling_metrics_exporter_url: str = Field(
+        default="",
+        alias="PREDICTION_SCALING_METRICS_EXPORTER_URL",
+    )
+    prediction_scaling_metrics_timeout_seconds: float = Field(
+        default=5.0,
+        gt=0,
+        alias="PREDICTION_SCALING_METRICS_TIMEOUT_SECONDS",
+    )
+    prediction_scaling_kubernetes_source: str = Field(
+        default="onprem",
+        alias="PREDICTION_SCALING_KUBERNETES_SOURCE",
+    )
+    prediction_scaling_prediction_namespace: str = Field(
+        default="onprem",
+        alias="PREDICTION_SCALING_PREDICTION_NAMESPACE",
+    )
+    prediction_scaling_stale_after_hours: int = Field(
+        default=24,
+        ge=1,
+        alias="PREDICTION_SCALING_STALE_AFTER_HOURS",
+    )
+    prediction_scaling_actual_rps_query_template: str = Field(
+        default=(
+            'sum(rate(hubble_http_requests_total{destination_namespace="kkpp",'
+            'destination_workload="$service",reporter="server",'
+            'traffic_direction="ingress"}[5m]))'
+        ),
+        alias="PREDICTION_SCALING_ACTUAL_RPS_QUERY_TEMPLATE",
+    )
+    prediction_scaling_actual_rps_prometheus_source: str = Field(
+        default="onprem",
+        alias="PREDICTION_SCALING_ACTUAL_RPS_PROMETHEUS_SOURCE",
+    )
+    prediction_scaling_rps_warning_deviation_percent: float = Field(
+        default=20.0,
+        ge=0,
+        alias="PREDICTION_SCALING_RPS_WARNING_DEVIATION_PERCENT",
+    )
+    prediction_scaling_rps_critical_deviation_percent: float = Field(
+        default=40.0,
+        ge=0,
+        alias="PREDICTION_SCALING_RPS_CRITICAL_DEVIATION_PERCENT",
+    )
+    prediction_scaling_slack_webhook_url: str = Field(
+        default="",
+        alias="PREDICTION_SCALING_SLACK_WEBHOOK_URL",
+    )
+    prediction_scaling_slack_channel: str = Field(
+        default="",
+        alias="PREDICTION_SCALING_SLACK_CHANNEL",
+    )
+    prediction_scaling_slack_min_risk: str = Field(
+        default="high",
+        alias="PREDICTION_SCALING_SLACK_MIN_RISK",
+    )
+    prediction_scaling_slack_dedupe_enabled: bool = Field(
+        default=True,
+        alias="PREDICTION_SCALING_SLACK_DEDUPE_ENABLED",
+    )
+    prediction_scaling_watcher_enabled: bool = Field(
+        default=False,
+        alias="PREDICTION_SCALING_WATCHER_ENABLED",
+    )
+    prediction_scaling_watcher_interval_seconds: int = Field(
+        default=300,
+        ge=30,
+        alias="PREDICTION_SCALING_WATCHER_INTERVAL_SECONDS",
+    )
+    prediction_scaling_watcher_namespace: str = Field(
+        default="kkpp",
+        alias="PREDICTION_SCALING_WATCHER_NAMESPACE",
+    )
+    prediction_scaling_watcher_service: str = Field(
+        default="",
+        alias="PREDICTION_SCALING_WATCHER_SERVICE",
+    )
+    prediction_scaling_watcher_horizon_minutes: int = Field(
+        default=180,
+        ge=1,
+        le=1440,
+        alias="PREDICTION_SCALING_WATCHER_HORIZON_MINUTES",
+    )
+    prediction_scaling_rca_trigger_enabled: bool = Field(
+        default=False,
+        alias="PREDICTION_SCALING_RCA_TRIGGER_ENABLED",
+    )
+    prediction_scaling_rca_trigger_min_risk: str = Field(
+        default="high",
+        alias="PREDICTION_SCALING_RCA_TRIGGER_MIN_RISK",
+    )
+    prediction_scaling_rca_trigger_cluster: str = Field(
+        default="onprem",
+        alias="PREDICTION_SCALING_RCA_TRIGGER_CLUSTER",
+    )
+    sre_inspection_watcher_enabled: bool = Field(
+        default=False,
+        alias="SRE_INSPECTION_WATCHER_ENABLED",
+    )
+    sre_inspection_watcher_interval_seconds: int = Field(
+        default=300,
+        ge=30,
+        alias="SRE_INSPECTION_WATCHER_INTERVAL_SECONDS",
+    )
+    sre_inspection_watcher_cluster: str = Field(
+        default="onprem",
+        alias="SRE_INSPECTION_WATCHER_CLUSTER",
+    )
+    sre_inspection_watcher_namespace: str = Field(
+        default="kkpp",
+        alias="SRE_INSPECTION_WATCHER_NAMESPACE",
+    )
+    sre_inspection_watcher_service: str = Field(
+        default="service-payment",
+        alias="SRE_INSPECTION_WATCHER_SERVICE",
+    )
+    sre_inspection_watcher_type: str = Field(
+        default="current_state",
+        alias="SRE_INSPECTION_WATCHER_TYPE",
+    )
+    sre_inspection_watcher_notify_healthy: bool = Field(
+        default=True,
+        alias="SRE_INSPECTION_WATCHER_NOTIFY_HEALTHY",
+    )
+    sre_inspection_watcher_llm_min_status: str = Field(
+        default="degraded",
+        alias="SRE_INSPECTION_WATCHER_LLM_MIN_STATUS",
+    )
+    llm_provider: str = Field(default="fake", alias="LLM_PROVIDER")
+    llm_model: str = Field(default="fake-agentic-planner", alias="LLM_MODEL")
+    llm_api_key: str = Field(default="", alias="LLM_API_KEY")
+    llm_api_base_url: str = Field(default="https://api.openai.com/v1", alias="LLM_API_BASE_URL")
+    llm_require_api_key: bool = Field(default=True, alias="LLM_REQUIRE_API_KEY")
+    llm_max_tokens: int = Field(default=800, ge=1, le=8192, alias="LLM_MAX_TOKENS")
+    llm_timeout_seconds: float = Field(default=60.0, gt=0, alias="LLM_TIMEOUT_SECONDS")
+    llm_temperature: float = Field(default=0.1, ge=0, le=2, alias="LLM_TEMPERATURE")
+
+    prometheus_base_url: str = Field(default="http://localhost:9090", alias="PROMETHEUS_BASE_URL")
+    prometheus_source_urls: str = Field(default="", alias="PROMETHEUS_SOURCE_URLS")
+    prometheus_timeout_seconds: float = Field(
+        default=10.0,
+        gt=0,
+        alias="PROMETHEUS_TIMEOUT_SECONDS",
+    )
+    alertmanager_base_url: str = Field(
+        default="http://localhost:9093",
+        alias="ALERTMANAGER_BASE_URL",
+    )
+    alertmanager_timeout_seconds: float = Field(
+        default=10.0,
+        gt=0,
+        alias="ALERTMANAGER_TIMEOUT_SECONDS",
+    )
+    loki_base_url: str = Field(default="http://localhost:3100", alias="LOKI_BASE_URL")
+    loki_source_urls: str = Field(default="", alias="LOKI_SOURCE_URLS")
+    loki_timeout_seconds: float = Field(default=10.0, gt=0, alias="LOKI_TIMEOUT_SECONDS")
+    tempo_base_url: str = Field(default="http://localhost:3200", alias="TEMPO_BASE_URL")
+    tempo_timeout_seconds: float = Field(default=10.0, gt=0, alias="TEMPO_TIMEOUT_SECONDS")
+    kubernetes_api_base_url: str = Field(
+        default="http://localhost:8001",
+        alias="KUBERNETES_API_BASE_URL",
+    )
+    kubernetes_bearer_token: str = Field(default="", alias="KUBERNETES_BEARER_TOKEN")
+    kubernetes_bearer_token_file: str = Field(
+        default="",
+        alias="KUBERNETES_BEARER_TOKEN_FILE",
+    )
+    kubernetes_ca_cert_file: str = Field(default="", alias="KUBERNETES_CA_CERT_FILE")
+    kubernetes_namespace_allowlist: str = Field(
+        default="default,kube-system",
+        alias="KUBERNETES_NAMESPACE_ALLOWLIST",
+    )
+    kubernetes_timeout_seconds: float = Field(
+        default=10.0,
+        gt=0,
+        alias="KUBERNETES_TIMEOUT_SECONDS",
+    )
+    onprem_kubernetes_api_base_url: str = Field(
+        default="",
+        alias="ONPREM_KUBERNETES_API_BASE_URL",
+    )
+    onprem_kubernetes_bearer_token: str = Field(
+        default="",
+        alias="ONPREM_KUBERNETES_BEARER_TOKEN",
+    )
+    onprem_kubernetes_ca_cert: str = Field(default="", alias="ONPREM_KUBERNETES_CA_CERT")
+    onprem_kubernetes_namespace_allowlist: str = Field(
+        default="default,kkpp,monitoring,keda,postgres-ha,ingress-nginx",
+        alias="ONPREM_KUBERNETES_NAMESPACE_ALLOWLIST",
+    )
+    kafka_admin_base_url: str = Field(
+        default="http://localhost:8080",
+        alias="KAFKA_ADMIN_BASE_URL",
+    )
+    kafka_timeout_seconds: float = Field(default=10.0, gt=0, alias="KAFKA_TIMEOUT_SECONDS")
+    batch_api_base_url: str = Field(
+        default="http://localhost:8081",
+        alias="BATCH_API_BASE_URL",
+    )
+    batch_timeout_seconds: float = Field(default=10.0, gt=0, alias="BATCH_TIMEOUT_SECONDS")
+    infraops_batch_enabled: bool = Field(default=True, alias="INFRAOPS_BATCH_ENABLED")
+    aws_ops_base_url: str = Field(default="", alias="AWS_OPS_BASE_URL")
+    aws_ops_timeout_seconds: float = Field(default=10.0, gt=0, alias="AWS_OPS_TIMEOUT_SECONDS")
+    argocd_read_base_url: str = Field(default="", alias="ARGOCD_READ_BASE_URL")
+    argocd_timeout_seconds: float = Field(default=10.0, gt=0, alias="ARGOCD_TIMEOUT_SECONDS")
+    elasticsearch_base_url: str = Field(
+        default="http://localhost:9200",
+        alias="ELASTICSEARCH_BASE_URL",
+    )
+    elasticsearch_username: str = Field(default="", alias="ELASTICSEARCH_USERNAME")
+    elasticsearch_password: str = Field(default="", alias="ELASTICSEARCH_PASSWORD")
+    elasticsearch_index_allowlist: str = Field(
+        default="logs-*,filebeat-*,metricbeat-*",
+        alias="ELASTICSEARCH_INDEX_ALLOWLIST",
+    )
+    elasticsearch_timeout_seconds: float = Field(
+        default=10.0,
+        gt=0,
+        alias="ELASTICSEARCH_TIMEOUT_SECONDS",
+    )
+    kibana_base_url: str = Field(default="http://localhost:5601", alias="KIBANA_BASE_URL")
+    infraops_elk_enabled: bool = Field(default=True, alias="INFRAOPS_ELK_ENABLED")
+    infraops_kafka_enabled: bool = Field(default=True, alias="INFRAOPS_KAFKA_ENABLED")
+    topology_knowledge_dirs: str = Field(
+        default="runtime_knowledge,docs",
+        alias="TOPOLOGY_KNOWLEDGE_DIRS",
+    )
+    rca_default_before_minutes: int = Field(
+        default=10,
+        ge=0,
+        alias="RCA_DEFAULT_BEFORE_MINUTES",
+    )
+    rca_default_after_minutes: int = Field(
+        default=5,
+        ge=0,
+        alias="RCA_DEFAULT_AFTER_MINUTES",
+    )
+    rca_job_runner_enabled: bool = Field(default=False, alias="RCA_JOB_RUNNER_ENABLED")
+    rca_job_runner_image: str = Field(default="", alias="RCA_JOB_RUNNER_IMAGE")
+    rca_job_runner_namespace: str = Field(
+        default="default",
+        alias="RCA_JOB_RUNNER_NAMESPACE",
+    )
+    rca_job_runner_service_name: str = Field(
+        default="mcp-aiops-backend",
+        alias="RCA_JOB_RUNNER_SERVICE_NAME",
+    )
+    rca_job_runner_limit: int = Field(default=20, ge=1, le=50, alias="RCA_JOB_RUNNER_LIMIT")
+    rca_job_runner_ttl_seconds_after_finished: int = Field(
+        default=600,
+        ge=0,
+        alias="RCA_JOB_RUNNER_TTL_SECONDS_AFTER_FINISHED",
+    )
+    rca_job_runner_active_deadline_buffer_seconds: int = Field(
+        default=300,
+        ge=60,
+        alias="RCA_JOB_RUNNER_ACTIVE_DEADLINE_BUFFER_SECONDS",
+    )
+    email_provider: str = Field(default="smtp", alias="EMAIL_PROVIDER")
+    smtp_host: str = Field(default="", alias="SMTP_HOST")
+    smtp_port: int = Field(default=587, ge=1, le=65535, alias="SMTP_PORT")
+    smtp_username: str = Field(default="", alias="SMTP_USERNAME")
+    smtp_password: str = Field(default="", alias="SMTP_PASSWORD")
+    smtp_from: str = Field(default="aiops@example.com", alias="SMTP_FROM")
+    smtp_use_tls: bool = Field(default=True, alias="SMTP_USE_TLS")
+    ops_report_email_recipients: str = Field(
+        default="",
+        alias="OPS_REPORT_EMAIL_RECIPIENTS",
+    )
+    rca_email_recipients: str = Field(default="", alias="RCA_EMAIL_RECIPIENTS")
+    rca_slack_webhook_url: str = Field(default="", alias="RCA_SLACK_WEBHOOK_URL")
+    rca_slack_channel: str = Field(default="", alias="RCA_SLACK_CHANNEL")
+    rca_slack_timeout_seconds: float = Field(
+        default=10.0,
+        gt=0,
+        alias="RCA_SLACK_TIMEOUT_SECONDS",
+    )
+
+
+@lru_cache
+def get_settings() -> Settings:
+    return Settings()
+
+
+settings = get_settings()
